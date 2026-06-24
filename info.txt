@@ -1,0 +1,35 @@
+after sending an attack sucesfull receive a websocket binary msg that in utf 
+u can find the march id 
+
+2. Response Packets Analysis
+You did receive the March ID!
+In the big response packet (%xt%cra%1%0%...), look for this part:
+JSON"AAM": {
+  "M": {
+    "MID": 727876341,     ← THIS IS YOUR MARCH ID
+    ...
+  }
+}
+
+
+and this is how you recall it therefore 
+%xt%EmpireEx_19%mcm%1%{"MID":727877438}%     //well it should match the mid you're intersetd in 
+
+
+
+Main Packet Types
+
+gaa (multiple times) — Map Area Updates
+Shows all nearby castles, outposts, and players around your location.
+Lots of data about alliances, levels, troops on field, etc.
+
+gie — Guild / Alliance info update
+sce — Score / Statistic update
+cat — Attack Confirmation (very important)
+sne — System notification / chat message
+dms — Delete March / March finished
+gxp — Player XP / Level update
+
+
+
+look out for a cat associated with an attack after sent
