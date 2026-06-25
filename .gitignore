@@ -1,2 +1,5 @@
-sensitive.txt
 empire/troops/images
+login_details_*.txt
+__pycache__/
+*.pyc
+empire/berimond/berimond_attack_state.json

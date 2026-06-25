@@ -1,0 +1,1 @@
+/Users/edisonhussey/Desktop/scan_coordinates/.venv/bin/python empire/berimond/attack_manager.py --max-successes 200
