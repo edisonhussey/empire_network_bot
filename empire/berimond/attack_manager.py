@@ -341,40 +341,56 @@ def find_target(
     kingdom: int,
     npc_type: int,
     scan_radius: int,
+    scan_hint_dx: int,
+    scan_hint_dy: int,
+    scan_delay_min: float,
+    scan_delay_max: float,
+    scan_delay_jitter: float,
     rejected: set[tuple[int, int]],
 ) -> tuple[int, int, int]:
-    try:
-        closest = socket.get_closest_npc(
-            kingdom,
-            npc_type=npc_type,
-            min_level=1,
-            max_level=-1,
-            quiet=True,
-        )
-        data = closest.get("payload", {}).get("data") if isinstance(closest, dict) else {}
-        for key in ("NPC", "T", "AI"):
-            value = data.get(key) if isinstance(data, dict) else None
-            if isinstance(value, dict):
-                tx = int(value.get("X", value.get("x")))
-                ty = int(value.get("Y", value.get("y")))
-                if (tx, ty) not in rejected:
-                    return tx, ty, int(value.get("L", value.get("LVL", -1)))
-    except Exception:
-        pass
-
-    candidates: list[tuple[float, int, int, int]] = []
+    hint_x = sx + scan_hint_dx
+    hint_y = sy + scan_hint_dy
+    offsets: list[tuple[int, int]] = []
     for dx in range(-scan_radius, scan_radius + 1, 13):
         for dy in range(-scan_radius, scan_radius + 1, 13):
-            ax = max(0, sx + dx)
-            ay = max(0, sy + dy)
-            response = socket.get_map_chunk(kingdom, ax, ay, quiet=True)
-            for tx, ty, level in extract_npc_targets(response, npc_type=npc_type):
-                if (tx, ty) not in rejected:
-                    candidates.append((distance(sx, sy, tx, ty), tx, ty, level))
-    if not candidates:
-        raise RuntimeError(f"no npc_type={npc_type} targets found near ({sx},{sy})")
-    _, tx, ty, level = min(candidates)
-    return tx, ty, level
+            if distance(0, 0, dx, dy) <= scan_radius:
+                offsets.append((dx, dy))
+
+    # Bias toward the likely watchtower area, but add noise so requests do not
+    # look like a perfectly linear sweep.
+    offsets.sort(
+        key=lambda item: (
+            distance(sx + item[0], sy + item[1], hint_x, hint_y)
+            + random.uniform(-18.0, 18.0)
+        )
+    )
+
+    checked = 0
+    for dx, dy in offsets:
+        ax = max(0, sx + dx - 6)
+        ay = max(0, sy + dy - 6)
+        checked += 1
+        random_delay(
+            "scan_chunk",
+            minimum=scan_delay_min,
+            maximum=scan_delay_max,
+            jitter=scan_delay_jitter,
+        )
+        log(
+            f"scan_request chunk=({ax},{ay}) checked={checked}/{len(offsets)} "
+            f"hint=({hint_x},{hint_y})"
+        )
+        response = socket.get_map_chunk(kingdom, ax, ay, quiet=True)
+        for tx, ty, level in extract_npc_targets(response, npc_type=npc_type):
+            if (tx, ty) not in rejected:
+                log(
+                    f"scan_found target=({tx},{ty}) level={level} "
+                    f"distance={distance(sx, sy, tx, ty):.1f} chunks_checked={checked}"
+                )
+                return tx, ty, level
+    raise RuntimeError(
+        f"no npc_type={npc_type} targets found within radius={scan_radius} near ({sx},{sy})"
+    )
 
 
 def open_berimond(socket, args: argparse.Namespace | None = None) -> None:
@@ -576,14 +592,15 @@ class berimond_attack_manager:
         open_berimond(self.socket, self.args)
 
     def find_closest_watchtower(self) -> tuple[int, int, int]:
-        # Original sketch mentioned gbl/klh; in practice we ask the map for the
-        # captured target first, then fall back to scanning gaa chunks near the
-        # source. The captured Berimond target can be much farther away than a
-        # normal 13x13 map chunk around the source.
         captured_target = (int(self.capture["TX"]), int(self.capture["TY"]))
         if captured_target not in self.rejected:
+            log(f"using_captured_target target=({captured_target[0]},{captured_target[1]})")
             return captured_target[0], captured_target[1], -1
 
+        log(
+            f"scan_fallback_start source=({self.source_x},{self.source_y}) "
+            f"radius={self.args.scan_radius} target_type={self.args.target_type}"
+        )
         return find_target(
             self.socket,
             sx=self.source_x,
@@ -591,6 +608,11 @@ class berimond_attack_manager:
             kingdom=BERIMOND,
             npc_type=self.args.target_type,
             scan_radius=self.args.scan_radius,
+            scan_hint_dx=self.args.scan_hint_dx,
+            scan_hint_dy=self.args.scan_hint_dy,
+            scan_delay_min=self.args.scan_delay_min,
+            scan_delay_max=self.args.scan_delay_max,
+            scan_delay_jitter=self.args.scan_delay_jitter,
             rejected=self.rejected,
         )
 
@@ -829,7 +851,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-active", type=int, default=4)
     parser.add_argument("--max-successes", type=int, default=0)
     parser.add_argument("--target-type", type=int, default=2)
-    parser.add_argument("--scan-radius", type=int, default=80)
+    parser.add_argument("--scan-radius", type=int, default=350)
+    parser.add_argument("--scan-hint-dx", type=int, default=200)
+    parser.add_argument("--scan-hint-dy", type=int, default=0)
+    parser.add_argument("--scan-delay-min", type=float, default=1.4)
+    parser.add_argument("--scan-delay-max", type=float, default=2.6)
+    parser.add_argument("--scan-delay-jitter", type=float, default=0.5)
     parser.add_argument("--response-timeout", type=float, default=12.0)
     parser.add_argument("--attack-gap-min", type=float, default=12.0)
     parser.add_argument("--attack-gap-max", type=float, default=20.0)

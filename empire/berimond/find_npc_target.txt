@@ -1,0 +1,3 @@
+%xt%EmpireEx_21%hgh%1%{"LT":30,"LID":4,"SV":"-1"}%
+%xt%EmpireEx_21%klh%1%{}%
+%xt%EmpireEx_21%pep%1%{"EID":3}%
