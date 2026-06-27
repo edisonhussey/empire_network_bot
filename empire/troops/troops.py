@@ -78,6 +78,52 @@ def create_troop_data():
         travel_speed=34,       # Hourglass
         food_consumption=2     # Boots + oil? (upkeep)
     )
+
+    troop_data[216] = Troop(
+        troop_id=216,
+        name="valkyrie_ranger_0",      # as you requested
+        attack_power=310,      # Red bow (ranged attack)
+        melee_defence=28,      # Blue sword
+        ranged_defence=48,     # Blue bow
+        loot_capacity=60,      # Bag
+        travel_speed=34,       # Hourglass
+        food_consumption=2     # Boots + oil
+    )
+
+        # Shield-maiden (Level 10)
+    troop_data[215] = Troop(
+        troop_id=215,
+        name="shield_maiden_10",       # or "shield_maiden" if you prefer one entry
+        attack_power=325,      # Red sword
+        melee_defence=41,      # Blue sword
+        ranged_defence=15,     # Blue bow
+        loot_capacity=63,      # Bag
+        travel_speed=34,       # Hourglass
+        food_consumption=2     # Boots
+    )
+
+    troop_data[277] = Troop(
+        troop_id=277,
+        name="direwolf",
+        attack_power=97,       # Red sword (melee attack)
+        melee_defence=40,      # Blue sword
+        ranged_defence=0,      # Blue bow
+        loot_capacity=4,       # Bag
+        travel_speed=100,      # Hourglass (very fast)
+        food_consumption=4     # Bread
+    )
+
+    # Demon Horror
+    troop_data[714] = Troop(
+        troop_id=714,
+        name="demon_horror",
+        attack_power=185,      # Red sword
+        melee_defence=19,      # Blue sword
+        ranged_defence=5,      # Blue bow
+        loot_capacity=35,      # Bag
+        travel_speed=28,       # Hourglass
+        food_consumption=5     # Bread
+    )
     
     return troop_data
     

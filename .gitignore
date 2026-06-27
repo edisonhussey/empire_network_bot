@@ -3,3 +3,5 @@ login_details_*.txt
 __pycache__/
 *.pyc
 empire/berimond/berimond_attack_state.json
+empire/troops/images
+captures
