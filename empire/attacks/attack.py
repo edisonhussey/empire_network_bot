@@ -1,7 +1,7 @@
-from troops import *
+from troops import Troop
 
 
-print(Troop.DEMON_HORROR)
+print(Troop.SHIELD_MAIDEN)
 
 
 
