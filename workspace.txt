@@ -1,0 +1,43 @@
+[03:43:12.085] CLIENT -> SERVER
+XT PACKET
+  fields:
+    type: xt
+    server_header: EmpireEx_19
+    command: bup
+    request_id: 1
+    payload: {"LID":0,"WID":151,"AMT":1,"PO":-1,"PWR":0,"SK":73,"SID":0,"AID":3139991}
+
+  json_payload:
+{
+  "AID": 3139991,
+  "AMT": 1,
+  "LID": 0,
+  "PO": -1,
+  "PWR": 0,
+  "SID": 0,
+  "SK": 73,
+  "WID": 151
+}
+
+  raw:
+%xt%EmpireEx_19%bup%1%{"LID":0,"WID":151,"AMT":1,"PO":-1,"PWR":0,"SK":73,"SID":0,"AID":3139991}%
+
+
+printf '%s\n' '%xt%EmpireEx_19%bup%1%{"LID":0,"WID":151,"AMT":10,"PO":-1,"PWR":0,"SK":73,"SID":0,"AID":3139991}%' >> captures/inject3_send.txt
+relic longbowman
+
+
+WID is 151 so if we send a command of the unit id we can simulate recruitment 
+
+alright
+
+
+151 is unit id for relic longbowman //defender
+  "U": [
+          [
+            151,
+            1
+          ],
+          [
+            -1,
+            0

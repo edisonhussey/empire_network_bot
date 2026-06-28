@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import queue
+import pprint
 from mitmproxy import command, ctx, http
 from datetime import datetime
 import os
@@ -42,6 +44,58 @@ def normalize_packet(line: str) -> str | None:
     if final_percent <= 0:
         return None
     return packet[: final_percent + 1]
+
+
+def pretty_json(value: str) -> str | None:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return json.dumps(parsed, indent=2, sort_keys=True, ensure_ascii=False)
+
+
+def pretty_xt_packet(packet: str) -> str | None:
+    if not packet.startswith("%xt%"):
+        return None
+
+    fields = packet.strip().strip("%").split("%")
+    if not fields or fields[0] != "xt":
+        return None
+
+    if len(fields) >= 5 and fields[1].startswith("EmpireEx_"):
+        labels = ["type", "server_header", "command", "request_id", "payload"]
+    elif len(fields) >= 5:
+        labels = ["type", "command", "request_id", "status", "payload"]
+    else:
+        labels = ["type"]
+
+    lines = ["XT PACKET", "  fields:"]
+    for index, field in enumerate(fields):
+        label = labels[index] if index < len(labels) else f"field_{index}"
+        lines.append(f"    {label}: {field}")
+
+    if fields:
+        payload = fields[-1]
+        formatted_payload = pretty_json(payload)
+        if formatted_payload is not None:
+            lines.extend(["", "  json_payload:", formatted_payload])
+        elif payload:
+            lines.extend(["", "  payload:", pprint.pformat(payload, width=100)])
+
+    lines.extend(["", "  raw:", packet])
+    return "\n".join(lines)
+
+
+def format_message_for_log(message: str) -> str:
+    pretty_xt = pretty_xt_packet(message)
+    if pretty_xt is not None:
+        return pretty_xt
+
+    pretty = pretty_json(message)
+    if pretty is not None:
+        return pretty
+
+    return pprint.pformat(message, width=120) if "\n" not in message else message
 
 
 def is_open_websocket(flow: http.HTTPFlow | None) -> bool:
@@ -153,7 +207,8 @@ def handle_websocket_message(flow: http.HTTPFlow):
         last_dump = ts
         control_log(f"capture_file path={filename}")
     
-    entry = f"[{ts.strftime('%H:%M:%S.%f')[:-3]}] {direction}\n{decoded}\n---\n"
+    formatted = format_message_for_log(decoded)
+    entry = f"[{ts.strftime('%H:%M:%S.%f')[:-3]}] {direction}\n{formatted}\n---\n"
     current_file.write(entry)
     current_file.flush()
     

@@ -1,0 +1,152 @@
+command bup = command type for recruitment
+amt = amount maximum dependong on castle but we can probably safely assume 80 on error we alwasy want to failback
+WID = in this case refers to th TROOP id
+others are undetermiend so far
+
+
+[03:52:10.972] CLIENT -> SERVER
+XT PACKET
+  fields:
+    type: xt
+    server_header: EmpireEx_19
+    command: bup
+    request_id: 1
+    payload: {"LID":0,"WID":151,"AMT":10,"PO":-1,"PWR":0,"SK":73,"SID":0,"AID":3139991}
+
+  json_payload:
+{
+  "AID": 3139991,
+  "AMT": 10,
+  "LID": 0,
+  "PO": -1,
+  "PWR": 0,
+  "SID": 0,
+  "SK": 73,
+  "WID": 151
+}
+
+  raw:
+%xt%EmpireEx_19%bup%1%{"LID":0,"WID":151,"AMT":10,"PO":-1,"PWR":0,"SK":73,"SID":0,"AID":3139991}%
+---
+[03:52:11.020] SERVER -> CLIENT
+XT PACKET
+  fields:
+    type: xt
+    command: gcu
+    request_id: 1
+    status: 0
+    payload: {"C1":95146474,"C2":19002}
+
+  json_payload:
+{
+  "C1": 95146474,
+  "C2": 19002
+}
+
+  raw:
+%xt%gcu%1%0%{"C1":95146474,"C2":19002}%
+---
+[03:52:11.020] SERVER -> CLIENT
+XT PACKET
+  fields:
+    type: xt
+    command: sce
+    request_id: 1
+    status: 0
+    payload: []
+
+  json_payload:
+[]
+
+  raw:
+%xt%sce%1%0%[]%
+---
+[03:52:11.021] SERVER -> CLIENT
+XT PACKET
+  fields:
+    type: xt
+    command: bup
+    request_id: 1
+    status: 0
+    payload: {"spl":{"PS":{"WID":151,"TUA":5,"CBS":0,"RAH":false,"PID":648234897,"RCT":145,"ICT":145,"SPID":467920579},"QS":[{"P":{"WID":151,"TUA":5,"CBS":0,"RAH":false,"PID":467920579},"SI":{"RUT":-1,"VIP":0}},{"SI":{"RUT":-1,"VIP":0}},{"SI":{"RUT":-1,"VIP":0}},{"SI":{"RUT":0,"VIP":0}},{"SI":{"RUT":0,"VIP":0}}],"RM":0,"TCT":290,"LID":0},"grc":{"AID":3139991,"W":152000.0,"S":122000.0,"F":684500.0,"C":72143.0,"O":72143.0,"G":72143.0,"A":0.0,"I":70642.0,"HONEY":104100.0,"MEAD":471370.0,"BEEF":0.0,"KID":0},"gcu":{"C1":95146474,"C2":19002}}
+
+  json_payload:
+{
+  "gcu": {
+    "C1": 95146474,
+    "C2": 19002
+  },
+  "grc": {
+    "A": 0.0,
+    "AID": 3139991,
+    "BEEF": 0.0,
+    "C": 72143.0,
+    "F": 684500.0,
+    "G": 72143.0,
+    "HONEY": 104100.0,
+    "I": 70642.0,
+    "KID": 0,
+    "MEAD": 471370.0,
+    "O": 72143.0,
+    "S": 122000.0,
+    "W": 152000.0
+  },
+  "spl": {
+    "LID": 0,
+    "PS": {
+      "CBS": 0,
+      "ICT": 145,
+      "PID": 648234897,
+      "RAH": false,
+      "RCT": 145,
+      "SPID": 467920579,
+      "TUA": 5,
+      "WID": 151
+    },
+    "QS": [
+      {
+        "P": {
+          "CBS": 0,
+          "PID": 467920579,
+          "RAH": false,
+          "TUA": 5,
+          "WID": 151
+        },
+        "SI": {
+          "RUT": -1,
+          "VIP": 0
+        }
+      },
+      {
+        "SI": {
+          "RUT": -1,
+          "VIP": 0
+        }
+      },
+      {
+        "SI": {
+          "RUT": -1,
+          "VIP": 0
+        }
+      },
+      {
+        "SI": {
+          "RUT": 0,
+          "VIP": 0
+        }
+      },
+      {
+        "SI": {
+          "RUT": 0,
+          "VIP": 0
+        }
+      }
+    ],
+    "RM": 0,
+    "TCT": 290
+  }
+}
+
+  raw:
+%xt%bup%1%0%{"spl":{"PS":{"WID":151,"TUA":5,"CBS":0,"RAH":false,"PID":648234897,"RCT":145,"ICT":145,"SPID":467920579},"QS":[{"P":{"WID":151,"TUA":5,"CBS":0,"RAH":false,"PID":467920579},"SI":{"RUT":-1,"VIP":0}},{"SI":{"RUT":-1,"VIP":0}},{"SI":{"RUT":-1,"VIP":0}},{"SI":{"RUT":0,"VIP":0}},{"SI":{"RUT":0,"VIP":0}}],"RM":0,"TCT":290,"LID":0},"grc":{"AID":3139991,"W":152000.0,"S":122000.0,"F":684500.0,"C":72143.0,"O":72143.0,"G":72143.0,"A":0.0,"I":70642.0,"HONEY":104100.0,"MEAD":471370.0,"BEEF":0.0,"KID":0},"gcu":{"C1":95146474,"C2":19002}}%
+---

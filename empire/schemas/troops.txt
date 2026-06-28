@@ -1,0 +1,4 @@
+archer-10020
+beefman-50
+soldeier-25
+mage-99

@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "units": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "troop_name": {
+            "type": "string",
+            "oneOf": [
+              {
+                "const": "archer",
+                "description": "→ ID/magic: 100"
+              },
+              {
+                "const": "beefman",
+                "description": "→ ID/magic: 50"
+              },
+              {
+                "const": "soldeier",
+                "description": "→ ID/magic: 25"
+              },
+              {
+                "const": "mage",
+                "description": "→ ID/magic: 99"
+              }
+            ]
+          },
+          "id": {
+            "type": "integer",
+            "description": "The magic number / ID associated with the troop_name"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    }
+  }
+}

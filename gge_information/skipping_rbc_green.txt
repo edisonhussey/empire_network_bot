@@ -1,0 +1,150 @@
+printf '%s\n' '%xt%EmpireEx_19%msd%1%{"X":644,"Y":639,"MID":-1,"NID":-1,"MST":"MS2","KID":"0"}%' >> captures/inject3_send.txt
+
+msd unsure but this is the command
+KID = 0 means green kingdom default kingdo when u log in 
+MID = -1 unsure about this 
+x, y  are the coordinates 
+
+NID = -1 unsure about what this does 
+Mst = ms2 unsure also what this does 
+
+let's delve deeper 
+
+
+%xt%EmpireEx_19%msd%1%{"X":644,"Y":639,"MID":-1,"NID":-1,"MST":"MS1","KID":"0"}%
+
+
+
+is the msg used to skip at same rbc 1 minute 
+notice that the differenc eis MST 
+
+MST field control how much time is to be skipped 
+"MST":"MS1" = 1 minute 
+the types of skips are MS1, MS2, MS3, MS4, MS5, MS6, MS7 = 1 min , 5 min, 10min , 30 min, 1hour, 5 hour, 24 hour
+%xt%EmpireEx_19%msd%1%{"X":644,"Y":639,"MID":-1,"NID":-1,"MST":"MS5","KID":"0"}%
+im going to prove it by swapping out the MST = MS1 for  MS5 and it will reduce by 1 hour
+
+
+printf '%s\n' '%xt%EmpireEx_19%msd%1%{"X":644,"Y":639,"MID":-1,"NID":-1,"MST":"MS5","KID":"0"}%' >> captures/inject3_send.txt
+
+
+it worked !
+[03:29:24.334] CLIENT -> SERVER
+XT PACKET
+  fields:
+    type: xt
+    server_header: EmpireEx_19
+    command: msd
+    request_id: 1
+    payload: {"X":644,"Y":639,"MID":-1,"NID":-1,"MST":"MS5","KID":"0"}
+
+  json_payload:
+{
+  "KID": "0",
+  "MID": -1,
+  "MST": "MS5",
+  "NID": -1,
+  "X": 644,
+  "Y": 639
+}
+
+  raw:
+%xt%EmpireEx_19%msd%1%{"X":644,"Y":639,"MID":-1,"NID":-1,"MST":"MS5","KID":"0"}%
+---
+[03:29:24.385] SERVER -> CLIENT
+XT PACKET
+  fields:
+    type: xt
+    command: sce
+    request_id: 1
+    status: 0
+    payload: [["MS5",199]]
+
+  json_payload:
+[
+  [
+    "MS5",
+    199
+  ]
+]
+
+  raw:
+%xt%sce%1%0%[["MS5",199]]%
+---
+[03:29:24.385] SERVER -> CLIENT
+XT PACKET
+  fields:
+    type: xt
+    command: gaa
+    request_id: 1
+    status: 0
+    payload: {"AI":[[2,644,639,-1,12,6489,0]]}
+
+  json_payload:
+{
+  "AI": [
+    [
+      2,
+      644,
+      639,
+      -1,
+      12,
+      6489,
+      0
+    ]
+  ]
+}
+
+  raw:
+%xt%gaa%1%0%{"AI":[[2,644,639,-1,12,6489,0]]}%
+---
+[03:29:24.386] SERVER -> CLIENT
+XT PACKET
+  fields:
+    type: xt
+    command: msd
+    request_id: 1
+    status: 0
+    payload: {"AI":[2,644,639,-1,12,6489,0]}
+
+  json_payload:
+{
+  "AI": [
+    2,
+    644,
+    639,
+    -1,
+    12,
+    6489,
+    0
+  ]
+}
+
+  raw:
+%xt%msd%1%0%{"AI":[2,644,639,-1,12,6489,0]}%
+---
+
+
+[03:31:14.112] SERVER -> CLIENT
+XT PACKET
+  fields:
+    type: xt
+    command: sce
+    request_id: 1
+    status: 0
+    payload: [["MS1",3736]]
+
+  json_payload:
+[
+  [
+    "MS1",
+    3736
+  ]
+]
+
+  raw:
+%xt%sce%1%0%[["MS1",3736]]%
+
+--thi message indicates the MS1 or 1 minute time skip is reduced by 1 as in inventory its message sent among those after the rquests, avoid all costs sending a request to try to reduce by something you dont own. 
+
+like if you have 0 24 hr time skips we will not spam requests if the reutrn payloa indicates low or 0 value. 

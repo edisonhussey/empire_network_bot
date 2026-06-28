@@ -1,0 +1,5 @@
+ mitmdump -s inject3.py
+
+open a new terminal and type commands like this 
+
+printf '%s\n' '%xt%EmpireEx_19%msd%1%{"X":644,"Y":639,"MID":-1,"NID":-1,"MST":"MS2","KID":"0"}%' >> captures/inject3_send.txt

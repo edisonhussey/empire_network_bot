@@ -1,0 +1,22 @@
+[03:52:11.020] SERVER -> CLIENT
+XT PACKET
+  fields:
+    type: xt
+    command: gcu
+    request_id: 1
+    status: 0
+    payload: {"C1":95146474,"C2":19002}
+
+  json_payload:
+{
+  "C1": 95146474,
+  "C2": 19002
+}
+
+  raw:
+%xt%gcu%1%0%{"C1":95146474,"C2":19002}%
+
+
+
+what this does is that it wil return the updated coin count which is C1
+C2 refers to the C2 ruby count this is sent to the user after recruit is done or attack also. mhm 
