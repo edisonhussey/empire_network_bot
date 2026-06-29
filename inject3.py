@@ -11,18 +11,29 @@ import sys
 import threading
 import time
 
+from empire.network_sender.websockets import OUTER_WEBSOCKET
+
 CAPTURE_FOLDER = "captures"
 os.makedirs(CAPTURE_FOLDER, exist_ok=True)
 CONTROL_LOG = os.path.join(CAPTURE_FOLDER, "inject3_control.log")
 SEND_FILE = os.path.join(CAPTURE_FOLDER, "inject3_send.txt")
+LATEST_SERVER_FOLDER = os.path.join(
+    "empire",
+    "29_june_outer_realm",
+    "latest_5_server_messages",
+)
+LATEST_SERVER_LIMIT = 5
+LATEST_SERVER_COMMANDS = {"cat", "mcm", "dms"}
 
 current_file = None
 last_dump = datetime.now()
 active_flow = None
+websocket_flows = {}
 send_queue = queue.Queue()
 inject_tasks = set()
 terminal_thread_started = False
 send_file_offset = 0
+TARGET_WEBSOCKET = OUTER_WEBSOCKET
 
 
 def control_log(message: str) -> None:
@@ -86,6 +97,21 @@ def pretty_xt_packet(packet: str) -> str | None:
     return "\n".join(lines)
 
 
+def xt_command(packet: str) -> str | None:
+    if not packet.startswith("%xt%"):
+        return None
+    fields = packet.strip().strip("%").split("%")
+    if len(fields) < 5 or fields[0] != "xt":
+        return None
+    if fields[1].startswith("EmpireEx_"):
+        return fields[2]
+    return fields[1]
+
+
+def should_write_latest_server_message(message: str) -> bool:
+    return xt_command(message) in LATEST_SERVER_COMMANDS
+
+
 def format_message_for_log(message: str) -> str:
     pretty_xt = pretty_xt_packet(message)
     if pretty_xt is not None:
@@ -98,12 +124,45 @@ def format_message_for_log(message: str) -> str:
     return pprint.pformat(message, width=120) if "\n" not in message else message
 
 
+def write_latest_server_message(ts: datetime, direction: str, formatted: str) -> None:
+    os.makedirs(LATEST_SERVER_FOLDER, exist_ok=True)
+    filename = f"{ts.strftime('%Y%m%d_%H%M%S_%f')}.txt"
+    path = os.path.join(LATEST_SERVER_FOLDER, filename)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(f"[{ts.strftime('%H:%M:%S.%f')[:-3]}] {direction}\n{formatted}\n---\n")
+
+    files = sorted(
+        name
+        for name in os.listdir(LATEST_SERVER_FOLDER)
+        if name.endswith(".txt")
+    )
+    for old_name in files[:-LATEST_SERVER_LIMIT]:
+        try:
+            os.remove(os.path.join(LATEST_SERVER_FOLDER, old_name))
+        except FileNotFoundError:
+            pass
+
+
 def is_open_websocket(flow: http.HTTPFlow | None) -> bool:
     return (
         flow is not None
         and flow.websocket is not None
         and flow.websocket.timestamp_end is None
     )
+
+
+def flow_id(flow: http.HTTPFlow) -> str:
+    return str(id(flow))
+
+
+def is_target_websocket(flow: http.HTTPFlow) -> bool:
+    return TARGET_WEBSOCKET.matches_url(flow.request.url)
+
+
+def remember_websocket(flow: http.HTTPFlow) -> str:
+    identifier = flow_id(flow)
+    websocket_flows[identifier] = flow
+    return identifier
 
 
 def inject_packet(flow: http.HTTPFlow, packet: str) -> None:
@@ -183,7 +242,9 @@ def start_sender_task() -> None:
 def handle_websocket_message(flow: http.HTTPFlow):
     global active_flow, current_file, last_dump
 
-    active_flow = flow
+    identifier = remember_websocket(flow)
+    if is_target_websocket(flow):
+        active_flow = flow
     
     msg = flow.websocket.messages[-1]
     direction = "CLIENT -> SERVER" if msg.from_client else "SERVER -> CLIENT"
@@ -211,21 +272,37 @@ def handle_websocket_message(flow: http.HTTPFlow):
     entry = f"[{ts.strftime('%H:%M:%S.%f')[:-3]}] {direction}\n{formatted}\n---\n"
     current_file.write(entry)
     current_file.flush()
+
+    if (
+        is_target_websocket(flow)
+        and not msg.from_client
+        and should_write_latest_server_message(decoded)
+    ):
+        write_latest_server_message(ts, direction, formatted)
     
 def handle_websocket_start(flow: http.HTTPFlow):
     global active_flow
 
-    active_flow = flow
-    control_log(f"websocket_start url={flow.request.url}")
+    identifier = remember_websocket(flow)
+    if is_target_websocket(flow):
+        active_flow = flow
+        control_log(
+            f"websocket_start id={identifier} selected=yes "
+            f"target={TARGET_WEBSOCKET.name_value} url={flow.request.url}"
+        )
+    else:
+        control_log(f"websocket_start id={identifier} selected=no url={flow.request.url}")
     if not inject_tasks:
         start_sender_task()
 
 def handle_websocket_end(flow: http.HTTPFlow):
     global active_flow
 
+    identifier = flow_id(flow)
+    websocket_flows.pop(identifier, None)
     if flow is active_flow:
         active_flow = None
-    control_log(f"websocket_end url={flow.request.url}")
+    control_log(f"websocket_end id={identifier} url={flow.request.url}")
 
 def done():
     if current_file:
