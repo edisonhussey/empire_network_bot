@@ -22,8 +22,8 @@ LATEST_SERVER_FOLDER = os.path.join(
     "29_june_outer_realm",
     "latest_5_server_messages",
 )
-LATEST_SERVER_LIMIT = 5
-LATEST_SERVER_COMMANDS = {"cat", "mcm", "dms"}
+LATEST_SERVER_LIMIT = 10
+LATEST_SERVER_COMMANDS = {"cra", "cat", "mcm", "dms"}
 
 current_file = None
 last_dump = datetime.now()

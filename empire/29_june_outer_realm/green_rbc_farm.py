@@ -34,14 +34,34 @@ SKIP_COUNT = 15
 ATTACK_INTERVAL_SECONDS = 15
 ATTACK_INTERVAL_RANDOM_SECONDS = 2.4
 RETURN_SAFETY_SECONDS = 2
+REATTACK_AFTER_RETURN_MIN_SECONDS = 2
+REATTACK_AFTER_RETURN_MAX_SECONDS = 4
+STATE_LOG_INTERVAL_SECONDS = 5
 MAIN_LOOP_SLEEP_SECONDS = 0.25
-COMMANDER_LORD_IDS = (0, 2, 3, 4)
+COMMANDER_LORD_IDS = (0, 2, 3, 4, 5, 6)
 
 OUTER_RBC_ATTACK = Attack(
     wave1=wave(
-        middle=side(
-            units=[(OUTER_RBC_UNIT_ID, 28)],
+        left = side(
+            units = [(OUTER_RBC_UNIT_ID, 22)]
+        ),
+        right = side(
+            units = [(OUTER_RBC_UNIT_ID, 22)]
         )
+        # middle=side(
+            # units=[(OUTER_RBC_UNIT_ID, 28)],
+        # )
+    ),
+     wave2=wave(
+        left = side(
+            units = [(OUTER_RBC_UNIT_ID, 22)]
+        ),
+        right = side(
+            units = [(OUTER_RBC_UNIT_ID, 22)]
+        )
+        # middle=side(
+            # units=[(OUTER_RBC_UNIT_ID, 28)],
+        # )
     )
 )
 
@@ -63,6 +83,7 @@ seen_message_files: set[Path] = set()
 seen_march_ids: deque[int] = deque(maxlen=50)
 last_attack_sent = 0.0
 next_attack_allowed_at = 0.0
+last_state_log_at = 0.0
 outbound_queue: queue.Queue[dict[str, Any]] = queue.Queue()
 outbound_worker_thread: threading.Thread | None = None
 outbound_lords: set[int] = set()
@@ -73,6 +94,45 @@ skip_session_pending_or_active = False
 def log(message: str) -> None:
     stamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
     print(f"[{stamp}] {message}", flush=True)
+
+
+def seconds_until(epoch: float, now: float) -> str:
+    if epoch == float("inf"):
+        return "inf"
+    if epoch <= 0:
+        return "0.0"
+    return f"{max(0.0, epoch - now):.1f}"
+
+
+def log_state_snapshot() -> None:
+    now = time.time()
+    queue_kinds = []
+    try:
+        queue_kinds = [job.get("kind", "?") for job in list(outbound_queue.queue)]
+    except AttributeError:
+        pass
+
+    log(
+        "state snapshot "
+        f"outbound_busy={outbound_busy} "
+        f"queue={queue_kinds} "
+        f"skip_active={skip_session_pending_or_active} "
+        f"next_attack_in={seconds_until(next_attack_allowed_at, now)} "
+        f"pending_lids={list(pending_lord_ids)} "
+        f"mid_map={dict(march_id_to_lord_id)}"
+    )
+    for lord_id in COMMANDER_LORD_IDS:
+        state = COMMANDER_STATE.get(lord_id, {})
+        log(
+            "  commander "
+            f"LID={lord_id} "
+            f"status={state.get('status')} "
+            f"available={state.get('available')} "
+            f"landed={state.get('landed')} "
+            f"MID={state.get('march_id')} "
+            f"lands_in={seconds_until(float(state.get('landing_epoch', 0.0)), now)} "
+            f"free_in={seconds_until(float(state.get('return_epoch', 0.0)), now)}"
+        )
 
 
 def append_to_proxy(packet: str) -> None:
@@ -215,6 +275,10 @@ def next_attack_delay() -> float:
     return ATTACK_INTERVAL_SECONDS + random.random() * ATTACK_INTERVAL_RANDOM_SECONDS
 
 
+def reattack_after_return_delay() -> float:
+    return random.uniform(REATTACK_AFTER_RETURN_MIN_SECONDS, REATTACK_AFTER_RETURN_MAX_SECONDS)
+
+
 def latest_message_files() -> list[Path]:
     if not LATEST_SERVER_MESSAGES.exists():
         return []
@@ -282,31 +346,74 @@ def parse_message_file(path: Path) -> dict[str, Any] | None:
     return parsed
 
 
-def remember_march(march_id: int, lord_id: int, travel_seconds: int, seen_at: float) -> bool:
-    if march_id in seen_march_ids:
-        return False
-    seen_march_ids.append(march_id)
+def default_commander_state() -> dict[str, Any]:
+    return {
+        "available": True,
+        "status": "available",
+        "landing_epoch": 0.0,
+        "return_epoch": 0.0,
+        "landed": True,
+        "march_id": None,
+    }
+
+
+def ensure_commander_state(lord_id: int) -> dict[str, Any]:
+    return COMMANDER_STATE.setdefault(lord_id, default_commander_state())
+
+
+def remove_lord_march_mappings(lord_id: int, *, keep_march_id: int | None = None) -> None:
+    for march_id, mapped_lord_id in list(march_id_to_lord_id.items()):
+        if mapped_lord_id == lord_id and march_id != keep_march_id:
+            march_id_to_lord_id.pop(march_id, None)
+
+
+def record_attack_departure(
+    march_id: int,
+    lord_id: int,
+    travel_seconds: int,
+    seen_at: float,
+) -> None:
+    remove_lord_march_mappings(lord_id, keep_march_id=march_id)
     march_id_to_lord_id[march_id] = lord_id
-    COMMANDER_STATE.setdefault(
-        lord_id,
-        {
-            "available": True,
-            "status": "available",
-            "landing_epoch": 0.0,
-            "return_epoch": 0.0,
-            "landed": True,
-            "march_id": None,
-        },
-    )
-    COMMANDER_STATE[lord_id].update(
+    remove_pending_lord_id(lord_id)
+    ensure_commander_state(lord_id).update(
         {
             "available": False,
-            "status": "marching",
+            "status": "outbound",
             "landing_epoch": seen_at + travel_seconds,
             "return_epoch": float("inf"),
             "landed": False,
             "march_id": march_id,
         }
+    )
+
+
+def record_attack_landing(
+    march_id: int,
+    lord_id: int,
+    return_seconds: int,
+    seen_at: float,
+) -> bool:
+    if march_id in seen_march_ids:
+        return False
+    seen_march_ids.append(march_id)
+    remove_lord_march_mappings(lord_id, keep_march_id=march_id)
+    march_id_to_lord_id[march_id] = lord_id
+    release_delay = reattack_after_return_delay()
+    ensure_commander_state(lord_id).update(
+        {
+            "available": False,
+            "status": "returning",
+            "landing_epoch": 0.0,
+            "return_epoch": seen_at + return_seconds + release_delay,
+            "landed": True,
+            "march_id": march_id,
+        }
+    )
+    log(
+        "return scheduled "
+        f"MID={march_id} LID={lord_id} "
+        f"return_seconds={return_seconds} reattack_delay={release_delay:.1f}"
     )
     return True
 
@@ -319,7 +426,6 @@ def locked_lord_ids() -> set[int]:
     }
     locked.update(outbound_lords)
     locked.update(pending_lord_ids)
-    locked.update(march_id_to_lord_id.values())
     return locked
 
 
@@ -365,6 +471,29 @@ def is_outer_rbc_hit(movement: dict[str, Any], attack: dict[str, Any]) -> bool:
     )
 
 
+def is_outer_rbc_departure(movement: dict[str, Any], attack: dict[str, Any]) -> bool:
+    target_area = movement.get("TA")
+    if not isinstance(target_area, list) or len(target_area) < 3:
+        return False
+    if int(target_area[1]) != OUTER_RBC_X or int(target_area[2]) != OUTER_RBC_Y:
+        return False
+
+    formation = attack.get("FA") or {}
+    if not isinstance(formation, dict):
+        return False
+    units = []
+    for section in ("L", "M", "R", "RW"):
+        section_units = formation.get(section) or []
+        if isinstance(section_units, list):
+            units.extend(section_units)
+    return any(
+        isinstance(row, list)
+        and len(row) >= 1
+        and int(row[0]) == OUTER_RBC_UNIT_ID
+        for row in units
+    )
+
+
 def earned_food_and_coins(attack: dict[str, Any]) -> bool:
     rewards = attack.get("G") or []
     if not isinstance(rewards, list):
@@ -381,6 +510,47 @@ def earned_food_and_coins(attack: dict[str, Any]) -> bool:
             continue
 
     return reward_totals.get("F", 0) > 0 and reward_totals.get("C1", 0) > 0
+
+
+def process_cra_ack(parsed: dict[str, Any]) -> None:
+    payload = parsed.get("payload")
+    if not isinstance(payload, dict):
+        return
+    attack = payload.get("AAM")
+    if not isinstance(attack, dict):
+        return
+    movement = attack.get("M")
+    if not isinstance(movement, dict):
+        return
+    if not is_outer_rbc_departure(movement, attack):
+        return
+    lord = attack.get("UM", {}).get("L", {})
+    if not isinstance(lord, dict):
+        lord = {}
+
+    march_id = movement.get("MID")
+    lord_id = lord.get("ID")
+    travel_seconds = movement.get("TT")
+    if march_id is None or travel_seconds is None:
+        return
+    if lord_id is None:
+        lord_id = next_pending_lord_id()
+    else:
+        lord_id = int(lord_id)
+    if lord_id is None:
+        return
+
+    record_attack_departure(
+        march_id=int(march_id),
+        lord_id=lord_id,
+        travel_seconds=int(travel_seconds),
+        seen_at=float(parsed["epoch"]),
+    )
+    log(
+        "attack acknowledged "
+        f"MID={int(march_id)} LID={lord_id} "
+        f"lands_in={int(travel_seconds)}"
+    )
 
 
 def process_cat(parsed: dict[str, Any]) -> None:
@@ -411,10 +581,10 @@ def process_cat(parsed: dict[str, Any]) -> None:
         remove_pending_lord_id(lord_id)
     if lord_id is None:
         return
-    is_new_march = remember_march(
+    is_new_march = record_attack_landing(
         march_id=int(march_id),
         lord_id=lord_id,
-        travel_seconds=int(travel_seconds),
+        return_seconds=int(travel_seconds),
         seen_at=float(parsed["epoch"]),
     )
     if is_new_march:
@@ -449,7 +619,34 @@ def process_dms(parsed: dict[str, Any]) -> None:
             )
 
 
+def release_returned_commanders() -> None:
+    now = time.time()
+    for lord_id, state in COMMANDER_STATE.items():
+        if (
+            not state.get("available")
+            and state.get("status") == "returning"
+            and state.get("return_epoch", float("inf")) <= now
+        ):
+            march_id = state.get("march_id")
+            if march_id is not None:
+                march_id_to_lord_id.pop(int(march_id), None)
+            remove_lord_march_mappings(lord_id)
+            state.update(
+                {
+                    "available": True,
+                    "status": "available",
+                    "landed": True,
+                    "landing_epoch": 0.0,
+                    "return_epoch": 0.0,
+                    "march_id": None,
+                }
+            )
+            log(f"commander free LID={lord_id} previous_MID={march_id}")
+
+
 def update_commander_state() -> dict[int, dict[str, Any]]:
+    release_returned_commanders()
+
     for path in latest_message_files():
         if path in seen_message_files:
             continue
@@ -457,7 +654,9 @@ def update_commander_state() -> dict[int, dict[str, Any]]:
         seen_message_files.add(path)
         if parsed is None:
             continue
-        if parsed["command"] in {"cat", "mcm"}:
+        if parsed["command"] == "cra":
+            process_cra_ack(parsed)
+        elif parsed["command"] in {"cat", "mcm"}:
             process_cat(parsed)
         elif parsed["command"] == "dms":
             process_dms(parsed)
@@ -466,7 +665,7 @@ def update_commander_state() -> dict[int, dict[str, Any]]:
 
 
 def reset_runtime_state() -> None:
-    global last_attack_sent, next_attack_allowed_at, skip_session_pending_or_active
+    global last_attack_sent, next_attack_allowed_at, skip_session_pending_or_active, last_state_log_at
 
     march_id_to_lord_id.clear()
     pending_lord_ids.clear()
@@ -475,18 +674,22 @@ def reset_runtime_state() -> None:
     seen_message_files.update(latest_message_files())
     last_attack_sent = 0.0
     next_attack_allowed_at = 0.0
+    last_state_log_at = 0.0
     skip_session_pending_or_active = False
 
     for lord_id in COMMANDER_LORD_IDS:
-        COMMANDER_STATE[lord_id] = {
-            "available": True,
-            "status": "available",
-            "landing_epoch": 0.0,
-            "return_epoch": 0.0,
-            "landed": True,
-            "march_id": None,
-        }
+        COMMANDER_STATE[lord_id] = default_commander_state()
     log(f"runtime state reset; assuming free LIDs={COMMANDER_LORD_IDS}")
+
+
+def maybe_log_state_snapshot() -> None:
+    global last_state_log_at
+
+    now = time.time()
+    if now - last_state_log_at < STATE_LOG_INTERVAL_SECONDS:
+        return
+    last_state_log_at = now
+    log_state_snapshot()
 
 
 def next_attack() -> int | None:
@@ -511,6 +714,7 @@ def run() -> None:
     reset_runtime_state()
     while True:
         update_commander_state()
+        maybe_log_state_snapshot()
         next_attack()
         time.sleep(MAIN_LOOP_SLEEP_SECONDS)
 
