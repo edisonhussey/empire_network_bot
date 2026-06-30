@@ -31,22 +31,23 @@ SOURCE_Y = 788
 KINGDOM_ID = 0
 
 SKIP_COUNT = 15
-ATTACK_INTERVAL_SECONDS = 15
+ATTACK_INTERVAL_SECONDS = 12
 ATTACK_INTERVAL_RANDOM_SECONDS = 2.4
 RETURN_SAFETY_SECONDS = 2
 REATTACK_AFTER_RETURN_MIN_SECONDS = 2
 REATTACK_AFTER_RETURN_MAX_SECONDS = 4
 STATE_LOG_INTERVAL_SECONDS = 5
 MAIN_LOOP_SLEEP_SECONDS = 0.25
-COMMANDER_LORD_IDS = (0, 2, 3, 4, 5, 6)
+COMMANDER_LORD_IDS = (0, 2, 3, 4, 5, 6,7,8,9)
+# COMMANDER_LORD_IDS = (3,4,5,6)
 
 OUTER_RBC_ATTACK = Attack(
     wave1=wave(
         left = side(
-            units = [(OUTER_RBC_UNIT_ID, 22)]
+            units = [(OUTER_RBC_UNIT_ID, 50)]
         ),
         right = side(
-            units = [(OUTER_RBC_UNIT_ID, 22)]
+            units = [(OUTER_RBC_UNIT_ID, 50)]
         )
         # middle=side(
             # units=[(OUTER_RBC_UNIT_ID, 28)],
@@ -54,15 +55,26 @@ OUTER_RBC_ATTACK = Attack(
     ),
      wave2=wave(
         left = side(
-            units = [(OUTER_RBC_UNIT_ID, 22)]
+            units = [(OUTER_RBC_UNIT_ID, 50)]
         ),
         right = side(
-            units = [(OUTER_RBC_UNIT_ID, 22)]
+            units = [(OUTER_RBC_UNIT_ID, 50)]
         )
         # middle=side(
             # units=[(OUTER_RBC_UNIT_ID, 28)],
         # )
-    )
+    ),
+     wave3=wave(
+        left = side(
+            units = [(OUTER_RBC_UNIT_ID, 50)]
+        ),
+        right = side(
+            units = [(OUTER_RBC_UNIT_ID, 50)]
+        )
+        # middle=side(
+            # units=[(OUTER_RBC_UNIT_ID, 28)],
+        # )
+    ),
 )
 
 COMMANDER_STATE = {
@@ -151,7 +163,7 @@ def skip() -> None:
 
 def skip_burst_blocking() -> None:
     for _ in range(SKIP_COUNT):
-        time.sleep(random.randrange(40, 100) / 100)
+        time.sleep(random.randrange(21, 63) / 100)
         skip()
 
 
