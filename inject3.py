@@ -19,6 +19,7 @@ CAPTURE_FOLDER = "captures"
 os.makedirs(CAPTURE_FOLDER, exist_ok=True)
 CONTROL_LOG = os.path.join(CAPTURE_FOLDER, "inject3_control.log")
 SEND_FILE = os.path.join(CAPTURE_FOLDER, "inject3_send.txt")
+SEND_FILE_RECENT_LIMIT = 200
 LATEST_SERVER_FOLDER = os.path.join(
     "empire",
     "29_june_outer_realm",
@@ -258,10 +259,33 @@ def queue_packet(line: str, *, source: str) -> None:
     control_log(f"queued source={source} packet={packet_preview(packet)!r}")
 
 
+def trim_send_file() -> None:
+    global send_file_offset
+
+    try:
+        with open(SEND_FILE, "r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except FileNotFoundError:
+        return
+
+    if len(lines) <= SEND_FILE_RECENT_LIMIT:
+        return
+
+    recent_lines = lines[-SEND_FILE_RECENT_LIMIT:]
+    with open(SEND_FILE, "w", encoding="utf-8") as handle:
+        handle.writelines(recent_lines)
+        send_file_offset = handle.tell()
+    control_log(
+        f"send_file_trimmed kept={SEND_FILE_RECENT_LIMIT} "
+        f"removed={len(lines) - len(recent_lines)}"
+    )
+
+
 async def send_file_watcher() -> None:
     global send_file_offset
 
     open(SEND_FILE, "a", encoding="utf-8").close()
+    trim_send_file()
     send_file_offset = os.path.getsize(SEND_FILE)
     control_log(f"send_file_ready path={SEND_FILE}")
 
@@ -279,6 +303,7 @@ async def send_file_watcher() -> None:
                     line = line.strip()
                     if line:
                         queue_packet(line, source="send_file")
+                trim_send_file()
         except Exception as exc:
             control_log(f"send_file_error error={exc!r}")
         await asyncio.sleep(0.25)
