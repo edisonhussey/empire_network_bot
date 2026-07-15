@@ -25,22 +25,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PROXY_SEND_FILE = REPO_ROOT / "captures" / "inject3_send.txt"
 
 DEFAULT_ATTACK = Attack(
-    # wave1=wave(
-    #     middle=side(
-    #         tools=[(Tool.SCALING_LADDER, 10)],
-    #         units=[(Troop.VALKYRIE_RANGER_0, 15)],
-    #     )
-    # ),
-    # wave2=wave(
-    #     left=side(
-    #         tools=[(Tool.SCALING_LADDER, 10)],
-    #         units=[(Troop.VALKYRIE_RANGER_0, 5)],
-    #     )
-    # ),
+
     wave1 = wave(
         left= side(
             tools=[],
-            units = [(Troop.DEMON_HORROR), 50]
+            units = [(Troop.CROSSBOWMAN), 50]
         )
     )
 )

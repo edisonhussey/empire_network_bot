@@ -1,4 +1,4 @@
- mitmdump -s inject3.py
+mitmdump -s inject3.py
 
 open a new terminal and type commands like this 
 

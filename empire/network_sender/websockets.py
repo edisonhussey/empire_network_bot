@@ -30,7 +30,14 @@ class WebsocketType(Enum):
         return urlparse(self.url).hostname or ""
 
     def matches_url(self, url: str) -> bool:
-        return (urlparse(url).hostname or "") == self.host
+        host = urlparse(url).hostname or ""
+        if host == self.host:
+            return True
+        return (
+            host.endswith(".goodgamestudios.com")
+            and "-game" in host
+            and host.startswith("ep-live-")
+        )
 
 
 OUTER_WEBSOCKET = WebsocketType.OUTER_WEBSOCKET

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import queue
 import pprint
@@ -10,6 +11,7 @@ import os
 import sys
 import threading
 import time
+import zlib
 
 from empire.network_sender.websockets import OUTER_WEBSOCKET
 
@@ -29,6 +31,7 @@ current_file = None
 last_dump = datetime.now()
 active_flow = None
 websocket_flows = {}
+zlib_streams = {}
 send_queue = queue.Queue()
 inject_tasks = set()
 terminal_thread_started = False
@@ -122,6 +125,55 @@ def format_message_for_log(message: str) -> str:
         return pretty
 
     return pprint.pformat(message, width=120) if "\n" not in message else message
+
+
+def _decode_utf8(content: bytes) -> str | None:
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _inflate_bytes(content: bytes, flow_identifier: str) -> bytes | None:
+    for wbits in (zlib.MAX_WBITS, -zlib.MAX_WBITS):
+        try:
+            return zlib.decompress(content, wbits)
+        except zlib.error:
+            pass
+
+    if content.endswith(b"\x00\x00\xff\xff"):
+        decompressor = zlib_streams.get(flow_identifier)
+        if decompressor is None:
+            decompressor = zlib.decompressobj()
+            zlib_streams[flow_identifier] = decompressor
+        try:
+            return decompressor.decompress(content)
+        except zlib.error:
+            zlib_streams.pop(flow_identifier, None)
+
+    return None
+
+
+def decode_message_content(content: bytes, *, is_text: bool, flow_identifier: str) -> str:
+    decoded = _decode_utf8(content)
+    if decoded is not None:
+        return decoded
+
+    inflated = _inflate_bytes(content, flow_identifier)
+    if inflated is not None:
+        inflated_text = _decode_utf8(inflated)
+        if inflated_text is not None:
+            return inflated_text
+
+    prefix = "TEXT" if is_text else "BINARY"
+    return "\n".join(
+        [
+            f"{prefix} FRAME",
+            f"  bytes: {len(content)}",
+            f"  hex: {content.hex()}",
+            f"  base64: {base64.b64encode(content).decode('ascii')}",
+        ]
+    )
 
 
 def write_latest_server_message(ts: datetime, direction: str, formatted: str) -> None:
@@ -243,22 +295,22 @@ def handle_websocket_message(flow: http.HTTPFlow):
     global active_flow, current_file, last_dump
 
     identifier = remember_websocket(flow)
-    if is_target_websocket(flow):
+    target = is_target_websocket(flow)
+    if target:
         active_flow = flow
+    else:
+        return
     
     msg = flow.websocket.messages[-1]
     direction = "CLIENT -> SERVER" if msg.from_client else "SERVER -> CLIENT"
     ts = datetime.now()
     
     content = msg.content
-    decoded = None
-    if msg.is_text:
-        decoded = content.decode('utf-8', errors='replace')
-    else:
-        try:
-            decoded = content.decode('utf-8', errors='replace')
-        except:
-            decoded = content.hex()
+    decoded = decode_message_content(
+        content,
+        is_text=msg.is_text,
+        flow_identifier=identifier,
+    )
     
     if current_file is None or (ts - last_dump).total_seconds() >= 10:
         if current_file:
@@ -274,8 +326,7 @@ def handle_websocket_message(flow: http.HTTPFlow):
     current_file.flush()
 
     if (
-        is_target_websocket(flow)
-        and not msg.from_client
+        not msg.from_client
         and should_write_latest_server_message(decoded)
     ):
         write_latest_server_message(ts, direction, formatted)
@@ -300,6 +351,7 @@ def handle_websocket_end(flow: http.HTTPFlow):
 
     identifier = flow_id(flow)
     websocket_flows.pop(identifier, None)
+    zlib_streams.pop(identifier, None)
     if flow is active_flow:
         active_flow = None
     control_log(f"websocket_end id={identifier} url={flow.request.url}")
