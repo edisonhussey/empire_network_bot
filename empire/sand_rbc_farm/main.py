@@ -73,8 +73,20 @@ NOT_LV_61 = Attack(
     ),
 )
 
+game_state = dict()
+
+def preliminary_scan():
+    #creates the json for the , without actually sending any attacks, so just the adi for snooping randomized but +5 sec between each request. and using GAA scans in appropriate areas around the castle up to 50 distance away one time to set up the coordinates of adi. 
+    
+    #subsequent runs need to precede the adi with gaa scans also. to look reliastic and not the same requests so randomized gaa but such that they ensure the target is in it. 
 
 if __name__ == "__main__":
     ## assume you are in sand kingdom map view right now
-    ## 
+    ## first 9 LID that are valid are in fact shield maiden commsn, 
+    #VALID LID TO USE ARE 0,2, 3, 4,5 ........ 35 . only LID 1 is ignored and not counted. we track the rest. between sessions too. 
+    #023456789 are onli dvalid LID to use with Lv61 otherwise we aritifically increase that towers cooldown by a random amount 30 min - 60 min to hope a 0-9 commander availble. 
+    # at the asme time do not bother using the crowwbowmn attack on any other level rbc. 
+    # IF we have no data on , we do a 
+    #extreely important to put in backoff exponential for errors log them in this folder, and in all areas add ranomized addding and dont overload the server. 
+    
 
