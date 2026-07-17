@@ -61,7 +61,7 @@ REQUEST_SEQUENCE_TIMEOUT_MINUTES = 0  # 0 means no automatic stop.
 AUTO_REFRESH_SCAN = False
 
 VALID_LIDS = (0, *range(2, 36))
-SHIELD_MAIDEN_LIDS = (0, *range(2, 11))
+SHIELD_MAIDEN_LIDS = (0, *range(2, 10))
 LV61_LIDS = SHIELD_MAIDEN_LIDS
 NON_LV61_LIDS = tuple(lid for lid in VALID_LIDS if lid not in SHIELD_MAIDEN_LIDS)
 LV61 = 61
@@ -80,20 +80,20 @@ LEVEL_61 = Attack(
 
 NOT_LV_61 = Attack(
     wave1=wave(
-        left=side(tools=[(Tool.SCALING_LADDER, 7)], units=[(Troop.VALKYRIE_RANGER_10, 50)]),
-        right=side(tools=[(Tool.SCALING_LADDER, 7)], units=[(Troop.VALKYRIE_RANGER_10, 50)]),
+        left=side(tools=[(Tool.SCALING_LADDER, 7)], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+        right=side(tools=[(Tool.SCALING_LADDER, 7)], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
     ),
     wave2=wave(
-        left=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 50)]),
-        right=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 50)]),
+        left=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+        right=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
     ),
     wave3=wave(
-        left=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 50)]),
-        right=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 50)]),
+        left=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+        right=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
     ),
     wave4=wave(
-        left=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 50)]),
-        right=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 50)]),
+        left=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+        right=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
     ),
 )
 
