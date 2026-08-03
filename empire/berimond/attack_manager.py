@@ -848,7 +848,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--login-capture", type=Path, default=DEFAULT_LOGIN_CAPTURE)
     parser.add_argument("--capture", type=Path, default=DEFAULT_CAPTURE)
     parser.add_argument("--state", type=Path, default=DEFAULT_STATE)
-    parser.add_argument("--max-active", type=int, default=9)
+    parser.add_argument("--max-active", type=int, default=10)
     parser.add_argument("--max-successes", type=int, default=0)
     parser.add_argument("--target-type", type=int, default=2)
     parser.add_argument("--scan-radius", type=int, default=350)
@@ -879,8 +879,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if args.max_active < 1 or args.max_active > 9:
-        raise ValueError("--max-active must be between 1 and 9 for this runner")
+    if args.max_active < 1 or args.max_active > 11:
+        raise ValueError("--max-active must be between 1 and 11 for this runner")
     if args.attack_gap_min < 5 or args.attack_gap_max < args.attack_gap_min:
         raise ValueError("attack gap must be at least 5s and max >= min")
 

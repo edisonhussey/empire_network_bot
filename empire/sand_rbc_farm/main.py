@@ -51,7 +51,7 @@ CRA_ERROR_TARGET_BACKOFF_RANGE = (12 * 60 + 7.0, 31 * 60 + 43.0)
 TARGET_FAIL_BACKOFF_BASE_SECONDS = 10 * 60
 TARGET_FAIL_BACKOFF_MAX_SECONDS = 6 * 60 * 60
 TARGET_FAIL_BACKOFF_JITTER_RANGE = (0.88, 1.27)
-MAP_SCAN_RADIUS = 50
+MAP_SCAN_RADIUS = 80
 MAX_TARGET_DISTANCE = 100.0
 MAP_CHUNK_SIZE = 13
 SETUP_SCAN_DELAY_RANGE = (10.4, 14.8)
@@ -78,42 +78,81 @@ LEVEL_61 = Attack(
     )
 )
 
+# NOT_LV_61 = Attack(
+#     wave1=wave(
+#         left=side(tools=[(Tool.SCALING_LADDER, 7)], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+#         right=side(tools=[(Tool.SCALING_LADDER, 7)], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+#     ),
+#     wave2=wave(
+#         left=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+#         right=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+#     ),
+#     wave3=wave(
+#         left=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+#         right=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+#     ),
+#     wave4=wave(
+#         left=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+#         right=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+#     ),
+# )
+
+
+# NOT_LV_50_AND_BELOW = Attack(
+#     wave1=wave(
+#         left=side(tools=[(Tool.SCALING_LADDER, 7)], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+#         right=side(tools=[(Tool.SCALING_LADDER, 7)], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+#     ),
+#     wave2=wave(
+#         left=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+#         right=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+#     ),
+#     wave3=wave(
+#         left=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+#         right=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+#     ),
+#     wave4=wave(
+#         left=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+#         right=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+#     ),
+# )
+
 NOT_LV_61 = Attack(
     wave1=wave(
-        left=side(tools=[(Tool.SCALING_LADDER, 7)], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
-        right=side(tools=[(Tool.SCALING_LADDER, 7)], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+        left=side(tools=[(Tool.SCALING_LADDER, 7)], units=[(Troop.RELIC_SHORTBOWMAN_0, 30)]),
+        right=side(tools=[(Tool.SCALING_LADDER, 7)], units=[(Troop.RELIC_SHORTBOWMAN_0, 30)]),
     ),
     wave2=wave(
-        left=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
-        right=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+        left=side(tools=[], units=[(Troop.RELIC_SHORTBOWMAN_0, 30)]),
+        right=side(tools=[], units=[(Troop.RELIC_SHORTBOWMAN_0, 30)]),
     ),
     wave3=wave(
-        left=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
-        right=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+        left=side(tools=[], units=[(Troop.RELIC_SHORTBOWMAN_0, 30)]),
+        right=side(tools=[], units=[(Troop.RELIC_SHORTBOWMAN_0, 30)]),
     ),
     wave4=wave(
-        left=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
-        right=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+        left=side(tools=[], units=[(Troop.RELIC_SHORTBOWMAN_0, 30)]),
+        right=side(tools=[], units=[(Troop.RELIC_SHORTBOWMAN_0, 30)]),
     ),
 )
 
 
 NOT_LV_50_AND_BELOW = Attack(
     wave1=wave(
-        left=side(tools=[(Tool.SCALING_LADDER, 7)], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
-        right=side(tools=[(Tool.SCALING_LADDER, 7)], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+        left=side(tools=[(Tool.SCALING_LADDER, 7)], units=[(Troop.RELIC_SHORTBOWMAN_0, 30)]),
+        right=side(tools=[(Tool.SCALING_LADDER, 7)], units=[(Troop.RELIC_SHORTBOWMAN_0, 30)]),
     ),
     wave2=wave(
-        left=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
-        right=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+        left=side(tools=[], units=[(Troop.RELIC_SHORTBOWMAN_0, 30)]),
+        right=side(tools=[], units=[(Troop.RELIC_SHORTBOWMAN_0, 30)]),
     ),
     wave3=wave(
-        left=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
-        right=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+        left=side(tools=[], units=[(Troop.RELIC_SHORTBOWMAN_0, 30)]),
+        right=side(tools=[], units=[(Troop.RELIC_SHORTBOWMAN_0, 30)]),
     ),
     wave4=wave(
-        left=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
-        right=side(tools=[], units=[(Troop.VALKYRIE_RANGER_10, 30)]),
+        left=side(tools=[], units=[(Troop.RELIC_SHORTBOWMAN_0, 30)]),
+        right=side(tools=[], units=[(Troop.RELIC_SHORTBOWMAN_0, 30)]),
     ),
 )
 
