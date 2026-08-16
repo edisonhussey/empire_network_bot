@@ -1,0 +1,10 @@
+{
+  "attacks_sent": 211,
+  "last_cra": null,
+  "max_attacks": 2000,
+  "pending": null,
+  "running": false,
+  "started_at": 1786823554,
+  "stop_reason": "keyboard_interrupt",
+  "stopped_at": 1786841707
+}

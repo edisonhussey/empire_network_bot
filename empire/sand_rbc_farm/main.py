@@ -20,7 +20,7 @@ else:
 
 from empire.attacks.attack import Attack, side, wave
 from empire.attacks.troops import Troop
-from empire.game_data.tools import Tool
+from empire.game_data.tools_old import Tool
 
 HERE = Path(__file__).resolve().parent
 COMMANDER_STATE_PATH = HERE / "commander_state.json"

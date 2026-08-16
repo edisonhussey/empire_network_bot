@@ -9,3 +9,6 @@ empire/29_june_outer_realm/latest_5_server_messages
 .vscode
 old_scripts
 empire/sand_rbc_farm/logs
+empire/bot/psql_connect.ini
+empire/bot/logs
+empire/bot/rbc_proxy_listener.log

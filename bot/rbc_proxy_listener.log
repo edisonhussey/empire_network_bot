@@ -1,0 +1,155 @@
+[2026-08-03 02:44:13.357] rbc_proxy_listener_loaded receive_only=yes
+[2026-08-03 02:44:25.034] websocket_start id=4556480240 selected=yes target=outer_websocket url=https://ep-live-us1-game.goodgamestudios.com/
+[2026-08-03 02:44:25.040] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024425.log
+[2026-08-03 02:44:29.247] websocket_start id=4556485616 selected=no url=https://sws.helpshift.com/subscribe/websocket/?origin_v3=EJTHx10V8b4nksdeN2k4ndpCYqE%2FWn%2F7Shfpp%2Fh6D963Kmnh5%2FFhmxtMwqx3DRAMFE5G7vu%2B%2FgmlmB5Gny6y4lZ8i6vbSzGyUlriHFyJBKwMJlJ4v6vXtoihSjOVOxAj8u3bghFkEBJwC4F7mZdcTIz%2B9fslRi5zTD0LhGEBpDE%3D--2S2F0SpD5fT%2F1lebv6fNqVbRNTMhVAjDY0EUMSy8tNo%3D&platform_id=ggs-ef_platform_20240614140842947-944c8ac37147738&domain=ggs-ef&hs_session_id=pid_did:ggs-ef_profile_2ee53f681b03c368b9163c9c29a064cfc508e468:14aaec58-4879-4441-ad47-138a0fdaf602
+[2026-08-03 02:44:32.334] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:44:32.337] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:44:32.341] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:44:32.344] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:44:32.346] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:44:32.353] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:44:32.371] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:44:32.402] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:44:32.423] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:44:35.201] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024435.log
+[2026-08-03 02:44:56.900] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024456.log
+[2026-08-03 02:44:57.024] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:44:57.078] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:44:57.085] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:44:57.097] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:15.169] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024515.log
+[2026-08-03 02:45:24.567] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:24.975] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:24.980] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:25.236] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024525.log
+[2026-08-03 02:45:25.366] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:25.373] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:25.405] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:36.680] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024536.log
+[2026-08-03 02:45:48.156] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024548.log
+[2026-08-03 02:45:48.319] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:45:48.326] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:45:48.333] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:45:48.345] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:45:48.353] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:45:48.365] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:45:48.484] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:45:48.496] rbc_upsert npc_rows=7 db_writes=7
+[2026-08-03 02:45:48.550] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:45:50.500] rbc_upsert npc_rows=5 db_writes=5
+[2026-08-03 02:45:50.509] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:45:50.512] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:45:50.520] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:45:50.528] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:45:50.538] rbc_upsert npc_rows=7 db_writes=7
+[2026-08-03 02:45:52.805] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:52.814] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:52.818] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:52.822] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:52.825] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:52.829] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:52.895] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:52.906] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:52.911] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:54.895] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:54.903] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:54.908] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:54.912] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:45:58.429] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024558.log
+[2026-08-03 02:46:05.954] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:46:05.967] rbc_upsert npc_rows=4 db_writes=4
+[2026-08-03 02:46:05.981] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:46:05.987] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:46:05.993] rbc_upsert npc_rows=5 db_writes=5
+[2026-08-03 02:46:06.013] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:46:06.043] rbc_upsert npc_rows=8 db_writes=8
+[2026-08-03 02:46:06.079] rbc_upsert npc_rows=5 db_writes=5
+[2026-08-03 02:46:06.118] rbc_upsert npc_rows=7 db_writes=7
+[2026-08-03 02:46:07.131] rbc_upsert npc_rows=8 db_writes=8
+[2026-08-03 02:46:07.136] rbc_upsert npc_rows=7 db_writes=7
+[2026-08-03 02:46:07.142] rbc_upsert npc_rows=4 db_writes=4
+[2026-08-03 02:46:07.150] rbc_upsert npc_rows=8 db_writes=8
+[2026-08-03 02:46:07.281] rbc_upsert npc_rows=5 db_writes=5
+[2026-08-03 02:46:07.287] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:46:07.294] rbc_upsert npc_rows=8 db_writes=8
+[2026-08-03 02:46:07.301] rbc_upsert npc_rows=5 db_writes=5
+[2026-08-03 02:46:25.412] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024625.log
+[2026-08-03 02:46:51.465] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024651.log
+[2026-08-03 02:47:02.447] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024702.log
+[2026-08-03 02:47:13.237] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024713.log
+[2026-08-03 02:47:25.416] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024725.log
+[2026-08-03 02:47:45.288] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024745.log
+[2026-08-03 02:47:57.298] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024757.log
+[2026-08-03 02:48:14.266] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024814.log
+[2026-08-03 02:48:25.428] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024825.log
+[2026-08-03 02:48:49.226] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024849.log
+[2026-08-03 02:48:49.385] rbc_upsert npc_rows=5 db_writes=5
+[2026-08-03 02:48:49.396] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:48:49.410] rbc_upsert npc_rows=8 db_writes=8
+[2026-08-03 02:48:49.418] rbc_upsert npc_rows=5 db_writes=5
+[2026-08-03 02:48:49.439] rbc_upsert npc_rows=8 db_writes=8
+[2026-08-03 02:48:49.450] rbc_upsert npc_rows=7 db_writes=7
+[2026-08-03 02:48:49.457] rbc_upsert npc_rows=4 db_writes=4
+[2026-08-03 02:48:49.473] rbc_upsert npc_rows=8 db_writes=8
+[2026-08-03 02:49:00.174] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024900.log
+[2026-08-03 02:49:06.299] rbc_proxy_listener_done
+[2026-08-03 02:49:06.322] rbc_proxy_listener_loaded receive_only=yes
+[2026-08-03 02:49:14.733] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024914.log
+[2026-08-03 02:49:25.414] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024925.log
+[2026-08-03 02:49:33.906] rbc_upsert npc_rows=8 db_writes=8
+[2026-08-03 02:49:33.944] rbc_upsert npc_rows=4 db_writes=4
+[2026-08-03 02:49:33.975] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:49:33.986] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:49:33.998] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:49:34.042] rbc_upsert npc_rows=5 db_writes=5
+[2026-08-03 02:49:40.201] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024940.log
+[2026-08-03 02:49:40.366] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:49:40.374] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:49:40.382] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:49:40.389] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:49:40.403] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:49:40.410] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:49:40.453] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:49:40.462] rbc_upsert npc_rows=7 db_writes=7
+[2026-08-03 02:49:40.469] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:49:43.303] rbc_upsert npc_rows=5 db_writes=5
+[2026-08-03 02:49:43.312] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:49:43.319] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:49:43.328] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:49:43.336] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:49:43.346] rbc_upsert npc_rows=7 db_writes=7
+[2026-08-03 02:49:47.971] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:49:47.978] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:49:48.042] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:49:48.056] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:49:48.059] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:49:48.064] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:49:48.093] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:49:48.121] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:49:48.132] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:49:50.242] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_024950.log
+[2026-08-03 02:49:50.246] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:49:50.254] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:49:50.259] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:49:50.270] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:49:50.281] rbc_upsert npc_rows=12 db_writes=12
+[2026-08-03 02:50:09.109] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_025009.log
+[2026-08-03 02:50:09.283] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:50:09.293] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:50:09.303] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:50:09.319] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:50:09.328] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:50:09.337] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:50:09.427] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:50:09.437] rbc_upsert npc_rows=7 db_writes=7
+[2026-08-03 02:50:09.446] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:50:17.575] rbc_upsert npc_rows=5 db_writes=5
+[2026-08-03 02:50:17.583] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:50:17.589] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:50:17.598] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:50:17.606] rbc_upsert npc_rows=6 db_writes=6
+[2026-08-03 02:50:17.615] rbc_upsert npc_rows=7 db_writes=7
+[2026-08-03 02:50:25.425] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_025025.log
+[2026-08-03 02:50:36.054] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_025036.log
+[2026-08-03 02:50:48.326] capture_file path=/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/bot/logs/gge_20260803_025048.log
+[2026-08-03 02:50:54.669] rbc_proxy_listener_done
