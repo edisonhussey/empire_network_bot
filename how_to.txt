@@ -1,0 +1,83 @@
+How to run the proxy bot
+========================
+
+This is based on what was actually active last night / this morning, not just
+the newest file by modified time.
+
+Run from the repo root:
+
+  cd /Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot
+  source venv/bin/activate
+
+1. Start the mitmproxy listener
+
+For the bot-controlled RBC/Sands run, use:
+
+  mitmdump -s empire/bot/rbc_proxy_listener.py
+
+Leave that terminal open, then run the game/browser through proxy
+127.0.0.1:8080 and log in normally.
+
+Evidence this is the last-night listener:
+
+  empire/bot/rbc_proxy_listener.log
+
+It contains Aug 20 night / Aug 21 morning lines like:
+
+  rbc_proxy_listener_loaded receive_only=no controlled_by=proxy_control.json
+  proxy_cra_sent ...
+  proxy_cra_ack ...
+
+2. Start the bot from task definitions
+
+Use the combined wrapper. In auto mode it now reads the enabled tasks in
+bot/scheduler.py:
+
+  python bot/proxy_botv2.py --start --max-attacks 200
+
+If only Sands tasks are enabled, this starts Sands. If only Storm tasks are
+enabled, this starts Storm and uses the enabled Storm task.
+
+Status:
+
+  python bot/proxy_botv2.py --status
+
+Stop the bot driver, leaving mitmproxy open:
+
+  python bot/proxy_botv2.py --end
+
+Ctrl+C in the proxy_botv2.py terminal also stops the control loop.
+
+3. Old Sands-only wrapper
+
+bot/proxy_bot.py is kept for the old Sands/RBC flow only. It hardcodes:
+
+  mode: sands
+  runner: proxy_bot.py
+
+4. Important files
+
+  empire/bot/rbc_proxy_listener.py   mitmproxy listener used by the controlled bot
+  empire/bot/rbc_proxy_listener.log  listener/bot action log
+  empire/bot/proxy_control.json      runtime control state
+  bot/proxy_bot.py                   Sands-only wrapper
+  bot/proxy_botv2.py                 combined Sands/Storm driver
+  bot/scheduler.py                   hardcoded enabled tasks and commander allocation
+
+5. About proxy_botv2.py
+
+  bot/proxy_botv2.py
+
+Use this for normal runs. In --mode auto, it decides from the enabled
+bot/scheduler.py task definitions. You can still force Storm with --mode storm
+or force Sands with --mode sands if needed.
+
+6. About inject3.py
+
+Shell history and start_inject3.txt show the old/manual command:
+
+  mitmdump -s inject3.py
+
+That is the manual injector flow where packets are appended to
+captures/inject3_send.txt. It is separate from the controlled proxy bot run
+that writes proxy_control.json and logs proxy_cra_sent/proxy_cra_ack.

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import importlib
 import json
+import math
 import os
 import pprint
 import random
@@ -28,9 +30,24 @@ if str(REPO_ROOT) not in sys.path:
 
 from empire.bot.populate_database_rbc import adi_target_row, gaa_level_from_value, upsert_rbc_rows
 from empire.bot import bot
+from empire.bot.storm_database import (
+    STORM_KID,
+    cleanup_expired_storm_targets,
+    ensure_storm_tables,
+    mark_storm_result,
+    record_storm_attack,
+    release_storm_target,
+    reserve_storm_target,
+    storm_targets_from_gaa,
+    upsert_storm_targets,
+)
 from empire.bot.test_psql_connection import connect, read_connection_config
 from empire.network_sender.websockets import OUTER_WEBSOCKET
 from empire.sand_rbc_farm.main import AREA_BARRON, parse_xt_packet
+
+
+bot = importlib.reload(bot)
+task_scheduler = importlib.reload(importlib.import_module("bot.scheduler"))
 
 
 HERE = REPO_ROOT / "empire" / "bot"
@@ -41,6 +58,16 @@ ROLL_SECONDS = 10
 CONTROL_POLL_SECONDS = 1.0
 NO_TARGET_RETRY_RANGE = (55.0, 145.0)
 TARGET_WEBSOCKET = OUTER_WEBSOCKET
+STORM_TARGET_LEVELS_DEFAULT = (60, 70, 80)
+STORM_SCAN_INTERVAL_DEFAULT = (4.0, 6.0)
+STORM_SCAN_RADIUS_DEFAULT = 52
+STORM_TARGET_FRESH_SECONDS_DEFAULT = 120
+MAX_CONSECUTIVE_CRA_ERRORS = 1
+MAX_HOURLY_CRA_ERRORS = 5
+CRA_STATUS_REASONS = {
+    # Observed server reject: requested LID is already assigned to another active march.
+    256: "lord_in_use",
+}
 
 current_file = None
 last_roll = datetime.now()
@@ -50,6 +77,46 @@ zlib_streams = {}
 db_conn = None
 control_task = None
 next_proxy_action_epoch = 0.0
+last_client_server_header = bot.farm.SAND_SERVER_HEADER
+
+CONSOLE_LOG_PREFIXES = (
+    "storm_gaa_scan_sent",
+    "storm_gaa_scan_new_pass",
+    "storm_adi_sent",
+    "storm_adi_ok",
+    "storm_adi_skip",
+    "storm_cra_pending",
+    "proxy_cra_sent",
+    "proxy_cra_ack",
+    "proxy_cra_error",
+    "proxy_cat_return",
+    "proxy_stopped",
+    "proxy_loop_error",
+    "storm_gaa_upsert_failed",
+    "rbc_upsert_failed",
+    "cra_ack_ignored",
+)
+
+
+def estimated_return_seconds(outbound_seconds) -> int:
+    helper = getattr(bot, "estimated_return_seconds", None)
+    if callable(helper):
+        return int(helper(outbound_seconds))
+    try:
+        outbound = float(outbound_seconds or 0)
+    except (TypeError, ValueError):
+        outbound = 0.0
+    if outbound > 0:
+        return int(max(0.0, outbound * 1.3))
+    return 30 * 60
+
+
+def cra_status_reason(status) -> str:
+    try:
+        status_code = int(status)
+    except (TypeError, ValueError):
+        return "unknown"
+    return CRA_STATUS_REASONS.get(status_code, "unknown")
 
 
 def control_log(message: str) -> None:
@@ -57,6 +124,11 @@ def control_log(message: str) -> None:
     with CONTROL_LOG.open("a", encoding="utf-8") as handle:
         handle.write(f"[{ts}] {message}\n")
         handle.flush()
+    if message.startswith(CONSOLE_LOG_PREFIXES):
+        try:
+            ctx.log.info(message)
+        except Exception:
+            pass
 
 
 def load_control() -> dict:
@@ -81,7 +153,30 @@ def db():
     if db_conn is None or db_conn.closed:
         db_conn = connect(read_connection_config())
         bot.ensure_bot_tables(db_conn)
+        ensure_storm_tables(db_conn)
     return db_conn
+
+
+def hydrate_control_awaiting(state: dict, *, include_pending: bool | None = None) -> dict:
+    changed = False
+    if include_pending is None:
+        include_pending = bool(state.get("running"))
+    try:
+        if include_pending and not isinstance(state.get("pending"), dict):
+            pending = bot.load_proxy_pending_db(db())
+            if pending is not None:
+                state["pending"] = pending
+                changed = True
+        if not isinstance(state.get("last_cra"), dict):
+            last_cra = bot.load_proxy_last_cra_db(db())
+            if last_cra is not None:
+                state["last_cra"] = last_cra
+                changed = True
+    except Exception as exc:
+        control_log(f"proxy_db_hydrate_failed error={exc!r}")
+    if changed:
+        save_control(state)
+    return state
 
 
 def pretty_json(value: str) -> str | None:
@@ -212,30 +307,246 @@ def inject_packet(packet: str) -> None:
     ctx.master.commands.call("inject.websocket", active_flow, False, packet.encode("utf-8"))
 
 
-def xt_packet(command: str, payload: dict, *, request_id: int = 1) -> str:
+def xt_packet(
+    command: str,
+    payload: dict,
+    *,
+    request_id: int = 1,
+    server_header: str | None = None,
+) -> str:
     return "%xt%{}%{}%{}%{}%".format(
-        bot.farm.SAND_SERVER_HEADER,
+        server_header or last_client_server_header or bot.farm.SAND_SERVER_HEADER,
         command,
         int(request_id),
         json.dumps(payload, separators=(",", ":")),
     )
 
 
-def create_adi_packet(target: dict) -> str:
+def create_adi_packet(
+    target: dict,
+    *,
+    source: tuple[int, int] | None = None,
+    kingdom_id: int | None = None,
+) -> str:
+    if source is None:
+        sx, sy = bot.farm.SOURCE_X, bot.farm.SOURCE_Y
+    else:
+        sx, sy = int(source[0]), int(source[1])
     return xt_packet(
         "adi",
         {
-            "SX": bot.farm.SOURCE_X,
-            "SY": bot.farm.SOURCE_Y,
+            "SX": sx,
+            "SY": sy,
             "TX": int(target["x"]),
             "TY": int(target["y"]),
-            "KID": bot.SANDS_KID,
+            "KID": int(kingdom_id if kingdom_id is not None else target.get("kingdom_id", bot.SANDS_KID)),
         },
     )
 
 
+def create_gaa_packet(probe: dict) -> str:
+    try:
+        kid = int(probe.get("kid", 4))
+        ax1 = int(probe["ax1"])
+        ay1 = int(probe["ay1"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"bad gaa probe coordinates: {probe!r}") from exc
+
+    ax2 = int(probe.get("ax2", ax1 + bot.farm.MAP_CHUNK_SIZE - 1))
+    ay2 = int(probe.get("ay2", ay1 + bot.farm.MAP_CHUNK_SIZE - 1))
+    return xt_packet(
+        "gaa",
+        {"KID": kid, "AX1": ax1, "AY1": ay1, "AX2": ax2, "AY2": ay2},
+        request_id=int(probe.get("request_id", 1) or 1),
+        server_header=probe.get("server_header"),
+    )
+
+
+def chunk_start(value: int) -> int:
+    return max(0, int(value) - (int(value) % bot.farm.MAP_CHUNK_SIZE))
+
+
+def storm_scan_chunks(center_x: int, center_y: int, radius: int) -> list[tuple[int, int]]:
+    offsets: list[tuple[int, int]] = []
+    steps = range(-int(radius), int(radius) + 1, bot.farm.MAP_CHUNK_SIZE)
+    for dx in steps:
+        for dy in steps:
+            if math.hypot(dx, dy) <= int(radius) + bot.farm.MAP_CHUNK_SIZE / 2:
+                offsets.append((dx, dy))
+    random.shuffle(offsets)
+    offsets.sort(key=lambda item: math.hypot(item[0], item[1]) + random.uniform(-22.0, 22.0))
+    return [
+        (chunk_start(center_x + dx - bot.farm.MAP_CHUNK_SIZE // 2), chunk_start(center_y + dy - bot.farm.MAP_CHUNK_SIZE // 2))
+        for dx, dy in offsets
+    ]
+
+
 def create_cra_packet(target: dict, lid: int) -> str:
     return xt_packet("cra", bot.build_attack_payload(target, lid))
+
+
+def int_or_none(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def active_storm_task(state: dict):
+    global task_scheduler
+    task_scheduler = importlib.reload(task_scheduler)
+    task_name = state.get("storm_task") or "storm_custom"
+    for task in task_scheduler.TASKS:
+        if task.name == task_name:
+            if not task.enabled:
+                raise RuntimeError(f"storm task disabled: {task_name}")
+            return task
+    raise RuntimeError(f"storm task not found: {task_name}")
+
+
+def storm_target_levels(state: dict, task) -> tuple[int, ...]:
+    raw_levels = state.get("target_levels")
+    if isinstance(raw_levels, list):
+        levels = tuple(sorted({int(value) for value in raw_levels}))
+        if levels:
+            return levels
+    if getattr(task, "target_levels", ()):
+        return tuple(int(level) for level in task.target_levels)
+    if task.target_level is not None:
+        return (int(task.target_level),)
+    return STORM_TARGET_LEVELS_DEFAULT
+
+
+def storm_source(state: dict) -> tuple[int, int, int]:
+    source = state.get("storm_source")
+    if not isinstance(source, dict):
+        raise RuntimeError("storm_source_missing")
+    sx = int(source["x"])
+    sy = int(source["y"])
+    hbw = int(source.get("hbw", bot.farm.HBW_VALUE))
+    return sx, sy, hbw
+
+
+def storm_scan_state(state: dict) -> dict:
+    scan = state.get("storm_scan")
+    if not isinstance(scan, dict):
+        sx, sy, _ = storm_source(state)
+        scan = {
+            "enabled": True,
+            "center_x": sx,
+            "center_y": sy,
+            "radius": STORM_SCAN_RADIUS_DEFAULT,
+            "min_seconds": STORM_SCAN_INTERVAL_DEFAULT[0],
+            "max_seconds": STORM_SCAN_INTERVAL_DEFAULT[1],
+            "next_at": 0.0,
+            "cursor": 0,
+            "chunks": [],
+        }
+        state["storm_scan"] = scan
+    scan.setdefault("enabled", True)
+    scan.setdefault("radius", STORM_SCAN_RADIUS_DEFAULT)
+    scan.setdefault("min_seconds", STORM_SCAN_INTERVAL_DEFAULT[0])
+    scan.setdefault("max_seconds", STORM_SCAN_INTERVAL_DEFAULT[1])
+    scan.setdefault("next_at", 0.0)
+    scan.setdefault("cursor", 0)
+    scan.setdefault("chunks", [])
+    return scan
+
+
+def schedule_next_storm_scan(scan: dict) -> float:
+    min_seconds = max(1.0, float(scan.get("min_seconds", STORM_SCAN_INTERVAL_DEFAULT[0]) or STORM_SCAN_INTERVAL_DEFAULT[0]))
+    max_seconds = max(min_seconds, float(scan.get("max_seconds", STORM_SCAN_INTERVAL_DEFAULT[1]) or STORM_SCAN_INTERVAL_DEFAULT[1]))
+    delay = random.uniform(min_seconds, max_seconds)
+    scan["next_at"] = time.time() + delay
+    return delay
+
+
+def next_storm_scan_chunk(scan: dict) -> tuple[int, int]:
+    center_x = int(scan.get("center_x"))
+    center_y = int(scan.get("center_y"))
+    radius = int(scan.get("radius", STORM_SCAN_RADIUS_DEFAULT) or STORM_SCAN_RADIUS_DEFAULT)
+    chunks = scan.get("chunks")
+    if not isinstance(chunks, list) or not chunks:
+        chunks = storm_scan_chunks(center_x, center_y, radius)
+        scan["chunks"] = [[x, y] for x, y in chunks]
+        scan["cursor"] = 0
+    cursor = int(scan.get("cursor", 0) or 0)
+    if cursor >= len(chunks):
+        chunks = storm_scan_chunks(center_x, center_y, radius)
+        scan["chunks"] = [[x, y] for x, y in chunks]
+        scan["cursor"] = 0
+        cursor = 0
+        control_log("storm_gaa_scan_new_pass")
+    ax1, ay1 = chunks[cursor]
+    scan["cursor"] = cursor + 1
+    return int(ax1), int(ay1)
+
+
+def storm_scan_due(state: dict) -> bool:
+    if state.get("transport_only") or state.get("mode") != "storm" or not state.get("running") or state.get("pending"):
+        return False
+    scan = storm_scan_state(state)
+    return bool(scan.get("enabled", True)) and time.time() >= float(scan.get("next_at", 0.0) or 0.0)
+
+
+def send_storm_gaa_scan(state: dict) -> bool:
+    scan = storm_scan_state(state)
+    ax1, ay1 = next_storm_scan_chunk(scan)
+    probe = {
+        "kid": STORM_KID,
+        "ax1": ax1,
+        "ay1": ay1,
+        "ax2": ax1 + bot.farm.MAP_CHUNK_SIZE - 1,
+        "ay2": ay1 + bot.farm.MAP_CHUNK_SIZE - 1,
+        "server_header": last_client_server_header,
+    }
+    packet = create_gaa_packet(probe)
+    inject_packet(packet)
+    sent_at = bot.now_epoch()
+    delay = schedule_next_storm_scan(scan)
+    state["last_gaa_scan"] = {
+        "kid": STORM_KID,
+        "ax1": probe["ax1"],
+        "ay1": probe["ay1"],
+        "ax2": probe["ax2"],
+        "ay2": probe["ay2"],
+        "sent_at": sent_at,
+    }
+    save_control(state)
+    control_log(
+        f"storm_gaa_scan_sent kid={STORM_KID} chunk={probe['ax1']}:{probe['ay1']}-{probe['ax2']}:{probe['ay2']} "
+        f"next_in={delay:.1f}s"
+    )
+    return True
+
+
+def build_task_attack_payload(target: dict, lid: int, task, state: dict) -> dict:
+    sx, sy, hbw = storm_source(state)
+    ptt = int(state.get("storm_ptt", 1) or 1)
+    return {
+        "SX": sx,
+        "SY": sy,
+        "TX": int(target["x"]),
+        "TY": int(target["y"]),
+        "KID": int(task.kingdom_id),
+        "LID": int(lid),
+        "WT": 0,
+        "HBW": hbw,
+        "BPC": 0,
+        "ATT": 0,
+        "AV": 0,
+        "LP": 0,
+        "FC": 0,
+        "PTT": ptt,
+        "SD": 0,
+        "ICA": 0,
+        "CD": 99,
+        "A": task.attack_payload(),
+        "BKS": [],
+        "AST": [-1, -1, -1],
+        "RW": [[-1, 0] for _ in range(8)],
+        "ASCT": 0,
+    }
 
 
 def troop_count_from_payload(payload: dict) -> int:
@@ -278,17 +589,37 @@ def raw_target_available_lids(payload: dict) -> set[int]:
     return {lid for lid in (bot.row_lord_id(row) for row in commanders) if lid is not None}
 
 
+def adi_payload_matches_target(payload: dict, target: dict) -> bool:
+    ai = (payload.get("gaa") or {}).get("AI")
+    if not isinstance(ai, list) or len(ai) < 3:
+        return True
+    try:
+        packet_kid = int(payload.get("KID", (payload.get("gaa") or {}).get("KID", target["kingdom_id"])))
+        return (
+            packet_kid == int(target["kingdom_id"])
+            and int(ai[1]) == int(target["x"])
+            and int(ai[2]) == int(target["y"])
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def pause_next_action(seconds_range: tuple[float, float]) -> None:
     global next_proxy_action_epoch
     next_proxy_action_epoch = time.time() + random.uniform(*seconds_range)
 
 
-def stop_control(state: dict, reason: str) -> None:
+def stop_control(state: dict, reason: str, *, clear_awaiting: bool = True) -> None:
     state["running"] = False
     state["pending"] = None
     state["stopped_at"] = bot.now_epoch()
     state["stop_reason"] = reason
     save_control(state)
+    if clear_awaiting:
+        try:
+            bot.clear_proxy_awaiting_db(db())
+        except Exception as exc:
+            control_log(f"proxy_db_clear_failed reason={reason} error={exc!r}")
     control_log(f"proxy_stopped reason={reason}")
 
 
@@ -297,27 +628,230 @@ def increment_attacks_sent(state: dict) -> None:
     state["attacks_sent"] = attacks_sent
     max_attacks = int(state.get("max_attacks", 0) or 0)
     if max_attacks and attacks_sent >= max_attacks:
-        stop_control(state, f"max_attacks count={attacks_sent}")
+        stop_control(state, f"max_attacks count={attacks_sent}", clear_awaiting=False)
     else:
         save_control(state)
 
 
-def queue_pending_cra(state: dict, target: dict, lid: int) -> None:
+def active_sands_tasks() -> list:
+    global task_scheduler
+    task_scheduler = importlib.reload(task_scheduler)
+    return sorted(
+        [
+            task
+            for task in task_scheduler.TASKS
+            if task.enabled and int(task.kingdom_id) == int(bot.SANDS_KID)
+        ],
+        key=lambda task: task.priority,
+    )
+
+
+def sands_task_by_name(task_name: str | None):
+    if not task_name:
+        return None
+    for task in task_scheduler.TASKS:
+        if task.name == task_name:
+            return task
+    return None
+
+
+def reserve_next_sands_target(state: dict) -> tuple[object | None, dict | None]:
+    tasks = active_sands_tasks()
+    if not tasks:
+        return None, None
+    cursor = int(state.get("sands_task_cursor", 0) or 0) % len(tasks)
+    for offset in range(len(tasks)):
+        index = (cursor + offset) % len(tasks)
+        task = tasks[index]
+        if not bot.task_has_available_commander(db(), task):
+            continue
+        target = bot.reserve_target_for_task(db(), task)
+        if target is None:
+            continue
+        state["sands_task_cursor"] = (index + 1) % len(tasks)
+        target["task_name"] = task.name
+        return task, target
+    return None, None
+
+
+def queue_pending_cra(state: dict, target: dict, lid: int, task=None) -> None:
     due_at = time.time() + random.uniform(*bot.ADI_TO_CRA_DELAY_RANGE)
-    payload = bot.build_attack_payload(target, lid)
+    payload = bot.build_attack_payload(target, lid, task)
     state["pending"] = {
         "kind": "cra",
+        "target_kind": "rbc",
         "target": target,
+        "task_name": task.name if task is not None else target.get("task_name"),
         "lid": int(lid),
         "due_at": due_at,
         "army_count": troop_count_from_payload(payload),
+        "attack_payload": payload,
     }
     save_control(state)
+    bot.persist_proxy_pending(db(), state["pending"])
+    target_level = target.get("target_level", target.get("current_level", bot.TARGET_LEVEL))
     control_log(
         f"proxy_cra_pending target={target['x']}:{target['y']} kid={target['kingdom_id']} "
-        f"level={bot.TARGET_LEVEL} lid={lid} army_count={state['pending']['army_count']} "
+        f"task={state['pending'].get('task_name')} level={target_level} "
+        f"lid={lid} army_count={state['pending']['army_count']} "
         f"due_in={due_at - time.time():.1f}s"
     )
+
+
+def queue_pending_storm_cra(state: dict, target: dict, lid: int, task) -> None:
+    randomizer = task_scheduler.Randomizer()
+    due_at = time.time() + float(randomizer.attack_send_waiting_time())
+    payload = build_task_attack_payload(target, lid, task, state)
+    state["pending"] = {
+        "kind": "cra",
+        "target_kind": "storm_target",
+        "target": target,
+        "task_name": task.name,
+        "lid": int(lid),
+        "due_at": due_at,
+        "army_count": troop_count_from_payload(payload),
+        "attack_payload": payload,
+    }
+    save_control(state)
+    bot.persist_proxy_pending(db(), state["pending"])
+    control_log(
+        f"storm_cra_pending task={task.name} target={target['x']}:{target['y']} "
+        f"kid={target['kingdom_id']} level={target.get('target_level')} lid={lid} "
+        f"army_count={state['pending']['army_count']} due_in={due_at - time.time():.1f}s"
+    )
+
+
+def queue_verified_storm_cra(state: dict, pending: dict, target: dict, lid: int, task) -> None:
+    randomizer = task_scheduler.Randomizer()
+    due_at = time.time() + max(5.0, float(randomizer.attack_send_waiting_time()))
+    payload = build_task_attack_payload(target, lid, task, state)
+    pending.update(
+        {
+            "kind": "cra",
+            "target_kind": "storm_target",
+            "target": target,
+            "task_name": task.name,
+            "lid": int(lid),
+            "due_at": due_at,
+            "army_count": troop_count_from_payload(payload),
+            "attack_payload": payload,
+        }
+    )
+    state["pending"] = pending
+    save_control(state)
+    bot.persist_proxy_pending(db(), pending)
+    control_log(
+        f"storm_adi_ok task={task.name} target={target['x']}:{target['y']} "
+        f"level={target.get('target_level')} lid={lid} army_count={pending['army_count']} "
+        f"cra_due_in={due_at - time.time():.1f}s"
+    )
+
+
+def skip_pending_storm_adi(
+    state: dict,
+    pending: dict,
+    target: dict | None,
+    lid: int | None,
+    reason: str,
+    *,
+    status: str,
+    stop: bool = False,
+    target_lids: set[int] | None = None,
+) -> None:
+    if target is not None and int(target.get("id", 0) or 0):
+        release_storm_target(db(), int(target["id"]), status=status)
+    if lid is not None:
+        bot.release_commander(db(), int(lid), status="available")
+    state["pending"] = None
+    if stop:
+        stop_control(state, reason, clear_awaiting=True)
+    else:
+        save_control(state)
+        bot.clear_proxy_pending_db(db())
+    lid_text = sorted(target_lids) if target_lids is not None else []
+    target_text = f"{target['x']}:{target['y']}" if target is not None else "unknown"
+    control_log(f"storm_adi_skip target={target_text} lid={lid} reason={reason} target_lids={lid_text}")
+
+
+def process_pending_storm_adi_error(status) -> bool:
+    state = hydrate_control_awaiting(load_control())
+    pending = state.get("pending")
+    target = target_from_pending(pending)
+    if (
+        not state.get("running")
+        or not isinstance(pending, dict)
+        or pending.get("kind") != "adi"
+        or pending.get("target_kind") != "storm_target"
+    ):
+        return False
+    lid = int_or_none(pending.get("lid"))
+    reason = f"storm_adi_status_{status}"
+    skip_pending_storm_adi(state, pending, target, lid, reason, status=reason, stop=True)
+    return True
+
+
+def process_pending_storm_adi_payload(payload: dict) -> bool:
+    state = hydrate_control_awaiting(load_control())
+    pending = state.get("pending")
+    target = target_from_pending(pending)
+    if (
+        not state.get("running")
+        or not isinstance(pending, dict)
+        or pending.get("kind") != "adi"
+        or pending.get("target_kind") != "storm_target"
+        or target is None
+    ):
+        return False
+    sent_at = float(pending.get("sent_at", 0) or 0)
+    if sent_at and time.time() - sent_at > 90.0:
+        return False
+    if not adi_payload_matches_target(payload, target):
+        return False
+
+    task_state = dict(state)
+    task_state["storm_task"] = pending.get("task_name") or state.get("storm_task") or "storm_custom"
+    task = active_storm_task(task_state)
+    allowed_levels = storm_target_levels(task_state, task)
+    if int(target.get("target_level") or -1) not in allowed_levels:
+        skip_pending_storm_adi(
+            state,
+            pending,
+            target,
+            int_or_none(pending.get("lid")),
+            "storm_adi_bad_level",
+            status="adi_bad_level",
+        )
+        return True
+
+    target_lids = raw_target_available_lids(payload)
+    requested_lid = int_or_none(pending.get("lid"))
+    lid = requested_lid if requested_lid in target_lids else None
+    switched = False
+    if lid is None:
+        if requested_lid is not None:
+            bot.release_commander(db(), requested_lid, status="available")
+        lid = bot.choose_commander(db(), target_lids, set(task.commander_lids))
+        switched = lid is not None
+
+    if lid is None:
+        skip_pending_storm_adi(
+            state,
+            pending,
+            target,
+            requested_lid,
+            "no_available_lid_in_adi",
+            status="adi_no_lid",
+            target_lids=target_lids,
+        )
+        return True
+
+    if switched:
+        control_log(
+            f"storm_adi_ok target={target['x']}:{target['y']} switched_lid={requested_lid}->{lid} "
+            f"target_lids={sorted(target_lids)}"
+        )
+    queue_verified_storm_cra(state, pending, target, int(lid), task)
+    return True
 
 
 def movement_area(movement: dict, field: str) -> tuple[int, int, int] | None:
@@ -356,26 +890,37 @@ def shorten_commander_return(lid: int, march_id: int | None, rbc_id: int | None,
         if row is None:
             return
         current_available = int(row[0] or 0)
-        next_available = int(return_epoch)
-        if current_available > bot.now_epoch():
-            next_available = min(current_available, next_available)
+        actual_available = int(return_epoch)
+        next_available = min(current_available, actual_available) if current_available > 0 else actual_available
+        now = bot.now_epoch()
+        status = "returning" if next_available > now else "available"
         cur.execute(
             """
             UPDATE commander_state
             SET available_after = %s,
-                status = 'returning',
+                status = %s,
                 march_id = %s,
                 target_rbc_id = COALESCE(%s, target_rbc_id),
                 updated_at = %s
             WHERE lord_id = %s
             """,
-            (next_available, march_id, rbc_id, bot.now_epoch(), int(lid)),
+            (next_available, status, march_id, rbc_id, now, int(lid)),
         )
     db().commit()
 
 
-def next_allowed_commander_wait(target_lids: set[int]) -> int | None:
-    allowed = [lid for lid in bot.FIRST_13_COMMANDER_LIDS if lid in target_lids]
+def release_pending_target(target: dict | None, target_kind: str | None, *, status: str = "seen") -> None:
+    if target is None or not int(target.get("id", 0) or 0):
+        return
+    if target_kind == "storm_target":
+        release_storm_target(db(), int(target["id"]), status=status)
+    else:
+        bot.release_target(db(), int(target["id"]), bot.TARGET_ERROR_RETRY_RANGE)
+
+
+def next_allowed_commander_wait(target_lids: set[int], allowed_lids=None) -> int | None:
+    pool = bot.FIRST_13_COMMANDER_LIDS if allowed_lids is None else tuple(int(lid) for lid in allowed_lids)
+    allowed = [lid for lid in pool if lid in target_lids]
     if not allowed:
         return None
     with db().cursor() as cur:
@@ -405,27 +950,73 @@ def process_live_cra_response(decoded: str) -> bool:
     if not parsed or parsed.get("command") != "cra":
         return False
 
-    state = load_control()
+    state = hydrate_control_awaiting(load_control(), include_pending=False)
     last_cra = state.get("last_cra") if isinstance(state.get("last_cra"), dict) else {}
     target = last_cra_target(state)
+    target_kind = last_cra.get("target_kind") or "rbc"
+    task_name = last_cra.get("task_name")
     lid = last_cra.get("lid")
     status = parsed.get("status")
+    sent_at_raw = last_cra.get("sent_at")
+    try:
+        sent_age = bot.now_epoch() - int(sent_at_raw)
+    except (TypeError, ValueError):
+        sent_age = 999999
+    if not last_cra.get("sent_by_proxy") or sent_age > 180:
+        control_log(f"cra_ack_ignored reason=no_recent_proxy_cra status={status}")
+        return True
 
     if status not in (None, "0", 0):
-        if target is not None:
-            bot.release_target(db(), int(target["id"]), bot.TARGET_ERROR_RETRY_RANGE)
+        reject_status = f"cra_status_{status}"
+        reject_reason = cra_status_reason(status)
+        now = bot.now_epoch()
+        release_pending_target(target, target_kind, status=reject_status)
         if lid is not None:
             bot.release_commander(
                 db(),
                 int(lid),
-                available_after=bot.now_epoch() + bot.HEURISTIC_RETURN_SECONDS + random.uniform(*bot.COMMANDER_RETURN_HOLD_RANGE),
-                status=f"cra_status_{status}",
+                available_after=now + bot.HEURISTIC_RETURN_SECONDS + random.uniform(*bot.COMMANDER_RETURN_HOLD_RANGE),
+                status=reject_status,
             )
+        hourly_errors = [
+            int(value)
+            for value in state.get("cra_error_timestamps", [])
+            if isinstance(value, (int, float)) and now - int(value) < 3600
+        ]
+        hourly_errors.append(now)
+        consecutive_errors = int(state.get("cra_consecutive_errors", 0) or 0) + 1
         state["last_cra"] = None
-        save_control(state)
+        state["pending"] = None
+        state["cra_consecutive_errors"] = consecutive_errors
+        state["cra_error_timestamps"] = hourly_errors
+        bot.clear_proxy_pending_db(db())
+        bot.clear_proxy_last_cra_db(db())
         control_log(
-            f"proxy_cra_error status={status} "
-            f"target={target['x']}:{target['y']}" if target is not None else f"proxy_cra_error status={status}"
+            (
+                f"proxy_cra_error status={status} reason={reject_reason} "
+                f"target={target['x']}:{target['y']} lid={lid} task={task_name}"
+            )
+            if target is not None
+            else f"proxy_cra_error status={status} reason={reject_reason} lid={lid} task={task_name}"
+        )
+        if consecutive_errors > MAX_CONSECUTIVE_CRA_ERRORS or len(hourly_errors) >= MAX_HOURLY_CRA_ERRORS:
+            state["running"] = False
+            state["stopped_at"] = now
+            state["stop_reason"] = (
+                f"{reject_status} consecutive={consecutive_errors} hourly={len(hourly_errors)}"
+            )
+            save_control(state)
+            control_log(f"proxy_stopped reason={state['stop_reason']}")
+            return True
+        state["running"] = True
+        state["stopped_at"] = None
+        state["stop_reason"] = None
+        save_control(state)
+        pause_next_action(bot.REQUEST_INTERVAL_RANGE)
+        control_log(
+            f"proxy_cra_error_tolerated status={status} reason={reject_reason} consecutive={consecutive_errors} "
+            f"hourly={len(hourly_errors)} max_consecutive={MAX_CONSECUTIVE_CRA_ERRORS} "
+            f"max_hourly={MAX_HOURLY_CRA_ERRORS}"
         )
         return True
 
@@ -446,7 +1037,7 @@ def process_live_cra_response(decoded: str) -> bool:
         _, x_coordinate, y_coordinate = target_area
         target = {
             "id": 0,
-            "kingdom_id": bot.SANDS_KID,
+            "kingdom_id": int(movement.get("KID") or bot.SANDS_KID),
             "x": x_coordinate,
             "y": y_coordinate,
         }
@@ -458,20 +1049,68 @@ def process_live_cra_response(decoded: str) -> bool:
         return True
 
     sent_at = int(last_cra.get("sent_at") or bot.now_epoch())
-    commander_available = sent_at + travel_seconds + bot.HEURISTIC_RETURN_SECONDS + random.uniform(*bot.COMMANDER_RETURN_HOLD_RANGE)
-    if int(target.get("id", 0) or 0):
+    return_seconds = estimated_return_seconds(travel_seconds)
+    commander_available = sent_at + travel_seconds + return_seconds + random.uniform(*bot.COMMANDER_RETURN_HOLD_RANGE)
+    if target_kind == "storm_target" and int(target.get("id", 0) or 0):
         bot.mark_commander_outbound(db(), int(lid), int(target["id"]), int(march_id), commander_available)
-        bot.set_target_next_epoch(db(), int(target["id"]), bot.target_next_epoch(sent_at, travel_seconds), level=bot.TARGET_LEVEL)
-        bot.record_attack(db(), target, int(march_id), sent_at, travel_seconds)
+        record_storm_attack(
+            db(),
+            target,
+            march_id=int(march_id),
+            sent_at=sent_at,
+            travel_seconds=travel_seconds,
+            return_seconds=return_seconds,
+            troop_count=int_or_none(last_cra.get("army_count")),
+            task_name=task_name,
+            lid=int(lid),
+        )
+    elif int(target.get("id", 0) or 0):
+        target_level = int(target.get("target_level", target.get("current_level", bot.TARGET_LEVEL)) or bot.TARGET_LEVEL)
+        troop_count = int_or_none(last_cra.get("army_count")) or 50
+        bot.mark_commander_outbound(db(), int(lid), int(target["id"]), int(march_id), commander_available)
+        bot.set_target_next_epoch(db(), int(target["id"]), bot.target_next_epoch(sent_at, travel_seconds), level=target_level)
+        bot.record_attack(
+            db(),
+            target,
+            int(march_id),
+            sent_at,
+            travel_seconds,
+            troop_count=troop_count,
+            return_seconds=return_seconds,
+        )
     state["last_cra"] = None
+    state["cra_consecutive_errors"] = 0
+    state["cra_error_timestamps"] = [
+        int(value)
+        for value in state.get("cra_error_timestamps", [])
+        if isinstance(value, (int, float)) and bot.now_epoch() - int(value) < 3600
+    ]
     save_control(state)
+    bot.clear_proxy_last_cra_db(db())
     control_log(
         f"proxy_cra_ack target={target['x']}:{target['y']} kid={target['kingdom_id']} "
-        f"level={bot.TARGET_LEVEL} lid={lid} mid={march_id} "
+        f"kind={target_kind} task={task_name} level={target.get('target_level', bot.TARGET_LEVEL)} lid={lid} mid={march_id} "
         f"army_count={last_cra.get('army_count', 'unknown')} travel_duration={travel_seconds} "
-        f"return_duration={bot.HEURISTIC_RETURN_SECONDS}"
+        f"return_duration={return_seconds}"
     )
     return True
+
+
+def loot_from_result(resources) -> tuple[int | None, int | None]:
+    coin_loot = None
+    ruby_loot = None
+    if not isinstance(resources, list):
+        return coin_loot, ruby_loot
+    for item in resources:
+        if not isinstance(item, list) or len(item) < 2:
+            continue
+        key = item[0]
+        amount = int_or_none(item[1])
+        if key == "C1":
+            coin_loot = amount
+        elif key == "C2":
+            ruby_loot = amount
+    return coin_loot, ruby_loot
 
 
 def process_live_cat_response(decoded: str) -> bool:
@@ -498,13 +1137,54 @@ def process_live_cat_response(decoded: str) -> bool:
     march_id = movement.get("MID")
     march_id_int = int(march_id) if march_id is not None else None
     return_seconds = int(float(movement.get("TT", 0) or 0))
+    result_flag = int_or_none(attack.get("S")) if isinstance(attack, dict) else None
+    coin_loot, ruby_loot = loot_from_result(attack.get("G") if isinstance(attack, dict) else None)
+    if march_id_int is not None:
+        mark_storm_result(
+            db(),
+            march_id=march_id_int,
+            result_flag=result_flag,
+            return_seconds=return_seconds,
+            coin_loot=coin_loot,
+            ruby_loot=ruby_loot,
+            raw_result=payload if isinstance(payload, dict) else {},
+        )
     return_epoch = bot.now_epoch() + return_seconds + random.uniform(*bot.COMMANDER_RETURN_HOLD_RANGE)
     shorten_commander_return(lid, march_id_int, rbc_id, return_epoch)
     target_text = f"{source_area[1]}:{source_area[2]}" if source_area is not None else "unknown"
+    packet_kid = int_or_none(movement.get("KID"))
     control_log(
-        f"proxy_cat_return target={target_text} kid={bot.SANDS_KID} lid={lid} mid={march_id_int} "
+        f"proxy_cat_return target={target_text} kid={packet_kid} lid={lid} mid={march_id_int} "
+        f"result_flag={result_flag} coin_loot={coin_loot} ruby_loot={ruby_loot} "
         f"return_duration={return_seconds} available_after={int(return_epoch)}"
     )
+    return True
+
+
+def handle_storm_mode(state: dict) -> bool:
+    task = active_storm_task(state)
+    fresh_seconds = int(state.get("target_fresh_seconds", STORM_TARGET_FRESH_SECONDS_DEFAULT) or STORM_TARGET_FRESH_SECONDS_DEFAULT)
+    target = reserve_storm_target(db(), target_levels=storm_target_levels(state, task), fresh_seconds=fresh_seconds)
+    if target is None:
+        control_log(
+            f"storm_idle reason=no_live_target levels={list(storm_target_levels(state, task))}"
+        )
+        return False
+    lid = bot.choose_commander(db(), set(task.commander_lids), set(task.commander_lids))
+    if lid is None:
+        release_storm_target(db(), int(target["id"]))
+        next_wait = next_allowed_commander_wait(set(task.commander_lids))
+        if next_wait is None:
+            pause_next_action(bot.TARGET_NO_LID_RETRY_RANGE)
+        else:
+            lower = max(30.0, min(float(next_wait) + 15.0, 180.0))
+            upper = max(lower + 10.0, min(float(next_wait) + 45.0, 240.0))
+            pause_next_action((lower, upper))
+        control_log(
+            f"storm_idle reason=no_available_lid task={task.name} lids={list(task.commander_lids)} next_wait={next_wait}"
+        )
+        return False
+    queue_pending_storm_cra(state, target, lid, task)
     return True
 
 
@@ -513,24 +1193,86 @@ async def proxy_control_loop() -> None:
 
     while True:
         try:
-            state = load_control()
-            if not state.get("running"):
+            state = hydrate_control_awaiting(load_control())
+            pending = state.get("pending")
+            probe_pending = isinstance(pending, dict) and pending.get("kind") == "gaa_probe"
+            scan_due = storm_scan_due(state)
+            if not state.get("running") and not probe_pending:
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
             if int(state.get("max_attacks", 0) or 0) and int(state.get("attacks_sent", 0) or 0) >= int(state.get("max_attacks", 0) or 0):
                 stop_control(state, "max_attacks_already_reached")
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
-            if time.time() < next_proxy_action_epoch:
+            if not probe_pending and not scan_due and time.time() < next_proxy_action_epoch:
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
             if not is_open_websocket(active_flow):
-                control_log("proxy_wait reason=no_active_websocket")
-                pause_next_action((15.0, 35.0))
+                if probe_pending:
+                    control_log("gaa_probe_wait reason=no_active_websocket")
+                else:
+                    control_log("proxy_wait reason=no_active_websocket")
+                    pause_next_action((15.0, 35.0))
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
 
-            pending = state.get("pending")
+            if scan_due:
+                send_storm_gaa_scan(state)
+                await asyncio.sleep(CONTROL_POLL_SECONDS)
+                continue
+
+            if probe_pending:
+                packet = create_gaa_packet(pending)
+                inject_packet(packet)
+                sent_at = bot.now_epoch()
+                ax1 = int(pending["ax1"])
+                ay1 = int(pending["ay1"])
+                ax2 = int(pending.get("ax2", ax1 + bot.farm.MAP_CHUNK_SIZE - 1))
+                ay2 = int(pending.get("ay2", ay1 + bot.farm.MAP_CHUNK_SIZE - 1))
+                kid = int(pending.get("kid", 4))
+                state["pending"] = None
+                state["last_gaa_probe"] = {
+                    "kid": kid,
+                    "ax1": ax1,
+                    "ay1": ay1,
+                    "ax2": ax2,
+                    "ay2": ay2,
+                    "sent_at": sent_at,
+                    "packet": packet,
+                }
+                save_control(state)
+                bot.clear_proxy_pending_db(db())
+                control_log(f"gaa_probe_sent kid={kid} chunk={ax1}:{ay1}-{ax2}:{ay2}")
+                pause_next_action(bot.REQUEST_INTERVAL_RANGE)
+                await asyncio.sleep(CONTROL_POLL_SECONDS)
+                continue
+
+            if isinstance(pending, dict) and pending.get("kind") == "adi" and pending.get("target_kind") == "storm_target":
+                due_at = float(pending.get("due_at", 0.0) or 0.0)
+                if time.time() < due_at:
+                    await asyncio.sleep(CONTROL_POLL_SECONDS)
+                    continue
+                target = target_from_pending(pending)
+                lid = int_or_none(pending.get("lid"))
+                if target is None or lid is None:
+                    state["pending"] = None
+                    save_control(state)
+                    bot.clear_proxy_pending_db(db())
+                    continue
+                sx, sy, _ = storm_source(state)
+                inject_packet(create_adi_packet(target, source=(sx, sy), kingdom_id=STORM_KID))
+                pending["sent_at"] = time.time()
+                state["pending"] = pending
+                save_control(state)
+                bot.persist_proxy_pending(db(), pending)
+                control_log(
+                    f"storm_adi_sent target={target['x']}:{target['y']} kid={target['kingdom_id']} "
+                    f"level={target.get('target_level')} lid={lid}"
+                )
+                pause_next_action(bot.REQUEST_INTERVAL_RANGE)
+                await asyncio.sleep(CONTROL_POLL_SECONDS)
+                continue
+
             if isinstance(pending, dict) and pending.get("kind") == "cra":
                 due_at = float(pending.get("due_at", 0.0) or 0.0)
                 if time.time() < due_at:
@@ -541,8 +1283,11 @@ async def proxy_control_loop() -> None:
                 if target is None or lid is None:
                     state["pending"] = None
                     save_control(state)
+                    bot.clear_proxy_pending_db(db())
                     continue
-                attack_payload = bot.build_attack_payload(target, int(lid))
+                attack_payload = pending.get("attack_payload")
+                if not isinstance(attack_payload, dict):
+                    attack_payload = bot.build_attack_payload(target, int(lid))
                 packet = xt_packet("cra", attack_payload)
                 army_count = troop_count_from_payload(attack_payload)
                 sent_at = bot.now_epoch()
@@ -552,13 +1297,19 @@ async def proxy_control_loop() -> None:
                 state["pending"] = None
                 state["last_cra"] = {
                     "target": target,
+                    "target_kind": pending.get("target_kind", "rbc"),
+                    "task_name": pending.get("task_name"),
                     "lid": int(lid),
                     "sent_at": sent_at,
+                    "sent_by_proxy": True,
                     "army_count": army_count,
                 }
+                bot.clear_proxy_pending_db(db())
+                bot.persist_proxy_last_cra(db(), state["last_cra"])
                 control_log(
                     f"proxy_cra_sent target={target['x']}:{target['y']} kid={target['kingdom_id']} "
-                    f"level={bot.TARGET_LEVEL} lid={lid} mid=pending "
+                    f"kind={pending.get('target_kind', 'rbc')} task={pending.get('task_name')} "
+                    f"level={target.get('target_level', bot.TARGET_LEVEL)} lid={lid} mid=pending "
                     f"army_count={army_count} travel_duration=pending"
                 )
                 increment_attacks_sent(state)
@@ -570,9 +1321,18 @@ async def proxy_control_loop() -> None:
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
 
-            target = bot.reserve_target(db())
+            if state.get("transport_only"):
+                await asyncio.sleep(CONTROL_POLL_SECONDS)
+                continue
+
+            if state.get("mode") == "storm":
+                handle_storm_mode(state)
+                await asyncio.sleep(CONTROL_POLL_SECONDS)
+                continue
+
+            task, target = reserve_next_sands_target(state)
             if target is None:
-                control_log("proxy_idle reason=no_level_61_sands_target")
+                control_log("proxy_idle reason=no_sands_task_target")
                 pause_next_action(NO_TARGET_RETRY_RANGE)
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
@@ -580,12 +1340,13 @@ async def proxy_control_loop() -> None:
             state["pending"] = {
                 "kind": "adi",
                 "target": target,
+                "task_name": task.name if task is not None else target.get("task_name"),
                 "sent_at": bot.now_epoch(),
             }
             save_control(state)
             control_log(
                 f"proxy_adi_sent target={target['x']}:{target['y']} kid={target['kingdom_id']} "
-                f"expected_level={bot.TARGET_LEVEL}"
+                f"task={state['pending'].get('task_name')} expected_level={target.get('target_level')}"
             )
             pause_next_action(bot.REQUEST_INTERVAL_RANGE)
         except Exception as exc:
@@ -615,6 +1376,40 @@ def parse_live_payload(decoded: str, command: str) -> dict | None:
         return None
     payload = parsed.get("payload")
     return payload if isinstance(payload, dict) else None
+
+
+def process_storm_gaa_payload(payload: dict) -> bool:
+    try:
+        packet_kid = int(payload.get("KID"))
+    except (TypeError, ValueError):
+        return False
+    if packet_kid != STORM_KID:
+        return False
+
+    try:
+        targets = storm_targets_from_gaa(payload)
+        expired = cleanup_expired_storm_targets(db())
+        changed = upsert_storm_targets(db(), targets)
+        control_log(
+            f"storm_gaa_upsert kid={packet_kid} candidates={len(targets)} "
+            f"db_writes={changed} expired_deleted={expired}"
+        )
+    except Exception as exc:
+        if db_conn is not None:
+            db_conn.rollback()
+        control_log(f"storm_gaa_upsert_failed error={exc!r}")
+    return True
+
+
+def remember_client_header(decoded: str) -> None:
+    global last_client_server_header
+
+    parsed = parse_xt_packet(decoded.strip())
+    if not parsed:
+        return
+    header = parsed.get("server_header")
+    if isinstance(header, str) and header.startswith("EmpireEx_"):
+        last_client_server_header = header
 
 
 def live_rbc_rows_from_payload(payload: dict) -> tuple[int | None, list[tuple[int, int, int, int]]]:
@@ -652,13 +1447,22 @@ def process_live_message(decoded: str) -> None:
         return
     if process_live_cat_response(decoded):
         return
+    parsed = parse_xt_packet(decoded.strip())
+    if parsed and parsed.get("command") == "adi" and parsed.get("status") not in {None, "0", 0}:
+        if process_pending_storm_adi_error(parsed.get("status")):
+            return
 
     payload = parse_live_payload(decoded, "gaa")
     exact_adi = False
+    if payload is not None and process_storm_gaa_payload(payload):
+        return
     if payload is None:
         payload = parse_live_payload(decoded, "adi")
         exact_adi = True
     if payload is None:
+        return
+
+    if exact_adi and process_pending_storm_adi_payload(payload):
         return
 
     if exact_adi:
@@ -701,7 +1505,12 @@ def process_live_message(decoded: str) -> None:
         return
 
     exact_level = rows[0][3] if rows else None
-    if exact_level != bot.TARGET_LEVEL:
+    task = sands_task_by_name(pending.get("task_name"))
+    if task is None:
+        task = sands_task_by_name(target.get("task_name"))
+    if task is None:
+        task = sands_task_by_name("sand_rbc_level_61_crossbow")
+    if task is None or not task.accepts_level(exact_level):
         bot.set_target_next_epoch(
             db(),
             int(target["id"]),
@@ -710,14 +1519,19 @@ def process_live_message(decoded: str) -> None:
         )
         state["pending"] = None
         save_control(state)
-        control_log(f"proxy_adi_skip target={target['x']}:{target['y']} exact_level={exact_level}")
+        control_log(
+            f"proxy_adi_skip target={target['x']}:{target['y']} "
+            f"task={pending.get('task_name')} exact_level={exact_level}"
+        )
         return
 
+    target["current_level"] = int(exact_level)
+    target["target_level"] = int(exact_level)
     target_lids = raw_target_available_lids(payload)
-    lid = bot.choose_commander(db(), target_lids, target_lids)
+    lid = bot.choose_commander(db(), target_lids, target_lids, task.commander_lids)
     if lid is None:
         bot.restore_reserved_target(db(), target)
-        next_wait = next_allowed_commander_wait(target_lids)
+        next_wait = next_allowed_commander_wait(target_lids, task.commander_lids)
         if next_wait is None:
             pause_next_action(bot.TARGET_NO_LID_RETRY_RANGE)
         else:
@@ -726,14 +1540,14 @@ def process_live_message(decoded: str) -> None:
             pause_next_action((lower, upper))
         state["pending"] = None
         save_control(state)
-        first_in_adi = sorted(lid for lid in bot.FIRST_13_COMMANDER_LIDS if lid in target_lids)
+        task_lids_in_adi = sorted(lid for lid in task.commander_lids if lid in target_lids)
         control_log(
-            f"proxy_adi_skip target={target['x']}:{target['y']} reason=no_available_first_13_lid "
-            f"first_in_adi={first_in_adi} next_wait={next_wait}"
+            f"proxy_adi_skip target={target['x']}:{target['y']} task={task.name} "
+            f"reason=no_available_task_lid task_lids_in_adi={task_lids_in_adi} next_wait={next_wait}"
         )
         return
 
-    queue_pending_cra(state, target, lid)
+    queue_pending_cra(state, target, lid, task)
 
 
 def handle_websocket_message(flow: http.HTTPFlow) -> None:
@@ -757,6 +1571,10 @@ def handle_websocket_message(flow: http.HTTPFlow) -> None:
     capture_file = open_capture_file(ts)
     capture_file.write(f"[{ts.strftime('%H:%M:%S.%f')[:-3]}] {direction}\n{formatted}\n---\n")
     capture_file.flush()
+
+    if msg.from_client:
+        remember_client_header(decoded)
+        return
 
     if not msg.from_client:
         process_live_message(decoded)

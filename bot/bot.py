@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
+import math
 import os
 import random
 import sys
@@ -14,11 +16,16 @@ from typing import Any
 import psycopg
 
 
-if __package__ in {None, ""}:
-    REPO_ROOT = Path(__file__).resolve().parents[2]
+def find_repo_root(path: Path) -> Path:
+    for parent in (path, *path.parents):
+        if (parent / "empire").is_dir() and (parent / "bot").is_dir():
+            return parent
+    return path.parents[2]
+
+
+REPO_ROOT = find_repo_root(Path(__file__).resolve())
+if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-else:
-    REPO_ROOT = Path(__file__).resolve().parents[2]
 
 SCAN_ROOT = Path(os.environ.get("GGE_SCAN_ROOT", "/Users/edisonhussey/Desktop/scan_coordinates"))
 for path in (SCAN_ROOT, SCAN_ROOT / "pygge_repo"):
@@ -26,6 +33,13 @@ for path in (SCAN_ROOT, SCAN_ROOT / "pygge_repo"):
         sys.path.insert(0, str(path))
 
 from empire.bot.test_psql_connection import connect, read_connection_config
+from empire.bot.storm_database import (
+    STORM_KID,
+    cleanup_expired_storm_targets,
+    ensure_storm_tables,
+    release_storm_target,
+    reserve_storm_target,
+)
 from empire.sand_rbc_farm import main as farm
 
 try:
@@ -60,8 +74,10 @@ except ImportError:
 
 
 HERE = Path(__file__).resolve().parent
+BOT_STATE_DIR = REPO_ROOT / "empire" / "bot"
 DEFAULT_ACCOUNT = SCAN_ROOT / "ventrilo.ini"
-DEFAULT_LOG_DIR = HERE / "logs"
+DEFAULT_LOG_DIR = BOT_STATE_DIR / "logs"
+CONTROL_FILE = BOT_STATE_DIR / "proxy_control.json"
 SANDS_KID = 1
 TARGET_LEVEL = 61
 FIRST_13_COMMANDER_LIDS = (0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
@@ -72,11 +88,25 @@ TARGET_RESERVE_SECONDS = 12 * 60
 TARGET_NO_LID_RETRY_RANGE = (18 * 60.0, 44 * 60.0)
 TARGET_BAD_LEVEL_RETRY_RANGE = (2.5 * 3600.0, 4.0 * 3600.0)
 TARGET_ERROR_RETRY_RANGE = (21 * 60.0, 53 * 60.0)
-HEURISTIC_RETURN_SECONDS = 20 * 60
+HEURISTIC_RETURN_SECONDS = 30 * 60
+RETURN_HEURISTIC_MULTIPLIER = 1.3
 COMMANDER_RETURN_HOLD_RANGE = (45.0, 180.0)
 MAX_CRA_PER_HOUR_DEFAULT = 3
 MAX_CONSECUTIVE_ERRORS = 2
+MAX_STORM_CONSECUTIVE_CRA_REJECTS = 1
+STORM_SCAN_INTERVAL_RANGE = (5.5, 12.5)
+STORM_SCAN_RADIUS = 96
+STORM_TARGET_FRESH_SECONDS = 120
+STORM_SOURCE_X = 675
+STORM_SOURCE_Y = 675
+STORM_HBW = -1
+STORM_PTT = 1
+PROXY_PENDING_TIMEOUT = 45.0
+PROXY_ADI_TO_CRA_TIMEOUT = 110.0
+PROXY_CRA_TIMEOUT = 135.0
+PROXY_CRA_TIMEOUT_GRACE = 8.0
 LOG_FILE = None
+task_scheduler = importlib.import_module("bot.scheduler")
 
 
 class SessionClosed(RuntimeError):
@@ -103,6 +133,16 @@ def cooldown_extra_seconds() -> float:
     return 4.4 + 2 ** random.uniform(1.0, 4.5)
 
 
+def estimated_return_seconds(outbound_seconds: float | int | None) -> int:
+    try:
+        outbound = float(outbound_seconds or 0)
+    except (TypeError, ValueError):
+        outbound = 0.0
+    if outbound > 0:
+        return int(max(0.0, outbound * RETURN_HEURISTIC_MULTIPLIER))
+    return HEURISTIC_RETURN_SECONDS
+
+
 def ensure_bot_tables(conn: psycopg.Connection) -> None:
     with conn.cursor() as cur:
         cur.execute(
@@ -125,7 +165,10 @@ def ensure_bot_tables(conn: psycopg.Connection) -> None:
             )
             """
         )
-        for lid in FIRST_13_COMMANDER_LIDS:
+        commander_lids = set(FIRST_13_COMMANDER_LIDS)
+        for task in getattr(task_scheduler, "TASKS", ()):
+            commander_lids.update(int(lid) for lid in getattr(task, "commander_lids", ()) or ())
+        for lid in sorted(commander_lids):
             cur.execute(
                 """
                 INSERT INTO commander_state (lord_id, available_after, status, updated_at)
@@ -160,6 +203,142 @@ def set_runtime_value(conn: psycopg.Connection, key: str, value: float | int | s
             (key, str(value)),
         )
     conn.commit()
+
+
+def runtime_json(conn: psycopg.Connection, key: str) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute("SELECT value_text FROM bot_runtime_state WHERE key = %s", (key,))
+        row = cur.fetchone()
+    if row is None:
+        return None
+    try:
+        value = json.loads(row[0])
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def set_runtime_json(conn: psycopg.Connection, key: str, value: dict[str, Any]) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO bot_runtime_state (key, value_text)
+            VALUES (%s, %s)
+            ON CONFLICT (key) DO UPDATE SET value_text = EXCLUDED.value_text
+            """,
+            (key, json.dumps(value, sort_keys=True)),
+        )
+    conn.commit()
+
+
+def delete_runtime_value(conn: psycopg.Connection, key: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM bot_runtime_state WHERE key = %s", (key,))
+    conn.commit()
+
+
+def persist_proxy_pending(conn: psycopg.Connection, pending: dict[str, Any]) -> None:
+    set_runtime_json(conn, "proxy_pending", pending)
+
+
+def load_proxy_pending_db(conn: psycopg.Connection) -> dict[str, Any] | None:
+    return runtime_json(conn, "proxy_pending")
+
+
+def clear_proxy_pending_db(conn: psycopg.Connection) -> None:
+    delete_runtime_value(conn, "proxy_pending")
+
+
+def persist_proxy_last_cra(conn: psycopg.Connection, last_cra: dict[str, Any]) -> None:
+    set_runtime_json(conn, "proxy_last_cra", last_cra)
+
+
+def load_proxy_last_cra_db(conn: psycopg.Connection) -> dict[str, Any] | None:
+    return runtime_json(conn, "proxy_last_cra")
+
+
+def clear_proxy_last_cra_db(conn: psycopg.Connection) -> None:
+    delete_runtime_value(conn, "proxy_last_cra")
+
+
+def clear_proxy_awaiting_db(conn: psycopg.Connection) -> None:
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM bot_runtime_state WHERE key IN ('proxy_pending', 'proxy_last_cra')")
+    conn.commit()
+
+
+def load_proxy_control() -> dict[str, Any]:
+    if not CONTROL_FILE.exists():
+        return {}
+    try:
+        data = json.loads(CONTROL_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_proxy_control(state: dict[str, Any]) -> None:
+    CONTROL_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = CONTROL_FILE.with_suffix(CONTROL_FILE.suffix + ".tmp")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(CONTROL_FILE)
+
+
+def stop_proxy_transport(reason: str) -> None:
+    state = load_proxy_control()
+    state["running"] = False
+    state["pending"] = None
+    state["stopped_at"] = now_epoch()
+    state["stop_reason"] = reason
+    save_proxy_control(state)
+    try:
+        with connect(read_connection_config()) as conn:
+            ensure_bot_tables(conn)
+            clear_proxy_awaiting_db(conn)
+    except Exception as exc:
+        log(f"proxy_db_clear_failed reason={reason} error={exc!r}", error=True)
+
+
+def resume_proxy_transport_after_soft_reject(reason: str) -> None:
+    state = load_proxy_control()
+    state["running"] = True
+    state["transport_only"] = True
+    state["pending"] = None
+    state["last_cra"] = None
+    state["stopped_at"] = None
+    state["stop_reason"] = None
+    state["last_soft_reject"] = reason
+    state["last_soft_reject_at"] = now_epoch()
+    save_proxy_control(state)
+    try:
+        with connect(read_connection_config()) as conn:
+            ensure_bot_tables(conn)
+            clear_proxy_awaiting_db(conn)
+    except Exception as exc:
+        log(f"proxy_db_clear_failed reason=soft_reject_resume error={exc!r}", error=True)
+
+
+def proxy_driver_stop_reason() -> str | None:
+    state = load_proxy_control()
+    if state.get("transport_only") and state.get("running") is False and state.get("stop_reason"):
+        return str(state.get("stop_reason"))
+    return None
+
+
+def ensure_proxy_driver_running() -> None:
+    reason = proxy_driver_stop_reason()
+    if reason is not None:
+        raise SafetyStop(f"proxy_driver_stopped reason={reason}")
+
+
+def interruptible_proxy_sleep(seconds: float) -> None:
+    deadline = time.time() + max(0.0, float(seconds))
+    while time.time() < deadline:
+        ensure_proxy_driver_running()
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.5, remaining))
 
 
 def wait_for_request_slot(conn: psycopg.Connection) -> None:
@@ -258,6 +437,70 @@ def global_lids(lords_response: dict[str, Any]) -> set[int]:
     return {lid for lid in (row_lord_id(row) for row in commanders) if lid is not None}
 
 
+def task_target_levels(task) -> tuple[int, ...]:
+    if getattr(task, "target_levels", ()):
+        return tuple(int(level) for level in task.target_levels)
+    if getattr(task, "target_level", None) is not None:
+        return (int(task.target_level),)
+    return ()
+
+
+def task_has_available_commander(conn: psycopg.Connection, task) -> bool:
+    normalize_available_commanders(conn)
+    lids = tuple(int(lid) for lid in getattr(task, "commander_lids", ()) or ())
+    if not lids:
+        return True
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM commander_state
+            WHERE lord_id = ANY(%s)
+              AND available_after <= %s
+              AND status NOT IN ('reserved', 'pending_cra', 'outbound')
+            LIMIT 1
+            """,
+            (list(lids), now_epoch()),
+        )
+        return cur.fetchone() is not None
+
+
+def reserve_target_for_task(conn: psycopg.Connection, task) -> dict[str, Any] | None:
+    levels = task_target_levels(task)
+    if not levels:
+        return None
+    now = now_epoch()
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, kingdom_id, x_coordinate, y_coordinate, current_level, last_attacked
+                FROM rbc
+                WHERE kingdom_id = %s
+                  AND current_level = ANY(%s)
+                  AND COALESCE(last_attacked, 0) <= %s
+                ORDER BY COALESCE(last_attacked, 0), random()
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+                """,
+                (int(task.kingdom_id), list(levels), now),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return None
+            cur.execute("UPDATE rbc SET last_attacked = %s WHERE id = %s", (now + TARGET_RESERVE_SECONDS, row[0]))
+    return {
+        "id": int(row[0]),
+        "kingdom_id": int(row[1]),
+        "x": int(row[2]),
+        "y": int(row[3]),
+        "current_level": int(row[4]),
+        "target_level": int(row[4]),
+        "task_name": task.name,
+        "previous_last_attacked": int(row[5]) if row[5] is not None else None,
+    }
+
+
 def reserve_target(conn: psycopg.Connection) -> dict[str, Any] | None:
     now = now_epoch()
     with conn.transaction():
@@ -285,6 +528,7 @@ def reserve_target(conn: psycopg.Connection) -> dict[str, Any] | None:
         "x": int(row[2]),
         "y": int(row[3]),
         "current_level": int(row[4]),
+        "target_level": int(row[4]),
         "previous_last_attacked": int(row[5]) if row[5] is not None else None,
     }
 
@@ -315,8 +559,15 @@ def restore_reserved_target(conn: psycopg.Connection, target: dict[str, Any]) ->
     conn.commit()
 
 
-def choose_commander(conn: psycopg.Connection, target_lids: set[int], global_available: set[int]) -> int | None:
-    allowed = [lid for lid in FIRST_13_COMMANDER_LIDS if lid in target_lids and lid in global_available]
+def choose_commander(
+    conn: psycopg.Connection,
+    target_lids: set[int],
+    global_available: set[int],
+    allowed_lids: set[int] | tuple[int, ...] | list[int] | None = None,
+) -> int | None:
+    normalize_available_commanders(conn)
+    pool = FIRST_13_COMMANDER_LIDS if allowed_lids is None else tuple(int(lid) for lid in allowed_lids)
+    allowed = [lid for lid in pool if lid in target_lids and lid in global_available]
     if not allowed:
         return None
     now = now_epoch()
@@ -328,6 +579,7 @@ def choose_commander(conn: psycopg.Connection, target_lids: set[int], global_ava
                 FROM commander_state
                 WHERE lord_id = ANY(%s)
                   AND available_after <= %s
+                  AND status NOT IN ('reserved', 'pending_cra', 'outbound')
                 ORDER BY lord_id
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
@@ -341,7 +593,10 @@ def choose_commander(conn: psycopg.Connection, target_lids: set[int], global_ava
             cur.execute(
                 """
                 UPDATE commander_state
-                SET status = 'reserved', updated_at = %s
+                SET status = 'reserved',
+                    march_id = NULL,
+                    target_rbc_id = NULL,
+                    updated_at = %s
                 WHERE lord_id = %s
                 """,
                 (now, lid),
@@ -360,6 +615,24 @@ def release_commander(conn: psycopg.Connection, lid: int, *, available_after: fl
             WHERE lord_id = %s
             """,
             (int(available_after), status, now_epoch(), int(lid)),
+        )
+    conn.commit()
+
+
+def normalize_available_commanders(conn: psycopg.Connection) -> None:
+    now = now_epoch()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE commander_state
+            SET status = 'available',
+                march_id = NULL,
+                target_rbc_id = NULL,
+                updated_at = %s
+            WHERE available_after <= %s
+              AND status IN ('reserved', 'pending_cra', 'outbound', 'returning', 'cra_timeout', 'cra_rejected')
+            """,
+            (now, now),
         )
     conn.commit()
 
@@ -390,13 +663,14 @@ def mark_commander_outbound(conn: psycopg.Connection, lid: int, rbc_id: int, mar
     conn.commit()
 
 
-def build_attack_payload(target: dict[str, Any], lid: int) -> dict[str, Any]:
+def build_attack_payload(target: dict[str, Any], lid: int, task=None) -> dict[str, Any]:
+    attack_payload = task.attack_payload() if task is not None else farm.LEVEL_61.to_payload()
     return {
         "SX": farm.SOURCE_X,
         "SY": farm.SOURCE_Y,
         "TX": int(target["x"]),
         "TY": int(target["y"]),
-        "KID": SANDS_KID,
+        "KID": int(target.get("kingdom_id", SANDS_KID)),
         "LID": int(lid),
         "WT": 0,
         "HBW": farm.HBW_VALUE,
@@ -409,7 +683,7 @@ def build_attack_payload(target: dict[str, Any], lid: int) -> dict[str, Any]:
         "SD": 0,
         "ICA": 0,
         "CD": 99,
-        "A": farm.LEVEL_61.to_payload(),
+        "A": attack_payload,
         "BKS": [],
         "AST": [-1, -1, -1],
         "RW": [[-1, 0] for _ in range(8)],
@@ -441,9 +715,8 @@ def safety_check(conn: psycopg.Connection, max_cra_per_hour: int) -> None:
 
 
 def target_next_epoch(sent_at: int, travel_seconds: float) -> int:
-    landed_based = sent_at + max(0.0, travel_seconds) + 3 * 3600
-    heuristic_based = sent_at + HEURISTIC_RETURN_SECONDS + 3 * 3600
-    return int(min(landed_based, heuristic_based) + cooldown_extra_seconds())
+    landed_at = sent_at + max(0.0, travel_seconds)
+    return int(landed_at + 3 * 3600 + cooldown_extra_seconds())
 
 
 def record_attack(
@@ -452,7 +725,11 @@ def record_attack(
     march_id: int,
     sent_at: int,
     travel_seconds: int | None,
+    troop_count: int = 50,
+    return_seconds: int | None = None,
 ) -> None:
+    if return_seconds is None:
+        return_seconds = estimated_return_seconds(travel_seconds)
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -475,9 +752,9 @@ def record_attack(
                 int(target["y"]),
                 int(march_id),
                 int(sent_at),
-                50,
+                int(troop_count),
                 travel_seconds,
-                HEURISTIC_RETURN_SECONDS,
+                int(return_seconds),
             ),
         )
     conn.commit()
@@ -542,10 +819,11 @@ def send_one_attack(socket, conn: psycopg.Connection) -> bool:
         movement = movement_from_response(response)
         march_id = int(movement.get("MID"))
         travel_seconds = int(float(movement.get("TT", 0) or 0))
-        commander_available = sent_at + travel_seconds + HEURISTIC_RETURN_SECONDS + random.uniform(*COMMANDER_RETURN_HOLD_RANGE)
+        return_seconds = estimated_return_seconds(travel_seconds)
+        commander_available = sent_at + travel_seconds + return_seconds + random.uniform(*COMMANDER_RETURN_HOLD_RANGE)
         mark_commander_outbound(conn, lid, target["id"], march_id, commander_available)
         set_target_next_epoch(conn, target["id"], target_next_epoch(sent_at, travel_seconds), level=TARGET_LEVEL)
-        record_attack(conn, target, march_id, sent_at, travel_seconds)
+        record_attack(conn, target, march_id, sent_at, travel_seconds, return_seconds=return_seconds)
         log(
             f"cra_sent target={target['x']}:{target['y']} lid={lid} mid={march_id} "
             f"travel={travel_seconds} commander_after={int(commander_available)}"
@@ -559,15 +837,508 @@ def send_one_attack(socket, conn: psycopg.Connection) -> bool:
         return True
 
 
+def active_storm_task(task_name: str):
+    for task in task_scheduler.TASKS:
+        if task.name == task_name:
+            if not task.enabled:
+                raise RuntimeError(f"storm task disabled: {task_name}")
+            return task
+    raise RuntimeError(f"storm task not found: {task_name}")
+
+
+def storm_target_levels(task, raw_levels: str | None) -> tuple[int, ...]:
+    if raw_levels:
+        levels = tuple(sorted({int(item.strip()) for item in raw_levels.split(",") if item.strip()}))
+        if levels:
+            return levels
+    if getattr(task, "target_levels", ()):
+        return tuple(int(level) for level in task.target_levels)
+    if task.target_level is not None:
+        return (int(task.target_level),)
+    return (60, 70, 80)
+
+
+def chunk_start(value: int) -> int:
+    return max(0, int(value) - (int(value) % farm.MAP_CHUNK_SIZE))
+
+
+def storm_scan_pass_radius(base_radius: int) -> int:
+    base = max(farm.MAP_CHUNK_SIZE * 3, int(base_radius))
+    roll = random.random()
+    if roll < 0.18:
+        return random.randint(max(40, base - 35), max(45, base - 12))
+    if roll < 0.74:
+        return random.randint(max(52, base - 12), base + 24)
+    return random.randint(base + 25, base + 55)
+
+
+def storm_scan_chunks(center_x: int, center_y: int, radius: int) -> list[tuple[int, int]]:
+    offsets: list[tuple[int, int]] = []
+    steps = range(-int(radius), int(radius) + 1, farm.MAP_CHUNK_SIZE)
+    for dx in steps:
+        for dy in steps:
+            if math.hypot(dx, dy) <= int(radius) + farm.MAP_CHUNK_SIZE / 2:
+                offsets.append((dx, dy))
+    random.shuffle(offsets)
+    if offsets and random.random() < 0.78:
+        focus_radius = random.uniform(radius * 0.25, radius * 1.05)
+        offsets.sort(
+            key=lambda item: abs(math.hypot(item[0], item[1]) - focus_radius)
+            + random.uniform(-radius * 0.45, radius * 0.45)
+        )
+    return [
+        (chunk_start(center_x + dx - farm.MAP_CHUNK_SIZE // 2), chunk_start(center_y + dy - farm.MAP_CHUNK_SIZE // 2))
+        for dx, dy in offsets
+    ]
+
+
+def storm_scan_wait_seconds(args: argparse.Namespace, randomizer) -> float:
+    lower = max(4.0, float(args.scan_min))
+    upper = max(lower, float(args.scan_max))
+    wait = random.triangular(lower, upper, (lower + upper) / 2)
+    if random.random() < 0.22:
+        wait += random.uniform(2.5, 9.0)
+    if args.use_randomizer_gaa_wait:
+        wait = max(wait, float(randomizer.gaa_waiting_time()))
+    return wait
+
+
+def troop_count_from_payload(payload: dict[str, Any]) -> int:
+    total = 0
+    for wave in payload.get("A") or []:
+        if not isinstance(wave, dict):
+            continue
+        for side in wave.values():
+            if not isinstance(side, dict):
+                continue
+            for slot in side.get("U") or []:
+                if not isinstance(slot, list) or len(slot) < 2:
+                    continue
+                try:
+                    troop_id = int(slot[0])
+                    amount = int(slot[1])
+                except (TypeError, ValueError):
+                    continue
+                if troop_id >= 0 and amount > 0:
+                    total += amount
+    return total
+
+
+def build_storm_attack_payload(
+    target: dict[str, Any],
+    lid: int,
+    task,
+    *,
+    source_x: int,
+    source_y: int,
+    hbw: int,
+    ptt: int,
+) -> dict[str, Any]:
+    return {
+        "SX": int(source_x),
+        "SY": int(source_y),
+        "TX": int(target["x"]),
+        "TY": int(target["y"]),
+        "KID": int(task.kingdom_id),
+        "LID": int(lid),
+        "WT": 0,
+        "HBW": int(hbw),
+        "BPC": 0,
+        "ATT": 0,
+        "AV": 0,
+        "LP": 0,
+        "FC": 0,
+        "PTT": int(ptt),
+        "SD": 0,
+        "ICA": 0,
+        "CD": 99,
+        "A": task.attack_payload(),
+        "BKS": [],
+        "AST": [-1, -1, -1],
+        "RW": [[-1, 0] for _ in range(8)],
+        "ASCT": 0,
+    }
+
+
+def wait_for_proxy_ready(timeout: float = 3.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        ensure_proxy_driver_running()
+        state = load_proxy_control()
+        if state.get("pending") is None:
+            return
+        time.sleep(0.25)
+    ensure_proxy_driver_running()
+    state = load_proxy_control()
+    if state.get("pending") is not None:
+        raise RuntimeError(f"proxy_has_pending pending={state.get('pending')!r}")
+
+
+def prepare_proxy_transport(args: argparse.Namespace) -> None:
+    try:
+        with connect(read_connection_config()) as conn:
+            ensure_bot_tables(conn)
+            clear_proxy_awaiting_db(conn)
+    except Exception as exc:
+        raise RuntimeError(f"proxy_awaiting_db_reset_failed error={exc!r}") from exc
+    state = load_proxy_control()
+    state.update(
+        {
+            "running": True,
+            "transport_only": True,
+            "mode": "storm",
+            "pending": None,
+            "last_cra": None,
+            "attacks_sent": 0,
+            "max_attacks": int(args.max_attacks),
+            "storm_task": args.storm_task,
+            "target_levels": list(storm_target_levels(active_storm_task(args.storm_task), args.levels)),
+            "storm_source": {"x": int(args.source_x), "y": int(args.source_y), "hbw": int(args.hbw)},
+            "storm_ptt": int(args.ptt),
+            "target_fresh_seconds": int(args.target_fresh_seconds),
+            "started_at": now_epoch(),
+            "stopped_at": None,
+            "stop_reason": None,
+        }
+    )
+    save_proxy_control(state)
+
+
+def queue_proxy_pending(pending: dict[str, Any]) -> float:
+    ensure_proxy_driver_running()
+    wait_for_proxy_ready()
+    ensure_proxy_driver_running()
+    queued_at = time.time()
+    state = load_proxy_control()
+    if state.get("running") is False and state.get("stop_reason"):
+        raise SafetyStop(f"proxy_driver_stopped reason={state.get('stop_reason')}")
+    state["running"] = True
+    state["transport_only"] = True
+    state["pending"] = pending
+    save_proxy_control(state)
+    try:
+        with connect(read_connection_config()) as conn:
+            ensure_bot_tables(conn)
+            persist_proxy_pending(conn, pending)
+    except Exception as exc:
+        raise RuntimeError(f"proxy_pending_db_persist_failed error={exc!r}") from exc
+    return queued_at
+
+
+def wait_for_gaa_sent(queued_at: float, timeout: float) -> dict[str, Any]:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        ensure_proxy_driver_running()
+        state = load_proxy_control()
+        last = state.get("last_gaa_probe")
+        if isinstance(last, dict) and float(last.get("sent_at", 0) or 0) >= queued_at - 1:
+            return last
+        if state.get("stop_reason") == "max_attacks_already_reached":
+            raise SafetyStop("proxy_max_attacks_already_reached")
+        time.sleep(0.25)
+    raise TimeoutError("gaa_send_timeout")
+
+
+def queue_storm_gaa(ax1: int, ay1: int) -> None:
+    pending = {
+        "kind": "gaa_probe",
+        "kid": STORM_KID,
+        "ax1": int(ax1),
+        "ay1": int(ay1),
+        "ax2": int(ax1) + farm.MAP_CHUNK_SIZE - 1,
+        "ay2": int(ay1) + farm.MAP_CHUNK_SIZE - 1,
+        "queued_at": time.time(),
+    }
+    queued_at = queue_proxy_pending(pending)
+    sent = wait_for_gaa_sent(queued_at, PROXY_PENDING_TIMEOUT)
+    log(f"storm_gaa_sent chunk={sent['ax1']}:{sent['ay1']}-{sent['ax2']}:{sent['ay2']}")
+
+
+def last_cra_matches_target(last_cra: Any, target_id: int) -> bool:
+    if not isinstance(last_cra, dict):
+        return False
+    target = last_cra.get("target")
+    if not isinstance(target, dict):
+        return False
+    try:
+        return int(target.get("id")) == int(target_id)
+    except (TypeError, ValueError):
+        return False
+
+
+def storm_target_result_status(conn: psycopg.Connection, target_id: int) -> str | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT status, sent_at, march_id
+            FROM storm_target
+            WHERE id = %s
+            """,
+            (int(target_id),),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    status, sent_at, march_id = row
+    if sent_at is not None and march_id is not None:
+        return "accepted"
+    if isinstance(status, str) and status.startswith("cra_status_"):
+        return "rejected"
+    if isinstance(status, str) and status.startswith("adi_"):
+        return "skipped"
+    return None
+
+
+def wait_for_storm_cra_result(conn: psycopg.Connection, target_id: int, queued_at: float, timeout: float) -> str:
+    pre_cra_deadline = queued_at + PROXY_ADI_TO_CRA_TIMEOUT
+    cra_deadline: float | None = None
+    while True:
+        result = storm_target_result_status(conn, target_id)
+        if result is not None:
+            return result
+
+        state = load_proxy_control()
+        last = state.get("last_cra")
+        if last_cra_matches_target(last, target_id):
+            try:
+                sent_at = float(last.get("sent_at") or 0)
+            except (TypeError, ValueError):
+                sent_at = 0.0
+            if sent_at > 0:
+                cra_deadline = max(cra_deadline or 0.0, sent_at + timeout)
+
+        deadline = cra_deadline if cra_deadline is not None else pre_cra_deadline
+        if time.time() >= deadline:
+            grace_deadline = time.time() + PROXY_CRA_TIMEOUT_GRACE
+            while time.time() < grace_deadline:
+                result = storm_target_result_status(conn, target_id)
+                if result is not None:
+                    return result
+                time.sleep(0.5)
+            break
+
+        with conn.cursor() as cur:
+            cur.execute("SELECT status FROM storm_target WHERE id = %s", (int(target_id),))
+            row = cur.fetchone()
+        if row is not None and isinstance(row[0], str):
+            if row[0].startswith("cra_status_"):
+                return "rejected"
+            if row[0].startswith("adi_"):
+                return "skipped"
+        ensure_proxy_driver_running()
+        time.sleep(0.5)
+    raise TimeoutError("cra_response_timeout")
+
+
+def queue_storm_cra(
+    conn: psycopg.Connection,
+    target: dict[str, Any],
+    lid: int,
+    task,
+    args: argparse.Namespace,
+) -> bool:
+    allowed_levels = storm_target_levels(task, args.levels)
+    if int(target.get("target_level") or -1) not in allowed_levels:
+        release_storm_target(conn, int(target["id"]))
+        release_commander(conn, lid, status="available")
+        log(
+            f"storm_cra_blocked_bad_level target={target['x']}:{target['y']} "
+            f"level={target.get('target_level')} allowed={list(allowed_levels)}",
+            error=True,
+        )
+        return False
+    payload = build_storm_attack_payload(
+        target,
+        lid,
+        task,
+        source_x=args.source_x,
+        source_y=args.source_y,
+        hbw=args.hbw,
+        ptt=args.ptt,
+    )
+    pending = {
+        "kind": "adi",
+        "target_kind": "storm_target",
+        "target": target,
+        "task_name": task.name,
+        "lid": int(lid),
+        "due_at": time.time(),
+        "army_count": troop_count_from_payload(payload),
+        "attack_payload": payload,
+    }
+    queued_at = queue_proxy_pending(pending)
+    log(
+        f"storm_adi_queued target={target['x']}:{target['y']} level={target.get('target_level')} "
+        f"lid={lid} army_count={pending['army_count']}"
+    )
+    try:
+        result = wait_for_storm_cra_result(conn, int(target["id"]), queued_at, PROXY_CRA_TIMEOUT)
+    except TimeoutError as exc:
+        release_commander(
+            conn,
+            lid,
+            available_after=now_epoch() + HEURISTIC_RETURN_SECONDS + random.uniform(*COMMANDER_RETURN_HOLD_RANGE),
+            status="cra_timeout",
+        )
+        release_storm_target(conn, int(target["id"]), status="cra_timeout")
+        stop_proxy_transport("storm_cra_timeout")
+        log(f"storm_cra_timeout target={target['x']}:{target['y']} lid={lid}", error=True)
+        raise SafetyStop(f"storm_cra_timeout target={target['x']}:{target['y']} lid={lid}") from exc
+    if result == "accepted":
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT march_id, duration
+                FROM attack
+                WHERE target_kind = 'storm_target'
+                  AND target_id = %s
+                ORDER BY time_created DESC NULLS LAST
+                LIMIT 1
+                """,
+                (int(target["id"]),),
+            )
+            row = cur.fetchone()
+        march_id, travel = row if row is not None else (None, None)
+        log(f"storm_cra_ack target={target['x']}:{target['y']} lid={lid} mid={march_id} travel_duration={travel}")
+    elif result == "skipped":
+        log(f"storm_adi_skipped target={target['x']}:{target['y']} lid={lid}")
+        return False
+    else:
+        release_commander(
+            conn,
+            lid,
+            available_after=now_epoch() + HEURISTIC_RETURN_SECONDS + random.uniform(*COMMANDER_RETURN_HOLD_RANGE),
+            status="cra_rejected",
+        )
+        log(f"storm_cra_rejected target={target['x']}:{target['y']} lid={lid}", error=True)
+        return "cra_rejected"
+    return True
+
+
+def send_one_storm_proxy_attack(
+    conn: psycopg.Connection,
+    task,
+    target_levels: tuple[int, ...],
+    args: argparse.Namespace,
+) -> bool:
+    cleanup_expired_storm_targets(conn)
+    target = reserve_storm_target(conn, target_levels=target_levels, fresh_seconds=int(args.target_fresh_seconds))
+    if target is None:
+        return False
+    lid = choose_commander(conn, set(task.commander_lids), set(task.commander_lids))
+    if lid is None:
+        release_storm_target(conn, int(target["id"]))
+        log(f"storm_skip target={target['x']}:{target['y']} reason=no_available_lid")
+        return True
+    delay = max(5.0, float(task_scheduler.Randomizer().attack_send_waiting_time()))
+    log(f"storm_attack_wait seconds={delay:.1f} target={target['x']}:{target['y']} lid={lid}")
+    queued_to_proxy = False
+    try:
+        interruptible_proxy_sleep(delay)
+        queued_to_proxy = True
+        return queue_storm_cra(conn, target, lid, task, args)
+    except BaseException:
+        if not queued_to_proxy:
+            release_storm_target(conn, int(target["id"]))
+            release_commander(conn, lid, status="available")
+        raise
+
+
+def run_storm_proxy(args: argparse.Namespace) -> int:
+    task = active_storm_task(args.storm_task)
+    levels = storm_target_levels(task, args.levels)
+    scan_radius = storm_scan_pass_radius(int(args.scan_radius))
+    chunks = storm_scan_chunks(int(args.source_x), int(args.source_y), scan_radius)
+    if not chunks:
+        raise RuntimeError("storm_scan_no_chunks")
+    randomizer = task_scheduler.Randomizer()
+    attacks_sent = 0
+    consecutive_cra_rejects = 0
+    cursor = 0
+    prepare_proxy_transport(args)
+    log(
+        f"storm_proxy_start task={task.name} source={args.source_x}:{args.source_y} levels={list(levels)} "
+        f"max_attacks={args.max_attacks} scan={args.scan_min:.1f}-{args.scan_max:.1f}s radius={scan_radius}"
+    )
+    stop_reason = "bot_py_complete"
+    try:
+        with connect(read_connection_config()) as conn:
+            ensure_bot_tables(conn)
+            ensure_storm_tables(conn)
+            set_runtime_value(conn, "max_cra_per_hour", args.max_cra_per_hour)
+            while attacks_sent < int(args.max_attacks):
+                ensure_proxy_driver_running()
+                safety_check(conn, int(args.max_cra_per_hour))
+                acted = send_one_storm_proxy_attack(conn, task, levels, args)
+                if acted == "cra_rejected":
+                    consecutive_cra_rejects += 1
+                    if consecutive_cra_rejects > MAX_STORM_CONSECUTIVE_CRA_REJECTS:
+                        stop_reason = f"storm_consecutive_cra_rejects count={consecutive_cra_rejects}"
+                        stop_proxy_transport(stop_reason)
+                        raise SafetyStop(stop_reason)
+                    resume_proxy_transport_after_soft_reject("cra_rejected")
+                    wait = random.uniform(25.0, 55.0)
+                    log(
+                        f"storm_cra_reject_tolerated consecutive={consecutive_cra_rejects} "
+                        f"next_wait={wait:.1f}s"
+                    )
+                    interruptible_proxy_sleep(wait)
+                    continue
+                if acted:
+                    consecutive_cra_rejects = 0
+                    state = load_proxy_control()
+                    attacks_sent = int(state.get("attacks_sent", attacks_sent) or attacks_sent)
+                    continue
+                if cursor >= len(chunks):
+                    cursor = 0
+                    scan_radius = storm_scan_pass_radius(int(args.scan_radius))
+                    chunks = storm_scan_chunks(int(args.source_x), int(args.source_y), scan_radius)
+                    log(f"storm_scan_new_pass radius={scan_radius} chunks={len(chunks)}")
+                ax1, ay1 = chunks[cursor]
+                cursor += 1
+                queue_storm_gaa(ax1, ay1)
+                wait = storm_scan_wait_seconds(args, randomizer)
+                log(f"storm_scan_wait seconds={wait:.1f}")
+                interruptible_proxy_sleep(wait)
+    except SafetyStop as exc:
+        stop_reason = str(exc)
+        log(f"storm_proxy_stopped reason={exc}", error=True)
+    finally:
+        state = load_proxy_control()
+        if state.get("running") is not False:
+            stop_proxy_transport(stop_reason)
+    log(f"storm_proxy_done attacks_sent={attacks_sent}")
+    return 0
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Conservative database-backed Sands level-61 RBC runner.")
+    parser = argparse.ArgumentParser(description="Conservative database-backed Sands/Storm runner.")
+    parser.add_argument("--mode", choices=("sands", "storm-proxy"), default="sands")
     parser.add_argument("--account-config", type=Path, default=DEFAULT_ACCOUNT)
     parser.add_argument("--max-attacks", type=int, default=1)
     parser.add_argument("--max-cra-per-hour", type=int, default=MAX_CRA_PER_HOUR_DEFAULT)
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR)
-    return parser.parse_args(argv)
+    parser.add_argument("--storm-task", default="storm_custom")
+    parser.add_argument("--levels", default="60,70,80")
+    parser.add_argument("--source-x", type=int, default=STORM_SOURCE_X)
+    parser.add_argument("--source-y", type=int, default=STORM_SOURCE_Y)
+    parser.add_argument("--hbw", type=int, default=STORM_HBW)
+    parser.add_argument("--ptt", type=int, default=STORM_PTT)
+    parser.add_argument("--scan-min", type=float, default=STORM_SCAN_INTERVAL_RANGE[0])
+    parser.add_argument("--scan-max", type=float, default=STORM_SCAN_INTERVAL_RANGE[1])
+    parser.add_argument("--scan-radius", type=int, default=STORM_SCAN_RADIUS)
+    parser.add_argument("--target-fresh-seconds", type=int, default=STORM_TARGET_FRESH_SECONDS)
+    parser.add_argument("--use-randomizer-gaa-wait", action="store_true")
+    args = parser.parse_args(argv)
+    if args.scan_max < args.scan_min:
+        parser.error("--scan-max must be >= --scan-min")
+    if args.mode == "storm-proxy" and args.max_attacks < 1:
+        parser.error("--max-attacks must be >= 1 in storm-proxy mode")
+    if args.mode == "storm-proxy" and args.max_cra_per_hour == MAX_CRA_PER_HOUR_DEFAULT:
+        args.max_cra_per_hour = args.max_attacks
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -579,6 +1350,8 @@ def main(argv: list[str] | None = None) -> int:
     attacks = 0
     consecutive_errors = 0
     try:
+        if args.mode == "storm-proxy":
+            return run_storm_proxy(args)
         with connect(read_connection_config()) as conn:
             ensure_bot_tables(conn)
             set_runtime_value(conn, "max_cra_per_hour", args.max_cra_per_hour)

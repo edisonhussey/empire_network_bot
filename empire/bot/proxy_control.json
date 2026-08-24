@@ -1,10 +1,16 @@
 {
-  "attacks_sent": 211,
+  "attacks_sent": 248,
+  "cra_consecutive_errors": 0,
+  "cra_error_timestamps": [],
   "last_cra": null,
-  "max_attacks": 2000,
+  "max_attacks": 500,
+  "mode": "sands",
   "pending": null,
+  "runner": "proxy_bot.py",
   "running": false,
-  "started_at": 1786823554,
+  "sands_task_cursor": 0,
+  "started_at": 1787521344,
   "stop_reason": "keyboard_interrupt",
-  "stopped_at": 1786841707
+  "stopped_at": 1787541408,
+  "transport_only": false
 }

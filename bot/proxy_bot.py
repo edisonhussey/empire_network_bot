@@ -59,6 +59,30 @@ def save_control(data: dict) -> None:
     tmp.replace(CONTROL_FILE)
 
 
+def bot_duration_text(state: dict) -> str:
+    try:
+        started_at = int(state.get("started_at") or 0)
+    except (TypeError, ValueError):
+        started_at = 0
+    if started_at <= 0:
+        return "00:00"
+    try:
+        stopped_at = int(state.get("stopped_at") or 0)
+    except (TypeError, ValueError):
+        stopped_at = 0
+    end_at = stopped_at if stopped_at > 0 else bot.now_epoch()
+    seconds = max(0, end_at - started_at)
+    hours, remainder = divmod(seconds, 3600)
+    minutes = remainder // 60
+    return f"{hours:02d}:{minutes:02d}"
+
+
+def stop_summary(state: dict, reason: str | None = None) -> str:
+    reason_text = reason or state.get("stop_reason") or "stopped"
+    attacks_sent = int(state.get("attacks_sent", 0) or 0)
+    return f"reason={reason_text} attacks_sent={attacks_sent} duration={bot_duration_text(state)}"
+
+
 def stop_control(state: dict, reason: str) -> dict:
     state["running"] = False
     state["pending"] = None
@@ -111,8 +135,7 @@ def monitor_start() -> None:
                     time.sleep(0.5)
                     continue
             reason = state.get("stop_reason") or "stopped"
-            attacks_sent = int(state.get("attacks_sent", 0) or 0)
-            print(f"proxy bot stopped reason={reason} attacks_sent={attacks_sent}", flush=True)
+            print(f"proxy bot stopped {stop_summary(state, reason)}", flush=True)
             return
         stopped_seen_at = None
         time.sleep(0.5)
@@ -136,28 +159,32 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.end:
         state = stop_control(state, "manual_end")
-        print(f"proxy bot stopped; mitmproxy session can stay open ({CONTROL_FILE})")
+        print(f"proxy bot stopped {stop_summary(state)}; mitmproxy session can stay open ({CONTROL_FILE})")
         return 0
 
-    state.update(
-        {
-            "running": True,
-            "max_attacks": max(0, int(args.max_attacks)),
-            "attacks_sent": 0,
-            "started_at": bot.now_epoch(),
-            "stopped_at": None,
-            "pending": None,
-            "stop_reason": None,
-        }
-    )
+    state = {
+        "running": True,
+        "mode": "sands",
+        "transport_only": False,
+        "runner": "proxy_bot.py",
+        "max_attacks": max(0, int(args.max_attacks)),
+        "attacks_sent": 0,
+        "started_at": bot.now_epoch(),
+        "stopped_at": None,
+        "pending": None,
+        "last_cra": None,
+        "cra_consecutive_errors": 0,
+        "cra_error_timestamps": [],
+        "stop_reason": None,
+    }
     save_control(state)
-    print(f"proxy bot started max_attacks={state['max_attacks']} control={CONTROL_FILE}")
+    print(f"proxy bot started mode=sands max_attacks={state['max_attacks']} control={CONTROL_FILE}")
     try:
         monitor_start()
     except KeyboardInterrupt:
         state = stop_control(load_control(), "keyboard_interrupt")
         print(
-            f"\nproxy bot stopped from Ctrl+C; attacks_sent={int(state.get('attacks_sent', 0) or 0)}",
+            f"\nproxy bot stopped from Ctrl+C; {stop_summary(state)}",
             flush=True,
         )
     return 0

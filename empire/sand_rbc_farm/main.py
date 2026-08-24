@@ -511,8 +511,12 @@ def parse_xt_packet(packet: str) -> dict[str, Any] | None:
         server_header = fields[1]
         command = fields[2]
         request_id = fields[3]
-        status = None
-        payload_text = fields[4]
+        if len(fields) >= 6 and fields[4] in {"0", "1", "2", "3", "4", "5", "256"}:
+            status = fields[4]
+            payload_text = fields[5]
+        else:
+            status = None
+            payload_text = fields[4]
     else:
         server_header = None
         command = fields[1]
