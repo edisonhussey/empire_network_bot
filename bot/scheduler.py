@@ -50,6 +50,17 @@ def commander_lid(human_number: int) -> int:
     return human_number
 
 
+def commander_human_number(lid: int | None) -> int | None:
+    if lid is None:
+        return None
+    lid = int(lid)
+    if lid == 0:
+        return 1
+    if 2 <= lid <= 35:
+        return lid
+    return None
+
+
 def commander_range(first: int, last: int) -> CommanderPool:
     if last < first:
         raise ValueError("commander range end must be >= start")
@@ -416,7 +427,7 @@ TASK_DEFINITIONS: tuple[TaskDefinition, ...] = (
         "sand_rbc_level_61_crossbow",
         kingdom=KINGDOM.sand,
         target_level=61,
-        commanders=13,
+        commanders=15,
         priority=10,
         attack=SAND_LEVEL_61_RBC_ATTACK,
         tags=("rbc", "sand"),
@@ -426,7 +437,7 @@ TASK_DEFINITIONS: tuple[TaskDefinition, ...] = (
         "sand_rbc_level_36_60_mead_flank",
         kingdom=KINGDOM.sand,
         target_levels=tuple(range(36, 61)),
-        commanders=22,
+        commanders=20,
         priority=20,
         enabled=True,
         attack=MEAD_FLANK_ATTACK,

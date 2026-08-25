@@ -5,7 +5,6 @@ import base64
 import importlib
 import json
 import math
-import os
 import pprint
 import random
 import sys
@@ -19,7 +18,7 @@ from mitmproxy import ctx, http
 
 def find_repo_root(path: Path) -> Path:
     for parent in (path, *path.parents):
-        if (parent / "empire").is_dir():
+        if (parent / "bot" / "scheduler.py").is_file():
             return parent
     return path.parents[2]
 
@@ -28,9 +27,11 @@ REPO_ROOT = find_repo_root(Path(__file__).resolve())
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from empire.bot.populate_database_rbc import adi_target_row, gaa_level_from_value, upsert_rbc_rows
-from empire.bot import bot
-from empire.bot.storm_database import (
+from bot import account_context
+from bot import populate_database_rbc as rbc_db
+from bot.populate_database_rbc import adi_target_row, gaa_level_from_value, upsert_rbc_rows
+from bot import bot
+from bot.storm_database import (
     STORM_KID,
     cleanup_expired_storm_targets,
     ensure_storm_tables,
@@ -41,19 +42,20 @@ from empire.bot.storm_database import (
     storm_targets_from_gaa,
     upsert_storm_targets,
 )
-from empire.bot.test_psql_connection import connect, read_connection_config
-from empire.network_sender.websockets import OUTER_WEBSOCKET
-from empire.sand_rbc_farm.main import AREA_BARRON, parse_xt_packet
+from bot.test_psql_connection import connect, read_connection_config
+from bot.network_sender.websockets import OUTER_WEBSOCKET
+from bot.sand_rbc_farm.main import AREA_BARRON, parse_xt_packet
 
 
 bot = importlib.reload(bot)
 task_scheduler = importlib.reload(importlib.import_module("bot.scheduler"))
 
 
-HERE = REPO_ROOT / "empire" / "bot"
+HERE = REPO_ROOT / "bot"
 CAPTURE_FOLDER = HERE / "logs"
 CONTROL_LOG = HERE / "rbc_proxy_listener.log"
 CONTROL_FILE = HERE / "proxy_control.json"
+DEFAULT_CONTROL_FILE = CONTROL_FILE
 ROLL_SECONDS = 10
 CONTROL_POLL_SECONDS = 1.0
 NO_TARGET_RETRY_RANGE = (55.0, 145.0)
@@ -62,7 +64,7 @@ STORM_TARGET_LEVELS_DEFAULT = (60, 70, 80)
 STORM_SCAN_INTERVAL_DEFAULT = (4.0, 6.0)
 STORM_SCAN_RADIUS_DEFAULT = 52
 STORM_TARGET_FRESH_SECONDS_DEFAULT = 120
-MAX_CONSECUTIVE_CRA_ERRORS = 1
+MAX_CONSECUTIVE_CRA_ERRORS = 2
 MAX_HOURLY_CRA_ERRORS = 5
 CRA_STATUS_REASONS = {
     # Observed server reject: requested LID is already assigned to another active march.
@@ -131,14 +133,53 @@ def control_log(message: str) -> None:
             pass
 
 
+def control_candidates() -> list[Path]:
+    paths = [DEFAULT_CONTROL_FILE]
+    account_root = HERE / "account_data"
+    if account_root.exists():
+        paths.extend(sorted(account_root.glob("*/proxy_control.json")))
+    return paths
+
+
+def bind_account_from_state(state: dict) -> None:
+    global CAPTURE_FOLDER, CONTROL_LOG, CONTROL_FILE
+    aid = state.get("aid")
+    username = state.get("username") or state.get("account_name")
+    if not aid:
+        return
+    context = account_context.for_aid(str(aid), str(username) if username else None)
+    CONTROL_FILE = context.control_file
+    CAPTURE_FOLDER = context.logs_dir
+    CONTROL_LOG = context.listener_log
+    bot.configure_account(str(username) if username else None, str(aid))
+    rbc_db.set_account_aid(str(aid))
+
+
 def load_control() -> dict:
-    if not CONTROL_FILE.exists():
+    global CONTROL_FILE
+    selected_path = CONTROL_FILE if CONTROL_FILE.exists() else None
+    selected_state: dict | None = None
+    for path in control_candidates():
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        if selected_state is None:
+            selected_path = path
+            selected_state = data
+        if data.get("running"):
+            selected_path = path
+            selected_state = data
+            break
+    if selected_state is None:
         return {"running": False, "max_attacks": 0, "attacks_sent": 0, "pending": None}
-    try:
-        data = json.loads(CONTROL_FILE.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {"running": False, "max_attacks": 0, "attacks_sent": 0, "pending": None}
-    return data if isinstance(data, dict) else {"running": False, "max_attacks": 0, "attacks_sent": 0, "pending": None}
+    CONTROL_FILE = selected_path or CONTROL_FILE
+    bind_account_from_state(selected_state)
+    return selected_state
 
 
 def save_control(data: dict) -> None:
@@ -875,9 +916,9 @@ def rbc_id_for_area(area: tuple[int, int, int] | None) -> int | None:
             """
             SELECT id
             FROM rbc
-            WHERE kingdom_id = %s AND x_coordinate = %s AND y_coordinate = %s
+            WHERE aid = %s AND kingdom_id = %s AND x_coordinate = %s AND y_coordinate = %s
             """,
-            (bot.SANDS_KID, x_coordinate, y_coordinate),
+            (bot.current_aid(), bot.SANDS_KID, x_coordinate, y_coordinate),
         )
         row = cur.fetchone()
     return int(row[0]) if row is not None else None
@@ -885,7 +926,10 @@ def rbc_id_for_area(area: tuple[int, int, int] | None) -> int | None:
 
 def shorten_commander_return(lid: int, march_id: int | None, rbc_id: int | None, return_epoch: float) -> None:
     with db().cursor() as cur:
-        cur.execute("SELECT available_after FROM commander_state WHERE lord_id = %s", (int(lid),))
+        cur.execute(
+            "SELECT available_after FROM commander_state WHERE aid = %s AND lord_id = %s",
+            (bot.current_aid(), int(lid)),
+        )
         row = cur.fetchone()
         if row is None:
             return
@@ -899,12 +943,13 @@ def shorten_commander_return(lid: int, march_id: int | None, rbc_id: int | None,
             UPDATE commander_state
             SET available_after = %s,
                 status = %s,
-                march_id = %s,
+                march_id = COALESCE(march_id, %s),
                 target_rbc_id = COALESCE(%s, target_rbc_id),
                 updated_at = %s
-            WHERE lord_id = %s
+            WHERE aid = %s
+              AND lord_id = %s
             """,
-            (next_available, status, march_id, rbc_id, now, int(lid)),
+            (next_available, status, march_id, rbc_id, now, bot.current_aid(), int(lid)),
         )
     db().commit()
 
@@ -928,9 +973,10 @@ def next_allowed_commander_wait(target_lids: set[int], allowed_lids=None) -> int
             """
             SELECT MIN(available_after)
             FROM commander_state
-            WHERE lord_id = ANY(%s)
+            WHERE aid = %s
+              AND lord_id = ANY(%s)
             """,
-            (allowed,),
+            (bot.current_aid(), allowed),
         )
         row = cur.fetchone()
     if row is None or row[0] is None:
@@ -1076,7 +1122,8 @@ def process_live_cra_response(decoded: str) -> bool:
             sent_at,
             travel_seconds,
             troop_count=troop_count,
-            return_seconds=return_seconds,
+            return_seconds=None,
+            lid=int(lid),
         )
     state["last_cra"] = None
     state["cra_consecutive_errors"] = 0
@@ -1091,7 +1138,7 @@ def process_live_cra_response(decoded: str) -> bool:
         f"proxy_cra_ack target={target['x']}:{target['y']} kid={target['kingdom_id']} "
         f"kind={target_kind} task={task_name} level={target.get('target_level', bot.TARGET_LEVEL)} lid={lid} mid={march_id} "
         f"army_count={last_cra.get('army_count', 'unknown')} travel_duration={travel_seconds} "
-        f"return_duration={return_seconds}"
+        "return_duration=pending_cat"
     )
     return True
 
@@ -1129,7 +1176,7 @@ def process_live_cat_response(decoded: str) -> bool:
         lid = int(lord_id)
     except (TypeError, ValueError):
         return False
-    if lid not in bot.FIRST_13_COMMANDER_LIDS:
+    if lid not in bot.known_commander_lids():
         return False
 
     source_area = movement_area(movement, "SA")
@@ -1149,6 +1196,19 @@ def process_live_cat_response(decoded: str) -> bool:
             ruby_loot=ruby_loot,
             raw_result=payload if isinstance(payload, dict) else {},
         )
+    rbc_result_updated = False
+    # CAT is a separate return movement, so its MID can differ from the original CRA MID.
+    # Match RBC results by the attacked RBC plus the commander LID instead.
+    if rbc_id is not None:
+        rbc_result_updated = bot.mark_rbc_result(
+            db(),
+            rbc_id=rbc_id,
+            lid=lid,
+            return_seconds=return_seconds,
+            coin_loot=coin_loot,
+            ruby_loot=ruby_loot,
+            raw_result=payload if isinstance(payload, dict) else {},
+        )
     return_epoch = bot.now_epoch() + return_seconds + random.uniform(*bot.COMMANDER_RETURN_HOLD_RANGE)
     shorten_commander_return(lid, march_id_int, rbc_id, return_epoch)
     target_text = f"{source_area[1]}:{source_area[2]}" if source_area is not None else "unknown"
@@ -1156,7 +1216,7 @@ def process_live_cat_response(decoded: str) -> bool:
     control_log(
         f"proxy_cat_return target={target_text} kid={packet_kid} lid={lid} mid={march_id_int} "
         f"result_flag={result_flag} coin_loot={coin_loot} ruby_loot={ruby_loot} "
-        f"return_duration={return_seconds} available_after={int(return_epoch)}"
+        f"return_duration={return_seconds} rbc_attack_updated={rbc_result_updated} available_after={int(return_epoch)}"
     )
     return True
 

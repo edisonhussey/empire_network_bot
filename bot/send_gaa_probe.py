@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 import time
 from collections import Counter
@@ -12,7 +11,7 @@ from typing import Any
 
 def find_repo_root(path: Path) -> Path:
     for parent in (path, *path.parents):
-        if (parent / "empire").is_dir():
+        if (parent / "bot" / "scheduler.py").is_file():
             return parent
     return path.parents[1]
 
@@ -21,12 +20,12 @@ REPO_ROOT = find_repo_root(Path(__file__).resolve())
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from empire.sand_rbc_farm.main import extract_raw_packet, parse_xt_packet
+from bot.sand_rbc_farm.main import extract_raw_packet, parse_xt_packet
 
 
-CONTROL_FILE = REPO_ROOT / "empire" / "bot" / "proxy_control.json"
-CONTROL_LOG = REPO_ROOT / "empire" / "bot" / "rbc_proxy_listener.log"
-LOGS_DIR = REPO_ROOT / "empire" / "bot" / "logs"
+CONTROL_FILE = REPO_ROOT / "bot" / "proxy_control.json"
+CONTROL_LOG = REPO_ROOT / "bot" / "rbc_proxy_listener.log"
+LOGS_DIR = REPO_ROOT / "bot" / "logs"
 STORM_KID = 4
 MAP_CHUNK_SIZE = 13
 

@@ -2,44 +2,40 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
-import time
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def find_repo_root(path: Path) -> Path:
     for parent in (path, *path.parents):
-        if (parent / "empire").is_dir():
+        if (parent / "bot" / "scheduler.py").is_file():
             return parent
-    return path.parents[2]
+    return path.parents[1]
 
 
 REPO_ROOT = find_repo_root(Path(__file__).resolve())
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from empire.bot import bot
+from bot import bot as core
+from bot.storm_database import cleanup_expired_storm_targets, ensure_storm_tables
+from bot.test_psql_connection import connect, read_connection_config
+from bot import sands_proxy
+from bot import scheduler as task_scheduler
 
 
-CONTROL_FILE = REPO_ROOT / "empire" / "bot" / "proxy_control.json"
-CONTROL_LOG = REPO_ROOT / "empire" / "bot" / "rbc_proxy_listener.log"
-ACK_GRACE_SECONDS = 20.0
+CONTROL_FILE = REPO_ROOT / "bot" / "proxy_control.json"
+DEFAULT_LOG_DIR = REPO_ROOT / "bot" / "logs"
 
-IMPORTANT_LOG_PATTERNS = (
-    "rbc_proxy_listener_loaded",
-    "proxy_idle",
-    "proxy_adi_sent",
-    "proxy_adi_skip",
-    "proxy_cra_pending",
-    "proxy_cra_sent",
-    "proxy_cra_ack",
-    "proxy_cra_error",
-    "proxy_cra_ack_unparsed",
-    "proxy_cat_return",
-    "proxy_loop_error",
-    "proxy_stopped",
-)
+
+def configure_account(account_name: str):
+    global CONTROL_FILE, DEFAULT_LOG_DIR
+    context = core.configure_account(account_name)
+    CONTROL_FILE = context.control_file
+    DEFAULT_LOG_DIR = context.logs_dir
+    return context
 
 
 def load_control() -> dict:
@@ -52,142 +48,183 @@ def load_control() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def save_control(data: dict) -> None:
-    CONTROL_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = CONTROL_FILE.with_suffix(CONTROL_FILE.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    tmp.replace(CONTROL_FILE)
+def status() -> None:
+    state = load_control()
+    print(
+        "control "
+        f"running={state.get('running')} transport_only={state.get('transport_only')} "
+        f"mode={state.get('mode')} pending={state.get('pending')} "
+        f"attacks_sent={state.get('attacks_sent')} max_attacks={state.get('max_attacks')}"
+    )
+    with connect(read_connection_config()) as conn:
+        core.ensure_bot_tables(conn)
+        ensure_storm_tables(conn)
+        cleanup_expired_storm_targets(conn)
+        db_pending = core.load_proxy_pending_db(conn)
+        db_last_cra = core.load_proxy_last_cra_db(conn)
+        print(f"db_proxy_pending={db_pending}")
+        print(f"db_proxy_last_cra={db_last_cra}")
+        stats = core.attack_run_stats(conn, started_at=int(state.get("started_at") or 0))
+        print(
+            "db_run_stats "
+            f"attacks={stats['db_attacks']} completed={stats['db_completed']} "
+            f"coin_loot={stats['coin_loot']} ruby_loot={stats['ruby_loot']}"
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT target_level, status, count(*)
+                FROM storm_target
+                WHERE aid = %s
+                  AND kingdom_id = 4
+                  AND area_type = 25
+                  AND expires_at > extract(epoch from now())::bigint
+                GROUP BY target_level, status
+                ORDER BY target_level NULLS FIRST, status
+                """,
+                (core.current_aid(),),
+            )
+            for level, target_status, count in cur.fetchall():
+                print(f"storm_targets level={level} status={target_status} count={count}")
+            cur.execute(
+                """
+                SELECT march_id, x_coordinate, y_coordinate, target_level, lord_id, commander_number, status, duration
+                FROM attack
+                WHERE aid = %s
+                  AND target_kind = 'storm_target'
+                ORDER BY time_created DESC NULLS LAST
+                LIMIT 10
+                """,
+                (core.current_aid(),),
+            )
+            for march_id, x, y, level, lid, commander_number, attack_status, duration in cur.fetchall():
+                print(
+                    "storm_attack "
+                    f"mid={march_id} target={x}:{y} level={level} lid={lid} commander={commander_number} "
+                    f"status={attack_status} travel_duration={duration}"
+                )
 
 
-def bot_duration_text(state: dict) -> str:
-    try:
-        started_at = int(state.get("started_at") or 0)
-    except (TypeError, ValueError):
-        started_at = 0
-    if started_at <= 0:
-        return "00:00"
-    try:
-        stopped_at = int(state.get("stopped_at") or 0)
-    except (TypeError, ValueError):
-        stopped_at = 0
-    end_at = stopped_at if stopped_at > 0 else bot.now_epoch()
-    seconds = max(0, end_at - started_at)
-    hours, remainder = divmod(seconds, 3600)
-    minutes = remainder // 60
-    return f"{hours:02d}:{minutes:02d}"
+def build_core_args(args: argparse.Namespace) -> SimpleNamespace:
+    max_cra_per_hour = int(args.max_cra_per_hour)
+    if max_cra_per_hour <= 0:
+        max_cra_per_hour = int(args.max_attacks)
+    return SimpleNamespace(
+        max_attacks=int(args.max_attacks),
+        max_cra_per_hour=max_cra_per_hour,
+        storm_task=selected_storm_task_name(args),
+        levels=args.levels,
+        source_x=int(args.source_x),
+        source_y=int(args.source_y),
+        hbw=int(args.hbw),
+        ptt=int(args.ptt),
+        scan_min=float(args.scan_min),
+        scan_max=float(args.scan_max),
+        scan_radius=int(args.scan_radius),
+        target_fresh_seconds=int(args.target_fresh_seconds),
+        use_randomizer_gaa_wait=bool(args.use_randomizer_gaa_wait),
+    )
 
 
-def stop_summary(state: dict, reason: str | None = None) -> str:
-    reason_text = reason or state.get("stop_reason") or "stopped"
-    attacks_sent = int(state.get("attacks_sent", 0) or 0)
-    return f"reason={reason_text} attacks_sent={attacks_sent} duration={bot_duration_text(state)}"
+def scheduler_task(task_name: str):
+    if not task_name:
+        return None
+    for task in task_scheduler.TASKS:
+        if task.name == task_name:
+            return task
+    return None
 
 
-def stop_control(state: dict, reason: str) -> dict:
-    state["running"] = False
-    state["pending"] = None
-    state["stopped_at"] = bot.now_epoch()
-    state["stop_reason"] = reason
-    save_control(state)
-    return state
+def selected_storm_task_name(args: argparse.Namespace) -> str:
+    if args.task:
+        return args.task
+    for task in task_scheduler.TASKS:
+        if task.enabled and int(task.kingdom_id) != int(core.SANDS_KID):
+            return task.name
+    return "storm_custom"
 
 
-def important_log_line(line: str) -> bool:
-    if "websocket_start" in line:
-        return "selected=yes" in line
-    if "rbc_upsert" in line and "source=adi" in line:
+def should_run_sands(args: argparse.Namespace) -> bool:
+    if args.mode == "sands":
         return True
-    return any(pattern in line for pattern in IMPORTANT_LOG_PATTERNS)
+    if args.mode == "storm":
+        return False
+    enabled = [task for task in task_scheduler.TASKS if task.enabled]
+    if enabled:
+        return all(int(task.kingdom_id) == int(core.SANDS_KID) for task in enabled)
+    task = scheduler_task(args.task)
+    if task is not None:
+        return int(task.kingdom_id) == int(core.SANDS_KID)
+    return False
 
 
-def terminal_line(line: str) -> str:
-    stripped = line.rstrip()
-    match = re.match(r"^\[(?P<ts>[^\]]+)\]\s+(?P<msg>.*)$", stripped)
-    if not match:
-        return stripped
-    timestamp = match.group("ts").split(" ")[-1]
-    return f"[{timestamp}] {match.group('msg')}"
+def start(args: argparse.Namespace) -> int:
+    if should_run_sands(args):
+        return sands_proxy.main(["--account-name", args.account_name, "--start", "--max-attacks", str(int(args.max_attacks))])
 
-
-def print_new_log_lines(start_pos: int) -> int:
-    if not CONTROL_LOG.exists():
-        return start_pos
-    with CONTROL_LOG.open("r", encoding="utf-8", errors="replace") as handle:
-        handle.seek(start_pos)
-        for line in handle:
-            if important_log_line(line):
-                print(terminal_line(line), flush=True)
-        return handle.tell()
-
-
-def monitor_start() -> None:
-    position = CONTROL_LOG.stat().st_size if CONTROL_LOG.exists() else 0
-    stopped_seen_at = None
-    print("proxy bot monitor active; Ctrl+C stops the control loop", flush=True)
-    while True:
-        position = print_new_log_lines(position)
-        state = load_control()
-        if not state.get("running"):
-            if isinstance(state.get("last_cra"), dict):
-                if stopped_seen_at is None:
-                    stopped_seen_at = time.time()
-                if time.time() - stopped_seen_at < ACK_GRACE_SECONDS:
-                    time.sleep(0.5)
-                    continue
-            reason = state.get("stop_reason") or "stopped"
-            print(f"proxy bot stopped {stop_summary(state, reason)}", flush=True)
-            return
-        stopped_seen_at = None
-        time.sleep(0.5)
+    args.log_dir.mkdir(parents=True, exist_ok=True)
+    core.LOG_FILE = (args.log_dir / datetime.now().strftime("proxy_bot_%Y%m%d_%H%M%S.log")).open(
+        "a",
+        encoding="utf-8",
+    )
+    try:
+        return core.run_storm_proxy(build_core_args(args))
+    except KeyboardInterrupt:
+        core.stop_proxy_transport("keyboard_interrupt")
+        print("\nproxy_bot stopped from Ctrl+C", flush=True)
+        return 130
+    finally:
+        if core.LOG_FILE is not None:
+            core.LOG_FILE.close()
+            core.LOG_FILE = None
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Control the mitmproxy Sands level-61 RBC process.")
+    parser = argparse.ArgumentParser(description="Proxy driver. Sands uses the old ADI/CRA DB loop; Storm drives scans.")
+    parser.add_argument("--account-name", "--username", dest="account_name", required=True)
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--start", action="store_true", help="start the proxy-controlled bot loop")
-    group.add_argument("--end", action="store_true", help="stop the bot loop while leaving mitmproxy logged in")
-    group.add_argument("--status", action="store_true", help="print current proxy control state")
-    parser.add_argument("--max-attacks", type=int, default=1, help="stop after this many CRA packets are sent")
-    return parser.parse_args(argv)
+    group.add_argument("--start", action="store_true", help="drive attacks through the active mitmproxy session")
+    group.add_argument("--end", action="store_true", help="stop the driver and clear pending proxy work")
+    group.add_argument("--status", action="store_true", help="show current control/database state")
+    parser.add_argument("--mode", choices=("auto", "sands", "storm"), default="auto")
+    parser.add_argument("--max-attacks", type=int, default=1)
+    parser.add_argument("--max-cra-per-hour", type=int, default=0, help="0 means use --max-attacks for this run")
+    parser.add_argument("--task", default=None)
+    parser.add_argument("--levels", default="60,70,80")
+    parser.add_argument("--source-x", type=int, default=core.STORM_SOURCE_X)
+    parser.add_argument("--source-y", type=int, default=core.STORM_SOURCE_Y)
+    parser.add_argument("--hbw", type=int, default=core.STORM_HBW)
+    parser.add_argument("--ptt", type=int, default=core.STORM_PTT)
+    parser.add_argument("--scan-min", type=float, default=core.STORM_SCAN_INTERVAL_RANGE[0])
+    parser.add_argument("--scan-max", type=float, default=core.STORM_SCAN_INTERVAL_RANGE[1])
+    parser.add_argument("--scan-radius", type=int, default=core.STORM_SCAN_RADIUS)
+    parser.add_argument("--target-fresh-seconds", type=int, default=core.STORM_TARGET_FRESH_SECONDS)
+    parser.add_argument("--use-randomizer-gaa-wait", action="store_true")
+    parser.add_argument("--log-dir", type=Path, default=None)
+    args = parser.parse_args(argv)
+    if args.scan_max < args.scan_min:
+        parser.error("--scan-max must be >= --scan-min")
+    if args.start and args.max_attacks < 1:
+        parser.error("--max-attacks must be >= 1")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    state = load_control()
+    context = configure_account(args.account_name)
+    if args.log_dir is None:
+        args.log_dir = context.logs_dir
     if args.status:
-        print(json.dumps(state, indent=2, sort_keys=True))
+        status()
         return 0
     if args.end:
-        state = stop_control(state, "manual_end")
-        print(f"proxy bot stopped {stop_summary(state)}; mitmproxy session can stay open ({CONTROL_FILE})")
+        state = load_control()
+        if state.get("mode") == "sands":
+            return sands_proxy.main(["--account-name", args.account_name, "--end"])
+        core.stop_proxy_transport("manual_end")
+        print("proxy_bot stopped; mitmproxy session can stay open", flush=True)
         return 0
-
-    state = {
-        "running": True,
-        "mode": "sands",
-        "transport_only": False,
-        "runner": "proxy_bot.py",
-        "max_attacks": max(0, int(args.max_attacks)),
-        "attacks_sent": 0,
-        "started_at": bot.now_epoch(),
-        "stopped_at": None,
-        "pending": None,
-        "last_cra": None,
-        "cra_consecutive_errors": 0,
-        "cra_error_timestamps": [],
-        "stop_reason": None,
-    }
-    save_control(state)
-    print(f"proxy bot started mode=sands max_attacks={state['max_attacks']} control={CONTROL_FILE}")
-    try:
-        monitor_start()
-    except KeyboardInterrupt:
-        state = stop_control(load_control(), "keyboard_interrupt")
-        print(
-            f"\nproxy bot stopped from Ctrl+C; {stop_summary(state)}",
-            flush=True,
-        )
-    return 0
+    return start(args)
 
 
 if __name__ == "__main__":

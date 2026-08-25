@@ -15,11 +15,12 @@ if __package__ in {None, ""}:
 else:
     REPO_ROOT = Path(__file__).resolve().parents[1]
 
-from empire.bot.storm_database import cleanup_expired_storm_targets, ensure_storm_tables
-from empire.bot.test_psql_connection import connect, read_connection_config
+from bot import bot as core
+from bot.storm_database import cleanup_expired_storm_targets, ensure_storm_tables
+from bot.test_psql_connection import connect, read_connection_config
 
 
-CONTROL_FILE = REPO_ROOT / "empire" / "bot" / "proxy_control.json"
+CONTROL_FILE = REPO_ROOT / "bot" / "proxy_control.json"
 DEFAULT_LEVELS = (60, 70, 80)
 DEFAULT_SOURCE_X = 675
 DEFAULT_SOURCE_Y = 675
@@ -27,6 +28,12 @@ DEFAULT_SCAN_RADIUS = 52
 DEFAULT_SCAN_MIN_SECONDS = 4.0
 DEFAULT_SCAN_MAX_SECONDS = 6.0
 DEFAULT_TARGET_FRESH_SECONDS = 120
+
+
+def configure_account(account_name: str) -> None:
+    global CONTROL_FILE
+    context = core.configure_account(account_name)
+    CONTROL_FILE = context.control_file
 
 
 def load_control() -> dict[str, Any]:
@@ -72,6 +79,10 @@ def start(args: argparse.Namespace) -> None:
             "running": True,
             "transport_only": True,
             "mode": "storm",
+            "username": core.CURRENT_ACCOUNT_NAME,
+            "aid": core.current_aid(),
+            "account_root": str(core.BOT_STATE_DIR),
+            "control_file": str(CONTROL_FILE),
             "pending": None,
             "last_cra": None,
             "attacks_sent": 0,
@@ -108,7 +119,7 @@ def start(args: argparse.Namespace) -> None:
         f"task={state['storm_task']} source={args.source_x}:{args.source_y} "
         f"levels={state['target_levels']} max_attacks={state['max_attacks']} "
         f"scan={args.scan_min:.1f}-{args.scan_max:.1f}s radius={args.scan_radius} "
-        "transport_only=true run_proxy_botv2_to_drive"
+        "transport_only=true run_proxy_bot_to_drive"
     )
 
 
@@ -145,34 +156,39 @@ def status(_: argparse.Namespace) -> None:
                 """
                 SELECT target_level, status, count(*)
                 FROM storm_target
-                WHERE kingdom_id = 4
+                WHERE aid = %s
+                  AND kingdom_id = 4
                   AND area_type = 25
                   AND expires_at > extract(epoch from now())::bigint
                 GROUP BY target_level, status
                 ORDER BY target_level NULLS FIRST, status
-                """
+                """,
+                (core.current_aid(),),
             )
             for level, target_status, count in cur.fetchall():
                 print(f"storm_targets level={level} status={target_status} count={count}")
             cur.execute(
                 """
-                SELECT march_id, x_coordinate, y_coordinate, target_level, status, result_flag
+                SELECT march_id, x_coordinate, y_coordinate, target_level, lord_id, commander_number, status, result_flag
                 FROM attack
-                WHERE target_kind = 'storm_target'
+                WHERE aid = %s
+                  AND target_kind = 'storm_target'
                 ORDER BY time_created DESC NULLS LAST
                 LIMIT 10
-                """
+                """,
+                (core.current_aid(),),
             )
             for row in cur.fetchall():
                 print(
                     "storm_attack "
                     f"mid={row[0]} target={row[1]}:{row[2]} level={row[3]} "
-                    f"status={row[4]} result_flag={row[5]}"
+                    f"lid={row[4]} commander={row[5]} status={row[6]} result_flag={row[7]}"
                 )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Control the active mitmproxy Storm runner.")
+    parser.add_argument("--account-name", "--username", dest="account_name", required=True)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--start", action="store_true")
     group.add_argument("--end", action="store_true")
@@ -196,6 +212,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    configure_account(args.account_name)
     if args.start:
         start(args)
     elif args.end:

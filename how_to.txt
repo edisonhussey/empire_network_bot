@@ -13,14 +13,14 @@ Run from the repo root:
 
 For the bot-controlled RBC/Sands run, use:
 
-  mitmdump -s empire/bot/rbc_proxy_listener.py
+  mitmdump -s bot/rbc_proxy_listener.py
 
 Leave that terminal open, then run the game/browser through proxy
 127.0.0.1:8080 and log in normally.
 
-Evidence this is the last-night listener:
+The listener writes current runtime logs here:
 
-  empire/bot/rbc_proxy_listener.log
+  bot/rbc_proxy_listener.log
 
 It contains Aug 20 night / Aug 21 morning lines like:
 
@@ -57,12 +57,18 @@ bot/proxy_bot.py is kept for the old Sands/RBC flow only. It hardcodes:
 
 4. Important files
 
-  empire/bot/rbc_proxy_listener.py   mitmproxy listener used by the controlled bot
-  empire/bot/rbc_proxy_listener.log  listener/bot action log
-  empire/bot/proxy_control.json      runtime control state
-  bot/proxy_bot.py                   Sands-only wrapper
+  bot/rbc_proxy_listener.py          mitmproxy listener used by the controlled bot
+  bot/bot.py                         core Sands/Storm bot logic
   bot/proxy_botv2.py                 combined Sands/Storm driver
+  bot/proxy_bot.py                   Sands-only wrapper used by proxy_botv2 for Sands
   bot/scheduler.py                   hardcoded enabled tasks and commander allocation
+  bot/sand_rbc_farm/main.py          packet parser and Sands packet helpers
+  bot/game_data/                     current attack/troop/tool/kingdom definitions
+  bot/network_sender/websockets.py   websocket endpoint matching
+  bot/proxy_control.json             runtime control state
+  bot/psql_connect.ini               database connection config
+  bot/rbc_proxy_listener.log         listener/bot action log
+  bot/logs/                          capture logs and proxy_botv2 logs
 
 5. About proxy_botv2.py
 

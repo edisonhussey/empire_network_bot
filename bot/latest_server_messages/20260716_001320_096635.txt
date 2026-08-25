@@ -1,0 +1,19 @@
+[00:13:20.096] SERVER -> CLIENT
+XT PACKET
+  fields:
+    type: xt
+    command: dms
+    request_id: 1
+    status: 0
+    payload: {"MID":[2190295978]}
+
+  json_payload:
+{
+  "MID": [
+    2190295978
+  ]
+}
+
+  raw:
+%xt%dms%1%0%{"MID":[2190295978]}%
+---

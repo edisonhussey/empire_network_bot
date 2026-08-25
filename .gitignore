@@ -12,3 +12,12 @@ empire/sand_rbc_farm/logs
 empire/bot/psql_connect.ini
 empire/bot/logs
 empire/bot/rbc_proxy_listener.log
+account_data
+bot/logs
+credentials
+unused
+venv
+instructions.txt
+how_to_.txt
+ventrilo_conn.txt
+workspace.txt

@@ -14,11 +14,12 @@ from pathlib import Path
 from typing import Any
 
 import psycopg
+from psycopg.types.json import Jsonb
 
 
 def find_repo_root(path: Path) -> Path:
     for parent in (path, *path.parents):
-        if (parent / "empire").is_dir() and (parent / "bot").is_dir():
+        if (parent / "bot" / "scheduler.py").is_file():
             return parent
     return path.parents[2]
 
@@ -32,15 +33,18 @@ for path in (SCAN_ROOT, SCAN_ROOT / "pygge_repo"):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from empire.bot.test_psql_connection import connect, read_connection_config
-from empire.bot.storm_database import (
+from bot.test_psql_connection import connect, read_connection_config
+from bot import account_context
+from bot import storm_database as storm_db
+from bot.db_account import DEFAULT_BACKFILL_AID, ensure_account_columns
+from bot.storm_database import (
     STORM_KID,
     cleanup_expired_storm_targets,
     ensure_storm_tables,
     release_storm_target,
     reserve_storm_target,
 )
-from empire.sand_rbc_farm import main as farm
+from bot.sand_rbc_farm import main as farm
 
 try:
     from event_worker.castles import find_castle_xy
@@ -74,10 +78,12 @@ except ImportError:
 
 
 HERE = Path(__file__).resolve().parent
-BOT_STATE_DIR = REPO_ROOT / "empire" / "bot"
+BOT_STATE_DIR = REPO_ROOT / "bot"
 DEFAULT_ACCOUNT = SCAN_ROOT / "ventrilo.ini"
 DEFAULT_LOG_DIR = BOT_STATE_DIR / "logs"
 CONTROL_FILE = BOT_STATE_DIR / "proxy_control.json"
+CURRENT_ACCOUNT_NAME = "ventrilo"
+CURRENT_AID = DEFAULT_BACKFILL_AID
 SANDS_KID = 1
 TARGET_LEVEL = 61
 FIRST_13_COMMANDER_LIDS = (0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
@@ -89,11 +95,11 @@ TARGET_NO_LID_RETRY_RANGE = (18 * 60.0, 44 * 60.0)
 TARGET_BAD_LEVEL_RETRY_RANGE = (2.5 * 3600.0, 4.0 * 3600.0)
 TARGET_ERROR_RETRY_RANGE = (21 * 60.0, 53 * 60.0)
 HEURISTIC_RETURN_SECONDS = 30 * 60
-RETURN_HEURISTIC_MULTIPLIER = 1.3
+RETURN_HEURISTIC_MULTIPLIER = 0.3
 COMMANDER_RETURN_HOLD_RANGE = (45.0, 180.0)
 MAX_CRA_PER_HOUR_DEFAULT = 3
 MAX_CONSECUTIVE_ERRORS = 2
-MAX_STORM_CONSECUTIVE_CRA_REJECTS = 1
+MAX_STORM_CONSECUTIVE_CRA_REJECTS = 2
 STORM_SCAN_INTERVAL_RANGE = (5.5, 12.5)
 STORM_SCAN_RADIUS = 96
 STORM_TARGET_FRESH_SECONDS = 120
@@ -102,11 +108,42 @@ STORM_SOURCE_Y = 675
 STORM_HBW = -1
 STORM_PTT = 1
 PROXY_PENDING_TIMEOUT = 45.0
+
+
+def known_commander_lids() -> tuple[int, ...]:
+    commander_lids = set(FIRST_13_COMMANDER_LIDS)
+    for task in getattr(task_scheduler, "TASKS", ()):
+        commander_lids.update(int(lid) for lid in getattr(task, "commander_lids", ()) or ())
+    return tuple(sorted(commander_lids))
 PROXY_ADI_TO_CRA_TIMEOUT = 110.0
 PROXY_CRA_TIMEOUT = 135.0
 PROXY_CRA_TIMEOUT_GRACE = 8.0
 LOG_FILE = None
 task_scheduler = importlib.import_module("bot.scheduler")
+
+
+def current_aid() -> str:
+    return str(CURRENT_AID)
+
+
+def configure_account(account_name: str | None = None, aid: str | None = None):
+    global CURRENT_ACCOUNT_NAME, CURRENT_AID, BOT_STATE_DIR, DEFAULT_LOG_DIR, CONTROL_FILE
+    if account_name:
+        context = account_context.for_account_name(account_name)
+    elif aid:
+        context = account_context.for_aid(str(aid), CURRENT_ACCOUNT_NAME)
+    else:
+        context = account_context.for_aid(CURRENT_AID, CURRENT_ACCOUNT_NAME)
+    CURRENT_ACCOUNT_NAME = context.username or CURRENT_ACCOUNT_NAME
+    CURRENT_AID = context.aid
+    BOT_STATE_DIR = context.root
+    DEFAULT_LOG_DIR = context.logs_dir
+    CONTROL_FILE = context.control_file
+    farm.COMMANDER_STATE_PATH = context.gamestate_dir / "commander_state.json"
+    farm.RBC_STATE_PATH = context.gamestate_dir / "rbc_state.json"
+    farm.LATEST_SERVER_MESSAGES = context.latest_logs_dir
+    storm_db.set_account_aid(context.aid)
+    return context
 
 
 class SessionClosed(RuntimeError):
@@ -144,6 +181,7 @@ def estimated_return_seconds(outbound_seconds: float | int | None) -> int:
 
 
 def ensure_bot_tables(conn: psycopg.Connection) -> None:
+    aid = current_aid()
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -165,24 +203,25 @@ def ensure_bot_tables(conn: psycopg.Connection) -> None:
             )
             """
         )
-        commander_lids = set(FIRST_13_COMMANDER_LIDS)
-        for task in getattr(task_scheduler, "TASKS", ()):
-            commander_lids.update(int(lid) for lid in getattr(task, "commander_lids", ()) or ())
-        for lid in sorted(commander_lids):
+    conn.commit()
+    ensure_account_columns(conn, aid)
+    with conn.cursor() as cur:
+        for lid in known_commander_lids():
             cur.execute(
                 """
-                INSERT INTO commander_state (lord_id, available_after, status, updated_at)
-                VALUES (%s, 0, 'available', 0)
-                ON CONFLICT (lord_id) DO NOTHING
+                INSERT INTO commander_state (aid, lord_id, available_after, status, updated_at)
+                VALUES (%s, %s, 0, 'available', 0)
+                ON CONFLICT (aid, lord_id) DO NOTHING
                 """,
-                (lid,),
+                (aid, lid),
             )
     conn.commit()
 
 
 def runtime_float(conn: psycopg.Connection, key: str, default: float = 0.0) -> float:
+    aid = current_aid()
     with conn.cursor() as cur:
-        cur.execute("SELECT value_text FROM bot_runtime_state WHERE key = %s", (key,))
+        cur.execute("SELECT value_text FROM bot_runtime_state WHERE aid = %s AND key = %s", (aid, key))
         row = cur.fetchone()
     if row is None:
         return default
@@ -193,21 +232,23 @@ def runtime_float(conn: psycopg.Connection, key: str, default: float = 0.0) -> f
 
 
 def set_runtime_value(conn: psycopg.Connection, key: str, value: float | int | str) -> None:
+    aid = current_aid()
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO bot_runtime_state (key, value_text)
-            VALUES (%s, %s)
-            ON CONFLICT (key) DO UPDATE SET value_text = EXCLUDED.value_text
+            INSERT INTO bot_runtime_state (aid, key, value_text)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (aid, key) DO UPDATE SET value_text = EXCLUDED.value_text
             """,
-            (key, str(value)),
+            (aid, key, str(value)),
         )
     conn.commit()
 
 
 def runtime_json(conn: psycopg.Connection, key: str) -> dict[str, Any] | None:
+    aid = current_aid()
     with conn.cursor() as cur:
-        cur.execute("SELECT value_text FROM bot_runtime_state WHERE key = %s", (key,))
+        cur.execute("SELECT value_text FROM bot_runtime_state WHERE aid = %s AND key = %s", (aid, key))
         row = cur.fetchone()
     if row is None:
         return None
@@ -219,21 +260,23 @@ def runtime_json(conn: psycopg.Connection, key: str) -> dict[str, Any] | None:
 
 
 def set_runtime_json(conn: psycopg.Connection, key: str, value: dict[str, Any]) -> None:
+    aid = current_aid()
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO bot_runtime_state (key, value_text)
-            VALUES (%s, %s)
-            ON CONFLICT (key) DO UPDATE SET value_text = EXCLUDED.value_text
+            INSERT INTO bot_runtime_state (aid, key, value_text)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (aid, key) DO UPDATE SET value_text = EXCLUDED.value_text
             """,
-            (key, json.dumps(value, sort_keys=True)),
+            (aid, key, json.dumps(value, sort_keys=True)),
         )
     conn.commit()
 
 
 def delete_runtime_value(conn: psycopg.Connection, key: str) -> None:
+    aid = current_aid()
     with conn.cursor() as cur:
-        cur.execute("DELETE FROM bot_runtime_state WHERE key = %s", (key,))
+        cur.execute("DELETE FROM bot_runtime_state WHERE aid = %s AND key = %s", (aid, key))
     conn.commit()
 
 
@@ -262,8 +305,9 @@ def clear_proxy_last_cra_db(conn: psycopg.Connection) -> None:
 
 
 def clear_proxy_awaiting_db(conn: psycopg.Connection) -> None:
+    aid = current_aid()
     with conn.cursor() as cur:
-        cur.execute("DELETE FROM bot_runtime_state WHERE key IN ('proxy_pending', 'proxy_last_cra')")
+        cur.execute("DELETE FROM bot_runtime_state WHERE aid = %s AND key IN ('proxy_pending', 'proxy_last_cra')", (aid,))
     conn.commit()
 
 
@@ -447,6 +491,7 @@ def task_target_levels(task) -> tuple[int, ...]:
 
 def task_has_available_commander(conn: psycopg.Connection, task) -> bool:
     normalize_available_commanders(conn)
+    aid = current_aid()
     lids = tuple(int(lid) for lid in getattr(task, "commander_lids", ()) or ())
     if not lids:
         return True
@@ -455,12 +500,13 @@ def task_has_available_commander(conn: psycopg.Connection, task) -> bool:
             """
             SELECT 1
             FROM commander_state
-            WHERE lord_id = ANY(%s)
+            WHERE aid = %s
+              AND lord_id = ANY(%s)
               AND available_after <= %s
               AND status NOT IN ('reserved', 'pending_cra', 'outbound')
             LIMIT 1
             """,
-            (list(lids), now_epoch()),
+            (aid, list(lids), now_epoch()),
         )
         return cur.fetchone() is not None
 
@@ -470,25 +516,36 @@ def reserve_target_for_task(conn: psycopg.Connection, task) -> dict[str, Any] | 
     if not levels:
         return None
     now = now_epoch()
+    aid = current_aid()
     with conn.transaction():
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT id, kingdom_id, x_coordinate, y_coordinate, current_level, last_attacked
                 FROM rbc
-                WHERE kingdom_id = %s
+                WHERE aid = %s
+                  AND kingdom_id = %s
                   AND current_level = ANY(%s)
                   AND COALESCE(last_attacked, 0) <= %s
-                ORDER BY COALESCE(last_attacked, 0), random()
+                ORDER BY
+                    COALESCE(last_attacked, 0),
+                    floor(
+                        (
+                            abs(x_coordinate - %s)
+                            + abs(y_coordinate - %s)
+                            + random() * 24
+                        ) / 25
+                    ),
+                    random()
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
                 """,
-                (int(task.kingdom_id), list(levels), now),
+                (aid, int(task.kingdom_id), list(levels), now, farm.SOURCE_X, farm.SOURCE_Y),
             )
             row = cur.fetchone()
             if row is None:
                 return None
-            cur.execute("UPDATE rbc SET last_attacked = %s WHERE id = %s", (now + TARGET_RESERVE_SECONDS, row[0]))
+            cur.execute("UPDATE rbc SET last_attacked = %s WHERE aid = %s AND id = %s", (now + TARGET_RESERVE_SECONDS, aid, row[0]))
     return {
         "id": int(row[0]),
         "kingdom_id": int(row[1]),
@@ -503,25 +560,27 @@ def reserve_target_for_task(conn: psycopg.Connection, task) -> dict[str, Any] | 
 
 def reserve_target(conn: psycopg.Connection) -> dict[str, Any] | None:
     now = now_epoch()
+    aid = current_aid()
     with conn.transaction():
         with conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT id, kingdom_id, x_coordinate, y_coordinate, current_level, last_attacked
                 FROM rbc
-                WHERE kingdom_id = %s
+                WHERE aid = %s
+                  AND kingdom_id = %s
                   AND current_level = %s
                   AND COALESCE(last_attacked, 0) <= %s
                 ORDER BY COALESCE(last_attacked, 0), random()
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
                 """,
-                (SANDS_KID, TARGET_LEVEL, now),
+                (aid, SANDS_KID, TARGET_LEVEL, now),
             )
             row = cur.fetchone()
             if row is None:
                 return None
-            cur.execute("UPDATE rbc SET last_attacked = %s WHERE id = %s", (now + TARGET_RESERVE_SECONDS, row[0]))
+            cur.execute("UPDATE rbc SET last_attacked = %s WHERE aid = %s AND id = %s", (now + TARGET_RESERVE_SECONDS, aid, row[0]))
     return {
         "id": int(row[0]),
         "kingdom_id": int(row[1]),
@@ -534,13 +593,14 @@ def reserve_target(conn: psycopg.Connection) -> dict[str, Any] | None:
 
 
 def set_target_next_epoch(conn: psycopg.Connection, rbc_id: int, epoch: float, *, level: int | None = None) -> None:
+    aid = current_aid()
     with conn.cursor() as cur:
         if level is None:
-            cur.execute("UPDATE rbc SET last_attacked = %s WHERE id = %s", (int(epoch), rbc_id))
+            cur.execute("UPDATE rbc SET last_attacked = %s WHERE aid = %s AND id = %s", (int(epoch), aid, rbc_id))
         else:
             cur.execute(
-                "UPDATE rbc SET last_attacked = %s, current_level = %s WHERE id = %s",
-                (int(epoch), int(level), rbc_id),
+                "UPDATE rbc SET last_attacked = %s, current_level = %s WHERE aid = %s AND id = %s",
+                (int(epoch), int(level), aid, rbc_id),
             )
     conn.commit()
 
@@ -551,10 +611,11 @@ def release_target(conn: psycopg.Connection, rbc_id: int, retry_range: tuple[flo
 
 def restore_reserved_target(conn: psycopg.Connection, target: dict[str, Any]) -> None:
     previous = target.get("previous_last_attacked")
+    aid = current_aid()
     with conn.cursor() as cur:
         cur.execute(
-            "UPDATE rbc SET last_attacked = %s WHERE id = %s",
-            (previous, int(target["id"])),
+            "UPDATE rbc SET last_attacked = %s WHERE aid = %s AND id = %s",
+            (previous, aid, int(target["id"])),
         )
     conn.commit()
 
@@ -566,6 +627,7 @@ def choose_commander(
     allowed_lids: set[int] | tuple[int, ...] | list[int] | None = None,
 ) -> int | None:
     normalize_available_commanders(conn)
+    aid = current_aid()
     pool = FIRST_13_COMMANDER_LIDS if allowed_lids is None else tuple(int(lid) for lid in allowed_lids)
     allowed = [lid for lid in pool if lid in target_lids and lid in global_available]
     if not allowed:
@@ -577,14 +639,15 @@ def choose_commander(
                 """
                 SELECT lord_id
                 FROM commander_state
-                WHERE lord_id = ANY(%s)
+                WHERE aid = %s
+                  AND lord_id = ANY(%s)
                   AND available_after <= %s
                   AND status NOT IN ('reserved', 'pending_cra', 'outbound')
                 ORDER BY lord_id
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
                 """,
-                (allowed, now),
+                (aid, allowed, now),
             )
             row = cur.fetchone()
             if row is None:
@@ -598,8 +661,9 @@ def choose_commander(
                     target_rbc_id = NULL,
                     updated_at = %s
                 WHERE lord_id = %s
+                  AND aid = %s
                 """,
-                (now, lid),
+                (now, lid, aid),
             )
     return lid
 
@@ -607,20 +671,23 @@ def choose_commander(
 def release_commander(conn: psycopg.Connection, lid: int, *, available_after: float | None = None, status: str = "available") -> None:
     if available_after is None:
         available_after = now_epoch()
+    aid = current_aid()
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE commander_state
             SET available_after = %s, status = %s, march_id = NULL, target_rbc_id = NULL, updated_at = %s
             WHERE lord_id = %s
+              AND aid = %s
             """,
-            (int(available_after), status, now_epoch(), int(lid)),
+            (int(available_after), status, now_epoch(), int(lid), aid),
         )
     conn.commit()
 
 
 def normalize_available_commanders(conn: psycopg.Connection) -> None:
     now = now_epoch()
+    aid = current_aid()
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -630,35 +697,40 @@ def normalize_available_commanders(conn: psycopg.Connection) -> None:
                 target_rbc_id = NULL,
                 updated_at = %s
             WHERE available_after <= %s
+              AND aid = %s
               AND status IN ('reserved', 'pending_cra', 'outbound', 'returning', 'cra_timeout', 'cra_rejected')
             """,
-            (now, now),
+            (now, now, aid),
         )
     conn.commit()
 
 
 def mark_commander_pending(conn: psycopg.Connection, lid: int, rbc_id: int, available_after: float) -> None:
+    aid = current_aid()
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE commander_state
             SET available_after = %s, status = 'pending_cra', march_id = NULL, target_rbc_id = %s, updated_at = %s
             WHERE lord_id = %s
+              AND aid = %s
             """,
-            (int(available_after), int(rbc_id), now_epoch(), int(lid)),
+            (int(available_after), int(rbc_id), now_epoch(), int(lid), aid),
         )
     conn.commit()
 
 
 def mark_commander_outbound(conn: psycopg.Connection, lid: int, rbc_id: int, march_id: int, available_after: float) -> None:
+    aid = current_aid()
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE commander_state
             SET available_after = %s, status = 'outbound', march_id = %s, target_rbc_id = %s, updated_at = %s
             WHERE lord_id = %s
+              AND aid = %s
             """,
-            (int(available_after), int(march_id), int(rbc_id), now_epoch(), int(lid)),
+            (int(available_after), int(march_id), int(rbc_id), now_epoch(), int(lid), aid),
         )
     conn.commit()
 
@@ -701,8 +773,9 @@ def movement_from_response(response: dict[str, Any]) -> dict[str, Any]:
 
 def active_attack_count(conn: psycopg.Connection, seconds: int) -> int:
     cutoff = now_epoch() - seconds
+    aid = current_aid()
     with conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM attack WHERE time_created >= %s", (cutoff,))
+        cur.execute("SELECT count(*) FROM attack WHERE aid = %s AND time_created >= %s", (aid, cutoff))
         return int(cur.fetchone()[0])
 
 
@@ -727,13 +800,14 @@ def record_attack(
     travel_seconds: int | None,
     troop_count: int = 50,
     return_seconds: int | None = None,
+    lid: int | None = None,
 ) -> None:
-    if return_seconds is None:
-        return_seconds = estimated_return_seconds(travel_seconds)
+    aid = current_aid()
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO attack (
+                aid,
                 kingdom_id,
                 x_coordinate,
                 y_coordinate,
@@ -741,12 +815,20 @@ def record_attack(
                 time_created,
                 troop_count,
                 duration,
-                return_duration
+                return_duration,
+                target_kind,
+                target_id,
+                task_name,
+                target_level,
+                lord_id,
+                commander_number,
+                status
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (march_id) DO NOTHING
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'rbc', %s, %s, %s, %s, %s, 'sent')
+            ON CONFLICT (aid, march_id) DO NOTHING
             """,
             (
+                aid,
                 SANDS_KID,
                 int(target["x"]),
                 int(target["y"]),
@@ -754,10 +836,97 @@ def record_attack(
                 int(sent_at),
                 int(troop_count),
                 travel_seconds,
-                int(return_seconds),
+                int(return_seconds) if return_seconds is not None else None,
+                int(target["id"]) if target.get("id") is not None else None,
+                target.get("task_name"),
+                int(target.get("target_level", target.get("current_level", TARGET_LEVEL)) or TARGET_LEVEL),
+                int(lid) if lid is not None else None,
+                task_scheduler.commander_human_number(lid),
             ),
         )
     conn.commit()
+
+
+def mark_rbc_result(
+    conn: psycopg.Connection,
+    *,
+    rbc_id: int,
+    lid: int,
+    return_seconds: int | None,
+    coin_loot: int | None,
+    ruby_loot: int | None,
+    raw_result: dict[str, Any],
+    result_at: int | None = None,
+) -> bool:
+    epoch = now_epoch() if result_at is None else int(result_at)
+    aid = current_aid()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE attack
+            SET status = 'returning',
+                landed_at = %s,
+                result_received_at = %s,
+                return_duration = %s,
+                coin_loot = COALESCE(%s, coin_loot),
+                ruby_loot = COALESCE(%s, ruby_loot),
+                raw_result = %s
+            WHERE id = (
+                SELECT id
+                FROM attack
+                WHERE aid = %s
+                  AND target_kind = 'rbc'
+                  AND target_id = %s
+                  AND (lord_id = %s OR lord_id IS NULL)
+                  AND status = 'sent'
+                  AND time_created <= %s
+                ORDER BY time_created DESC NULLS LAST
+                LIMIT 1
+            )
+            """,
+            (
+                epoch,
+                epoch,
+                int(return_seconds) if return_seconds is not None else None,
+                coin_loot,
+                ruby_loot,
+                Jsonb(raw_result),
+                aid,
+                int(rbc_id),
+                int(lid),
+                epoch,
+            ),
+        )
+        updated = cur.rowcount > 0
+    conn.commit()
+    return updated
+
+
+def attack_run_stats(conn: psycopg.Connection, *, started_at: int | None = None) -> dict[str, int]:
+    aid = current_aid()
+    cutoff = int(started_at or 0)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                count(*)::bigint,
+                count(*) FILTER (WHERE landed_at IS NOT NULL)::bigint,
+                COALESCE(sum(coin_loot), 0)::bigint,
+                COALESCE(sum(ruby_loot), 0)::bigint
+            FROM attack
+            WHERE aid = %s
+              AND (%s <= 0 OR time_created >= %s)
+              AND target_kind IN ('rbc', 'storm_target')
+            """,
+            (aid, cutoff, cutoff),
+        )
+        total, completed, coins, rubies = cur.fetchone()
+    return {
+        "db_attacks": int(total or 0),
+        "db_completed": int(completed or 0),
+        "coin_loot": int(coins or 0),
+        "ruby_loot": int(rubies or 0),
+    }
 
 
 def send_one_attack(socket, conn: psycopg.Connection) -> bool:
@@ -819,11 +988,11 @@ def send_one_attack(socket, conn: psycopg.Connection) -> bool:
         movement = movement_from_response(response)
         march_id = int(movement.get("MID"))
         travel_seconds = int(float(movement.get("TT", 0) or 0))
-        return_seconds = estimated_return_seconds(travel_seconds)
-        commander_available = sent_at + travel_seconds + return_seconds + random.uniform(*COMMANDER_RETURN_HOLD_RANGE)
+        provisional_return_seconds = estimated_return_seconds(travel_seconds)
+        commander_available = sent_at + travel_seconds + provisional_return_seconds + random.uniform(*COMMANDER_RETURN_HOLD_RANGE)
         mark_commander_outbound(conn, lid, target["id"], march_id, commander_available)
         set_target_next_epoch(conn, target["id"], target_next_epoch(sent_at, travel_seconds), level=TARGET_LEVEL)
-        record_attack(conn, target, march_id, sent_at, travel_seconds, return_seconds=return_seconds)
+        record_attack(conn, target, march_id, sent_at, travel_seconds, return_seconds=None, lid=lid)
         log(
             f"cra_sent target={target['x']}:{target['y']} lid={lid} mid={march_id} "
             f"travel={travel_seconds} commander_after={int(commander_available)}"
@@ -987,6 +1156,10 @@ def prepare_proxy_transport(args: argparse.Namespace) -> None:
             "running": True,
             "transport_only": True,
             "mode": "storm",
+            "username": CURRENT_ACCOUNT_NAME,
+            "aid": current_aid(),
+            "account_root": str(BOT_STATE_DIR),
+            "control_file": str(CONTROL_FILE),
             "pending": None,
             "last_cra": None,
             "attacks_sent": 0,
@@ -1067,14 +1240,16 @@ def last_cra_matches_target(last_cra: Any, target_id: int) -> bool:
 
 
 def storm_target_result_status(conn: psycopg.Connection, target_id: int) -> str | None:
+    aid = current_aid()
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT status, sent_at, march_id
             FROM storm_target
-            WHERE id = %s
+            WHERE aid = %s
+              AND id = %s
             """,
-            (int(target_id),),
+            (aid, int(target_id)),
         )
         row = cur.fetchone()
     if row is None:
@@ -1118,7 +1293,7 @@ def wait_for_storm_cra_result(conn: psycopg.Connection, target_id: int, queued_a
             break
 
         with conn.cursor() as cur:
-            cur.execute("SELECT status FROM storm_target WHERE id = %s", (int(target_id),))
+            cur.execute("SELECT status FROM storm_target WHERE aid = %s AND id = %s", (current_aid(), int(target_id)))
             row = cur.fetchone()
         if row is not None and isinstance(row[0], str):
             if row[0].startswith("cra_status_"):
@@ -1190,12 +1365,13 @@ def queue_storm_cra(
                 """
                 SELECT march_id, duration
                 FROM attack
-                WHERE target_kind = 'storm_target'
+                WHERE aid = %s
+                  AND target_kind = 'storm_target'
                   AND target_id = %s
                 ORDER BY time_created DESC NULLS LAST
                 LIMIT 1
                 """,
-                (int(target["id"]),),
+                (current_aid(), int(target["id"])),
             )
             row = cur.fetchone()
         march_id, travel = row if row is not None else (None, None)
@@ -1313,13 +1489,14 @@ def run_storm_proxy(args: argparse.Namespace) -> int:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Conservative database-backed Sands/Storm runner.")
+    parser.add_argument("--account-name", "--username", dest="account_name", required=True)
     parser.add_argument("--mode", choices=("sands", "storm-proxy"), default="sands")
     parser.add_argument("--account-config", type=Path, default=DEFAULT_ACCOUNT)
     parser.add_argument("--max-attacks", type=int, default=1)
     parser.add_argument("--max-cra-per-hour", type=int, default=MAX_CRA_PER_HOUR_DEFAULT)
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR)
+    parser.add_argument("--log-dir", type=Path, default=None)
     parser.add_argument("--storm-task", default="storm_custom")
     parser.add_argument("--levels", default="60,70,80")
     parser.add_argument("--source-x", type=int, default=STORM_SOURCE_X)
@@ -1344,6 +1521,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     global LOG_FILE
     args = parse_args(argv)
+    context = configure_account(args.account_name)
+    if args.log_dir is None:
+        args.log_dir = context.logs_dir
     args.log_dir.mkdir(parents=True, exist_ok=True)
     LOG_FILE = (args.log_dir / datetime.now().strftime("empire_bot_%Y%m%d_%H%M%S.log")).open("a", encoding="utf-8")
     socket = None

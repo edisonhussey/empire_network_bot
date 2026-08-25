@@ -13,7 +13,7 @@ from typing import Any
 
 def find_repo_root(path: Path) -> Path:
     for parent in (path, *path.parents):
-        if (parent / "empire").is_dir():
+        if (parent / "bot" / "scheduler.py").is_file():
             return parent
     return path.parents[1]
 
