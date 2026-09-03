@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Commander Timeline</title>
+<style>
+  /* ============================================================
+     DESIGN TOKENS — "Sand Kingdom"
+     ============================================================ */
+  :root{
+    --bg:            #FBFAF8;
+    --panel:         #FFFFFF;
+    --hairline:      #EAE6DF;
+    --ink:           #2C2620;
+    --ink-soft:      #8C8478;
+    --ink-faint:     #B7AFA2;
+
+    --track-a:       #F6F4F0;   /* hatch base */
+    --track-b:       #EFEBE3;   /* hatch stripe */
+
+    --sand:          #E3D6BC;   /* bar fill */
+    --sand-hover:    #DACBAA;
+    --sand-text:     #4A3F2E;
+
+    --icon-red:      #C7402A;
+    --icon-red-dark: #A83420;
+    --icon-glyph:    #F4B942;
+
+    --accent:        #B5502E;
+
+    --row-h:         74px;
+    --label-w:       128px;
+    --ruler-h:       64px;
+    --header-h:      92px;
+
+    --radius-pill:   14px;
+    --radius-sm:     8px;
+
+    --shadow-bar:    0 1px 2px rgba(60,45,20,0.06), 0 1px 1px rgba(60,45,20,0.04);
+    --shadow-panel:  0 1px 0 rgba(20,15,5,0.04);
+
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  *{ box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+  html,body{ height:100%; margin:0; background:var(--bg); color:var(--ink); }
+
+  #app{
+    display:flex;
+    flex-direction:column;
+    height:100vh;
+    overflow:hidden;
+  }
+
+  /* ---------------- Header ---------------- */
+  .header{
+    height:var(--header-h);
+    flex:0 0 auto;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:0 28px;
+    background:var(--bg);
+    border-bottom:1px solid transparent;
+    z-index:20;
+  }
+  .header h1{
+    font-size:34px;
+    font-weight:650;
+    letter-spacing:-0.02em;
+    color:var(--ink-soft);
+    margin:0;
+  }
+  .header .sub{
+    font-size:13px;
+    color:var(--ink-faint);
+    margin-top:2px;
+    font-weight:500;
+  }
+  .header-right{ display:flex; align-items:center; gap:10px; }
+
+  .status-dot{
+    width:7px; height:7px; border-radius:50%;
+    background:var(--ink-faint);
+    display:inline-block;
+    transition:background .25s ease;
+  }
+  .status-dot.live{ background:#4CAF62; box-shadow:0 0 0 3px rgba(76,175,98,.18); }
+  .status-dot.stale{ background:#D9A441; }
+  .status-dot.error{ background:#C7402A; }
+  .status-label{ font-size:12px; color:var(--ink-faint); font-weight:500; margin-right:8px; }
+
+  .zoom-controls{
+    display:flex; align-items:center; gap:2px;
+    background:var(--panel);
+    border:1px solid var(--hairline);
+    border-radius:10px;
+    padding:3px;
+    box-shadow:var(--shadow-panel);
+  }
+  .zoom-controls button{
+    width:30px; height:28px;
+    border:none; background:transparent; border-radius:7px;
+    font-size:16px; color:var(--ink-soft); cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+    transition:background .12s ease, color .12s ease;
+  }
+  .zoom-controls button:hover{ background:var(--track-b); color:var(--ink); }
+  .zoom-controls button:active{ transform:scale(0.94); }
+  .zoom-label{
+    font-size:11px; color:var(--ink-faint); min-width:52px; text-align:center; font-weight:600;
+    letter-spacing:.01em;
+  }
+
+  /* ---------------- Scroll grid ---------------- */
+  .grid-scroll{
+    flex:1 1 auto;
+    overflow:auto;
+    position:relative;
+    background:var(--bg);
+  }
+  .grid-inner{
+    position:relative;
+  }
+
+  /* Corner (sticky top+left) */
+  .corner{
+    position:sticky;
+    top:0; left:0;
+    width:var(--label-w);
+    height:var(--ruler-h);
+    background:var(--bg);
+    z-index:40;
+  }
+
+  /* Ruler (sticky top) */
+  .ruler{
+    position:sticky;
+    top:0;
+    height:var(--ruler-h);
+    z-index:30;
+    background:var(--bg);
+    border-bottom:1px solid var(--hairline);
+    margin-left:var(--label-w);
+    margin-top:calc(var(--ruler-h) * -1);
+  }
+  .ruler-inner{ position:relative; height:100%; }
+  .tick{
+    position:absolute;
+    top:28px;
+    font-size:12px;
+    color:var(--ink-faint);
+    font-weight:500;
+    white-space:nowrap;
+    transform:translateX(-50%);
+    font-variant-numeric: tabular-nums;
+  }
+  .tick::before{
+    content:"";
+    position:absolute;
+    left:50%;
+    top:-10px;
+    width:1px;
+    height:8px;
+    background:var(--hairline);
+  }
+  .day-boundary{
+    position:absolute;
+    top:0;
+    bottom:0;
+    width:1px;
+    background:var(--hairline);
+  }
+
+  /* Label column (sticky left) */
+  .label-col{
+    position:sticky;
+    left:0;
+    width:var(--label-w);
+    z-index:15;
+    background:var(--bg);
+  }
+  .label-cell{
+    position:absolute;
+    left:0; width:var(--label-w);
+    height:var(--row-h);
+    display:flex; align-items:center;
+    padding-left:2px;
+    font-size:14px; font-weight:600;
+    color:var(--ink);
+    background:var(--bg);
+  }
+
+  /* Tracks area */
+  .tracks{
+    position:relative;
+    margin-left:var(--label-w);
+  }
+  .track-row{
+    position:absolute;
+    left:0;
+    height:var(--row-h);
+    background-image: repeating-linear-gradient(
+        135deg,
+        var(--track-a) 0px, var(--track-a) 7px,
+        var(--track-b) 7px, var(--track-b) 8px
+    );
+    border-bottom:1px solid var(--hairline);
+  }
+
+  .bar{
+    position:absolute;
+    top:50%;
+    transform:translateY(-50%);
+    height:44px;
+    min-width:44px;
+    background:var(--sand);
+    border-radius:var(--radius-pill);
+    box-shadow:var(--shadow-bar);
+    display:flex;
+    align-items:center;
+    gap:9px;
+    padding:0 14px 0 6px;
+    cursor:default;
+    overflow:hidden;
+    white-space:nowrap;
+    transition:background .12s ease, filter .12s ease;
+  }
+  .bar:hover{ background:var(--sand-hover); z-index:5; }
+  .bar .icon{
+    flex:0 0 auto;
+    width:32px; height:32px;
+    border-radius:9px;
+    background:linear-gradient(160deg, var(--icon-red), var(--icon-red-dark));
+    display:flex; align-items:center; justify-content:center;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.18);
+  }
+  .bar .icon svg{ width:18px; height:18px; }
+  .bar .label{
+    font-size:15px;
+    font-weight:600;
+    color:var(--sand-text);
+    font-variant-numeric: tabular-nums;
+  }
+  .bar.compact .label{ display:none; }
+  .bar.compact{ padding:0; justify-content:center; }
+  .bar.compact .icon{ margin:0 auto; }
+
+  /* Tooltip */
+  .tooltip{
+    position:fixed;
+    pointer-events:none;
+    background:rgba(30,26,20,0.94);
+    color:#F5F1E9;
+    font-size:12.5px;
+    line-height:1.5;
+    padding:8px 11px;
+    border-radius:9px;
+    z-index:100;
+    max-width:260px;
+    box-shadow:0 6px 18px rgba(0,0,0,.22);
+    opacity:0;
+    transform:translateY(2px);
+    transition:opacity .1s ease, transform .1s ease;
+  }
+  .tooltip.show{ opacity:1; transform:translateY(0); }
+  .tooltip b{ color:#fff; }
+
+  /* Empty state */
+  .empty-hint{
+    position:sticky;
+    left:calc(var(--label-w) + 24px);
+    display:inline-block;
+    margin:22px 0 0 calc(var(--label-w) + 24px);
+    font-size:13px;
+    color:var(--ink-faint);
+    background:var(--panel);
+    border:1px solid var(--hairline);
+    padding:8px 14px;
+    border-radius:10px;
+  }
+
+  ::-webkit-scrollbar{ width:12px; height:12px; }
+  ::-webkit-scrollbar-track{ background:transparent; }
+  ::-webkit-scrollbar-thumb{ background:#E2DCD0; border-radius:8px; border:3px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover{ background:#D2CABA; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div class="header">
+    <div>
+      <h1 id="dateTitle">—</h1>
+      <div class="sub" id="dateSub">Loading timeline…</div>
+    </div>
+    <div class="header-right">
+      <span class="status-label" id="statusLabel">connecting</span>
+      <span class="status-dot" id="statusDot"></span>
+      <div class="zoom-controls">
+        <button id="zoomOut" title="Zoom out">−</button>
+        <span class="zoom-label" id="zoomLabel">1m/px</span>
+        <button id="zoomIn" title="Zoom in">+</button>
+        <button id="zoomFit" title="Fit all data" style="width:auto;padding:0 10px;font-size:12px;font-weight:600;">Fit</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-scroll" id="scrollEl">
+    <div class="grid-inner" id="gridInner">
+      <div class="corner"></div>
+      <div class="ruler" id="ruler"><div class="ruler-inner" id="rulerInner"></div></div>
+      <div class="label-col" id="labelCol"></div>
+      <div class="tracks" id="tracks"></div>
+    </div>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+/* =====================================================================
+   COMMANDER TIMELINE — rendering engine
+   =====================================================================
+
+   ---------------------------------------------------------------------
+   DATA CONTRACT (this is the ONLY shape this file understands)
+   ---------------------------------------------------------------------
+   Call `TimelineApp.setData(payload)` — or let CONFIG.dataSource poll a
+   URL that returns this JSON — with:
+
+   {
+     "date": "2026-05-11",              // optional, ISO date used for the header title.
+                                         // If omitted, it's derived from the earliest event.
+     "commanders": [
+       {
+         "id": "com-1",                 // stable key. Any string. Does NOT need to be a
+                                         // formal DB id — a bucket name like "COM 1" is fine
+                                         // as long as it's stable across polls.
+         "label": "COM 1",              // display text in the left column (defaults to id)
+         "events": [
+           {
+             "id": "evt-8841",          // stable per-event key (for diffing on live updates).
+                                         // If your source has no id, deterministically derive
+                                         // one, e.g. `${commander_id}-${start_time}`.
+             "start_time": "2026-05-11T00:02:19Z",  // ISO 8601, any offset (UTC recommended)
+             "duration_seconds": 1339,  // bar width. If you only have a return/duration
+                                         // string like "22:19", also send the numeric
+                                         // seconds here — this field drives geometry,
+                                         // the field below drives what's printed.
+             "label": "22:19",          // free-form text shown on the pill. Does NOT need
+                                         // to be a valid mm:ss — shown verbatim.
+             "icon": null                // optional. null = default red icon.
+                                         // or an emoji string "🦂", or an image URL.
+           }
+         ]
+       }
+     ]
+   }
+
+   Empty / missing commanders or events is a valid, expected state — the
+   view just shows grey hatch strips. Nothing breaks.
+
+   ---------------------------------------------------------------------
+   FEEDING DATA IN — three supported modes, set in CONFIG.dataSource.mode
+   ---------------------------------------------------------------------
+   'poll'   (default) — fetch(CONFIG.dataSource.url) on an interval and
+             call setData() with the JSON response. Good default for a
+             localhost backend in front of Postgres.
+
+   'manual' — nothing is fetched automatically. Call from devtools or
+             another script:
+                 TimelineApp.setData({...})        // full replace
+                 TimelineApp.mergeData({...})       // incremental merge,
+                                                     // see mergeData() below
+   'static' — reads window.TIMELINE_SEED once at load (useful for demos
+             or embedding a snapshot server-side).
+
+   ===================================================================== */
+
+const CONFIG = {
+  dataSource: {
+    mode: 'poll',                                   // 'poll' | 'manual' | 'static'
+    url: 'http://localhost:8000/api/timeline',       // GET endpoint, see contract above
+    pollIntervalMs: 4000,
+    // If your endpoint supports incremental responses (see integration
+    // notes), set this true and the server should honor `?since=`.
+    incremental: false,
+  },
+  // Zoom bounds, in pixels-per-second. 8 px/s comfortably shows 5s ticks.
+  // 0.006 px/s fits ~2 days across a 1400px-wide viewport.
+  pxPerSecondMin: 0.006,
+  pxPerSecondMax: 10,
+  pxPerSecondDefault: 3,
+  rowHeight: 74,
+  labelWidth: 128,
+  rulerHeight: 64,
+  // Minimum pixel gap between rendered tick labels before we thin them out.
+  minTickSpacingPx: 78,
+};
+
+/* ---------------------------------------------------------------------
+   State
+   --------------------------------------------------------------------- */
+const state = {
+  commanders: [],          // [{id,label,events:[{id,startMs,durMs,label,icon}]}]
+  rangeStartMs: null,      // timeline origin (ms epoch)
+  rangeEndMs: null,        // timeline end (ms epoch)
+  pxPerSecond: CONFIG.pxPerSecondDefault,
+  lastServerTime: null,    // for incremental polling cursor
+  dateLabel: null,
+};
+
+const el = {
+  scroll: document.getElementById('scrollEl'),
+  gridInner: document.getElementById('gridInner'),
+  ruler: document.getElementById('ruler'),
+  rulerInner: document.getElementById('rulerInner'),
+  labelCol: document.getElementById('labelCol'),
+  tracks: document.getElementById('tracks'),
+  dateTitle: document.getElementById('dateTitle'),
+  dateSub: document.getElementById('dateSub'),
+  statusDot: document.getElementById('statusDot'),
+  statusLabel: document.getElementById('statusLabel'),
+  zoomIn: document.getElementById('zoomIn'),
+  zoomOut: document.getElementById('zoomOut'),
+  zoomFit: document.getElementById('zoomFit'),
+  zoomLabel: document.getElementById('zoomLabel'),
+  tooltip: document.getElementById('tooltip'),
+};
+
+/* ---------------------------------------------------------------------
+   Time <-> pixel helpers
+   --------------------------------------------------------------------- */
+function timeToX(ms){ return (ms - state.rangeStartMs) / 1000 * state.pxPerSecond; }
+function xToTime(x){ return state.rangeStartMs + (x / state.pxPerSecond) * 1000; }
+function totalWidth(){ return Math.max(1, timeToX(state.rangeEndMs)); }
+function totalHeight(){ return state.commanders.length * CONFIG.rowHeight; }
+
+function fmtDuration(ms){
+  const s = Math.round(ms/1000);
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = s%60;
+  if(h>0) return `${h}h ${m}m`;
+  if(m>0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+function fmtClock(ms){
+  const d = new Date(ms);
+  return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false});
+}
+
+/* ---------------------------------------------------------------------
+   Normalizing incoming data
+   --------------------------------------------------------------------- */
+function normalize(payload){
+  const commanders = (payload.commanders || []).map(c => ({
+    id: String(c.id),
+    label: c.label || String(c.id),
+    events: (c.events || []).map(e => {
+      const startMs = new Date(e.start_time).getTime();
+      const durMs = (Number(e.duration_seconds) || 0) * 1000;
+      return {
+        id: e.id != null ? String(e.id) : `${c.id}-${e.start_time}`,
+        startMs,
+        endMs: startMs + Math.max(durMs, 0),
+        durMs,
+        label: e.label != null ? String(e.label) : fmtDuration(durMs),
+        icon: e.icon || null,
+      };
+    }).sort((a,b) => a.startMs - b.startMs),
+  }));
+
+  let dateLabel = payload.date || null;
+  let minStart = null, maxEnd = null;
+  commanders.forEach(c => c.events.forEach(e => {
+    if(minStart === null || e.startMs < minStart) minStart = e.startMs;
+    if(maxEnd === null || e.endMs > maxEnd) maxEnd = e.endMs;
+  }));
+
+  let rangeStart, rangeEnd;
+  if(dateLabel){
+    const d = new Date(dateLabel + 'T00:00:00');
+    rangeStart = d.getTime();
+    rangeEnd = rangeStart + 24*3600*1000;
+  } else if(minStart !== null){
+    const d = new Date(minStart);
+    d.setHours(0,0,0,0);
+    rangeStart = d.getTime();
+    const e = new Date(maxEnd);
+    e.setHours(0,0,0,0);
+    rangeEnd = e.getTime() + 24*3600*1000;
+    dateLabel = new Date(rangeStart).toISOString().slice(0,10);
+  } else {
+    const d = new Date(); d.setHours(0,0,0,0);
+    rangeStart = d.getTime();
+    rangeEnd = rangeStart + 24*3600*1000;
+    dateLabel = new Date(rangeStart).toISOString().slice(0,10);
+  }
+
+  return { commanders, rangeStart, rangeEnd, dateLabel };
+}
+
+/* ---------------------------------------------------------------------
+   Public API
+   --------------------------------------------------------------------- */
+const TimelineApp = {
+  setData(payload){
+    const norm = normalize(payload || {});
+    state.commanders = norm.commanders;
+    state.rangeStartMs = norm.rangeStart;
+    state.rangeEndMs = norm.rangeEnd;
+    state.dateLabel = norm.dateLabel;
+    state.lastServerTime = payload && payload.server_time || null;
+    renderHeader();
+    layout();
+    setStatus('live');
+  },
+
+  // Incremental merge: payload.commanders entries are upserted by id;
+  // events within are upserted by id. Pass removed_event_ids / a
+  // commander with events:[] to leave a commander with no bars.
+  mergeData(payload){
+    if(!payload) return;
+    const byId = new Map(state.commanders.map(c => [c.id, c]));
+    (payload.commanders || []).forEach(incoming => {
+      const id = String(incoming.id);
+      let existing = byId.get(id);
+      const incomingEvents = (incoming.events || []).map(e => {
+        const startMs = new Date(e.start_time).getTime();
+        const durMs = (Number(e.duration_seconds) || 0) * 1000;
+        return {
+          id: e.id != null ? String(e.id) : `${id}-${e.start_time}`,
+          startMs, endMs: startMs + Math.max(durMs,0), durMs,
+          label: e.label != null ? String(e.label) : fmtDuration(durMs),
+          icon: e.icon || null,
+        };
+      });
+      if(!existing){
+        existing = { id, label: incoming.label || id, events: [] };
+        state.commanders.push(existing);
+        byId.set(id, existing);
+      }
+      const evById = new Map(existing.events.map(e => [e.id, e]));
+      incomingEvents.forEach(e => evById.set(e.id, e));
+      existing.events = Array.from(evById.values()).sort((a,b) => a.startMs - b.startMs);
+    });
+    (payload.removed_event_ids || []).forEach(rid => {
+      state.commanders.forEach(c => { c.events = c.events.filter(e => e.id !== rid); });
+    });
+    state.lastServerTime = payload.server_time || state.lastServerTime;
+
+    // Recompute range only if it grew (avoid jarring rescales on every poll)
+    let maxEnd = state.rangeEndMs;
+    state.commanders.forEach(c => c.events.forEach(e => { if(e.endMs > maxEnd) maxEnd = e.endMs; }));
+    if(maxEnd > state.rangeEndMs){
+      const d = new Date(maxEnd); d.setHours(0,0,0,0);
+      state.rangeEndMs = d.getTime() + 24*3600*1000;
+    }
+    renderHeader();
+    layout();
+    setStatus('live');
+  },
+
+  setZoom(px){ setZoom(px); },
+  fitAll(){ fitAll(); },
+};
+window.TimelineApp = TimelineApp;
+
+/* ---------------------------------------------------------------------
+   Header / status
+   --------------------------------------------------------------------- */
+function renderHeader(){
+  if(state.dateLabel){
+    const d = new Date(state.dateLabel + 'T00:00:00');
+    el.dateTitle.textContent = d.toLocaleDateString(undefined, {month:'long', day:'numeric', year:'numeric'});
+  }
+  const totalEvents = state.commanders.reduce((n,c) => n + c.events.length, 0);
+  el.dateSub.textContent = state.commanders.length
+    ? `${state.commanders.length} commander${state.commanders.length===1?'':'s'} · ${totalEvents} event${totalEvents===1?'':'s'}`
+    : 'No data yet — waiting for events';
+}
+
+function setStatus(kind){
+  el.statusDot.className = 'status-dot ' + kind;
+  el.statusLabel.textContent = kind === 'live' ? 'live' : kind === 'stale' ? 'reconnecting' : kind === 'error' ? 'offline' : 'connecting';
+}
+
+/* ---------------------------------------------------------------------
+   Layout: sizes the scroll surface, (re)builds label column + row shells
+   --------------------------------------------------------------------- */
+function layout(){
+  const w = totalWidth();
+  const h = totalHeight();
+  el.tracks.style.width = w + 'px';
+  el.tracks.style.height = h + 'px';
+  el.tracks.style.marginTop = (-h) + 'px';
+  el.labelCol.style.height = h + 'px';
+  el.rulerInner.style.width = w + 'px';
+  el.gridInner.style.width = (CONFIG.labelWidth + w) + 'px';
+  el.gridInner.style.height = (CONFIG.rulerHeight + h) + 'px';
+
+  buildLabelCells();
+  buildTrackRows();
+  scheduleRender();
+}
+
+function buildLabelCells(){
+  el.labelCol.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  state.commanders.forEach((c,i) => {
+    const cell = document.createElement('div');
+    cell.className = 'label-cell';
+    cell.style.top = (i*CONFIG.rowHeight) + 'px';
+    cell.textContent = c.label;
+    frag.appendChild(cell);
+  });
+  el.labelCol.appendChild(frag);
+}
+
+function buildTrackRows(){
+  el.tracks.innerHTML = '';
+  const w = totalWidth();
+  const frag = document.createDocumentFragment();
+  state.commanders.forEach((c,i) => {
+    const row = document.createElement('div');
+    row.className = 'track-row';
+    row.style.top = (i*CONFIG.rowHeight) + 'px';
+    row.style.width = w + 'px';
+    row.dataset.idx = i;
+    frag.appendChild(row);
+  });
+  el.tracks.appendChild(frag);
+  rowEls = Array.from(el.tracks.children);
+}
+let rowEls = [];
+
+/* ---------------------------------------------------------------------
+   Bars: rendered only for rows currently intersecting the viewport
+   (row virtualization). Events per row are rendered in full — daily
+   event counts per commander are small enough that this stays cheap
+   even with hundreds of commanders on screen.
+   --------------------------------------------------------------------- */
+const DEFAULT_ICON = `<svg viewBox="0 0 24 24" fill="none"><path d="M5 12c2-5 5-7 8-6.5S18 8 16 12s-6 6.5-9 5.5S3 17 5 12Z" stroke="${'#F4B942'}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+function renderIcon(ev){
+  if(!ev.icon) return `<span class="icon">${DEFAULT_ICON}</span>`;
+  if(/^https?:\/\//.test(ev.icon)){
+    return `<span class="icon"><img src="${ev.icon}" width="18" height="18" style="border-radius:4px" alt=""></span>`;
+  }
+  return `<span class="icon" style="font-size:15px;">${ev.icon}</span>`;
+}
+
+function renderVisibleRows(){
+  if(!rowEls.length) return;
+  const scrollTop = el.scroll.scrollTop;
+  const viewH = el.scroll.clientHeight;
+  const first = Math.max(0, Math.floor((scrollTop - CONFIG.rulerHeight) / CONFIG.rowHeight) - 2);
+  const last = Math.min(state.commanders.length - 1, Math.ceil((scrollTop - CONFIG.rulerHeight + viewH) / CONFIG.rowHeight) + 2);
+
+  const scrollLeft = el.scroll.scrollLeft;
+  const viewW = el.scroll.clientWidth;
+  const visStart = xToTime(Math.max(0, scrollLeft - CONFIG.labelWidth - 200));
+  const visEnd = xToTime(scrollLeft - CONFIG.labelWidth + viewW + 200);
+
+  rowEls.forEach((rowEl, i) => {
+    if(i < first || i > last){
+      if(rowEl.childElementCount) rowEl.innerHTML = '';
+      return;
+    }
+    const c = state.commanders[i];
+    if(!c) return;
+    const visibleEvents = c.events.filter(e => e.endMs >= visStart && e.startMs <= visEnd);
+    renderRowBars(rowEl, c, visibleEvents);
+  });
+}
+
+function renderRowBars(rowEl, commander, events){
+  const frag = document.createDocumentFragment();
+  events.forEach(ev => {
+    const x = timeToX(ev.startMs);
+    const width = Math.max(44, (ev.endMs - ev.startMs)/1000 * state.pxPerSecond);
+    const bar = document.createElement('div');
+    bar.className = 'bar' + (width < 78 ? ' compact' : '');
+    bar.style.left = x + 'px';
+    bar.style.width = width + 'px';
+    bar.innerHTML = `${renderIcon(ev)}<span class="label">${escapeHtml(ev.label)}</span>`;
+    bar.addEventListener('mouseenter', (e) => showTooltip(e, commander, ev));
+    bar.addEventListener('mousemove', moveTooltip);
+    bar.addEventListener('mouseleave', hideTooltip);
+    frag.appendChild(bar);
+  });
+  rowEl.innerHTML = '';
+  rowEl.appendChild(frag);
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+/* ---------------------------------------------------------------------
+   Tooltip
+   --------------------------------------------------------------------- */
+function showTooltip(e, commander, ev){
+  el.tooltip.innerHTML = `<b>${escapeHtml(commander.label)}</b><br>${fmtClock(ev.startMs)} · ${fmtDuration(ev.durMs)}<br>${escapeHtml(ev.label)}`;
+  el.tooltip.classList.add('show');
+  moveTooltip(e);
+}
+function moveTooltip(e){
+  el.tooltip.style.left = (e.clientX + 14) + 'px';
+  el.tooltip.style.top = (e.clientY + 14) + 'px';
+}
+function hideTooltip(){ el.tooltip.classList.remove('show'); }
+
+/* ---------------------------------------------------------------------
+   Ruler ticks — virtualized, thinned by zoom level
+   --------------------------------------------------------------------- */
+const TICK_STEPS_SEC = [5,10,15,30,60,120,300,600,900,1800,3600,3*3600,6*3600,12*3600,24*3600];
+
+function pickTickStep(){
+  for(const step of TICK_STEPS_SEC){
+    if(step * state.pxPerSecond >= CONFIG.minTickSpacingPx) return step;
+  }
+  return TICK_STEPS_SEC[TICK_STEPS_SEC.length-1];
+}
+
+function fmtTick(ms, stepSec){
+  const d = new Date(ms);
+  if(stepSec >= 3600){
+    return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', hour12:false});
+  }
+  return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second: stepSec<60?'2-digit':undefined, hour12:false});
+}
+
+function renderTicks(){
+  const step = pickTickStep();
+  const stepMs = step*1000;
+  const scrollLeft = el.scroll.scrollLeft;
+  const viewW = el.scroll.clientWidth;
+  const startTime = xToTime(Math.max(0, scrollLeft - CONFIG.labelWidth) ) ;
+  const firstTickMs = Math.floor((startTime - state.rangeStartMs)/stepMs)*stepMs + state.rangeStartMs;
+  const endTime = xToTime(scrollLeft - CONFIG.labelWidth + viewW + stepMs*2);
+
+  const frag = document.createDocumentFragment();
+  for(let t = firstTickMs; t <= endTime; t += stepMs){
+    if(t < state.rangeStartMs || t > state.rangeEndMs) continue;
+    const tick = document.createElement('div');
+    tick.className = 'tick';
+    tick.style.left = timeToX(t) + 'px';
+    tick.textContent = fmtTick(t, step);
+    frag.appendChild(tick);
+  }
+  el.rulerInner.innerHTML = '';
+  el.rulerInner.appendChild(frag);
+}
+
+/* ---------------------------------------------------------------------
+   Zoom
+   --------------------------------------------------------------------- */
+function setZoom(px, anchorClientX){
+  const scrollEl = el.scroll;
+  const before = anchorClientX != null ? anchorClientX - scrollEl.getBoundingClientRect().left : CONFIG.labelWidth + 40;
+  const anchorTime = xToTime(scrollEl.scrollLeft - CONFIG.labelWidth + before);
+
+  state.pxPerSecond = Math.min(CONFIG.pxPerSecondMax, Math.max(CONFIG.pxPerSecondMin, px));
+  layout();
+
+  const newLeft = timeToX(anchorTime) - before + CONFIG.labelWidth;
+  scrollEl.scrollLeft = Math.max(0, newLeft);
+  updateZoomLabel();
+}
+
+function updateZoomLabel(){
+  const pps = state.pxPerSecond;
+  let txt;
+  if(pps >= 1) txt = `${pps.toFixed(1)}px/s`;
+  else txt = `${Math.round(1/pps)}s/px`;
+  el.zoomLabel.textContent = txt;
+}
+
+function fitAll(){
+  const viewW = el.scroll.clientWidth - CONFIG.labelWidth - 24;
+  const rangeSec = (state.rangeEndMs - state.rangeStartMs)/1000;
+  const px = Math.max(CONFIG.pxPerSecondMin, Math.min(CONFIG.pxPerSecondMax, viewW / rangeSec));
+  setZoom(px);
+  el.scroll.scrollLeft = 0;
+}
+
+el.zoomIn.addEventListener('click', () => setZoom(state.pxPerSecond * 1.6));
+el.zoomOut.addEventListener('click', () => setZoom(state.pxPerSecond / 1.6));
+el.zoomFit.addEventListener('click', fitAll);
+
+el.scroll.addEventListener('wheel', (e) => {
+  if(e.ctrlKey || e.metaKey){
+    e.preventDefault();
+    const factor = Math.exp(-e.deltaY * 0.0025);
+    setZoom(state.pxPerSecond * factor, e.clientX);
+  }
+}, { passive:false });
+
+/* ---------------------------------------------------------------------
+   Scroll-driven render loop (rAF-throttled)
+   --------------------------------------------------------------------- */
+let renderScheduled = false;
+function scheduleRender(){
+  if(renderScheduled) return;
+  renderScheduled = true;
+  requestAnimationFrame(() => {
+    renderScheduled = false;
+    renderVisibleRows();
+    renderTicks();
+  });
+}
+el.scroll.addEventListener('scroll', scheduleRender, { passive:true });
+window.addEventListener('resize', scheduleRender);
+
+/* ---------------------------------------------------------------------
+   Data source wiring
+   --------------------------------------------------------------------- */
+async function pollOnce(){
+  try{
+    const url = new URL(CONFIG.dataSource.url);
+    if(CONFIG.dataSource.incremental && state.lastServerTime){
+      url.searchParams.set('since', state.lastServerTime);
+    }
+    const res = await fetch(url, { cache:'no-store' });
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    if(CONFIG.dataSource.incremental && state.lastServerTime){
+      TimelineApp.mergeData(json);
+    } else {
+      TimelineApp.setData(json);
+    }
+  } catch(err){
+    console.warn('[timeline] poll failed:', err.message);
+    setStatus('error');
+  }
+}
+
+function initDataSource(){
+  if(CONFIG.dataSource.mode === 'static'){
+    TimelineApp.setData(window.TIMELINE_SEED || {commanders:[]});
+    return;
+  }
+  if(CONFIG.dataSource.mode === 'manual'){
+    TimelineApp.setData({commanders:[]});
+    setStatus('stale');
+    return;
+  }
+  // poll
+  setStatus('connecting');
+  pollOnce();
+  setInterval(pollOnce, CONFIG.dataSource.pollIntervalMs);
+}
+
+/* ---------------------------------------------------------------------
+   Boot
+   --------------------------------------------------------------------- */
+TimelineApp.setData({ commanders: [] }); // empty shell — grey strips, no bars
+updateZoomLabel();
+initDataSource();
+scheduleRender();
+</script>
+</body>
+</html>

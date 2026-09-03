@@ -33,32 +33,63 @@ def kingdom_id(kingdom: Kingdom | int) -> int:
     return kingdom.id if hasattr(kingdom, "id") else int(kingdom)
 
 
-def commander_lid(human_number: int) -> int:
-    """Map visible commander number to internal LID.
+COMMANDER_LIDS_BY_HUMAN_NUMBER: CommanderPool = (
+    0,
+    2,
+    3,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    16,
+    17,
+    18,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+)
 
-    Current observed pattern:
-    1st commander -> LID 0
-    2nd commander -> LID 2
-    3rd commander -> LID 3
-    and then it continues directly.
-    """
+
+def commander_lid(human_number: int) -> int:
+    """Map visible commander number to the server LID from live ADI/GAA rows."""
 
     if human_number < 1:
         raise ValueError("commander numbers are 1-based")
-    if human_number == 1:
-        return 0
-    return human_number
+    try:
+        return COMMANDER_LIDS_BY_HUMAN_NUMBER[human_number - 1]
+    except IndexError as exc:
+        raise ValueError(f"unknown commander number {human_number}") from exc
 
 
 def commander_human_number(lid: int | None) -> int | None:
     if lid is None:
         return None
-    lid = int(lid)
-    if lid == 0:
-        return 1
-    if 2 <= lid <= 35:
-        return lid
-    return None
+    try:
+        return COMMANDER_LIDS_BY_HUMAN_NUMBER.index(int(lid)) + 1
+    except ValueError:
+        return None
 
 
 def commander_range(first: int, last: int) -> CommanderPool:

@@ -1,0 +1,70 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Courier >> >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 1279 >>
+stream
+BT
+/F1 9 Tf
+12 TL
+36 770 Td
+(Ruby Yield Report - CORRECTED) Tj
+T*
+(Generated 2026-08-30 03:02:49 Europe/London) Tj
+T*
+(AID 1782860727866351909) Tj
+T*
+() Tj
+T*
+(Correction: zero-ruby CAT results are included as 0 rubies. The previous PDF filtered ruby_loot IS NOT NULL, which inflated per-commander potential by dropping coin-only hits.) Tj
+T*
+() Tj
+T*
+(Packet-cycle potential, one fully busy commander) Tj
+T*
+(Task                 Results RubyRows Rubies Cmds AvgRuby Out\(s\) Ret\(s\) Ruby/h  1cmd/day 35cmd/day) Tj
+T*
+(Level 35-60 task        3447     1683  22384   26    6.49   1621    508  10.98       264      9226) Tj
+T*
+(Level 61 crossbow       4450     2284  35067   14    7.88    477    147  45.47      1091     38191) Tj
+T*
+() Tj
+T*
+(Latest saved run actual output) Tj
+T*
+(Task                 Sent Results RubyRows Rubies Cmds Ruby/h  Day projection) Tj
+T*
+(Level 35-60 task      148     133       60    817   20  165.8           3980) Tj
+T*
+(Level 61 crossbow     201     197       98   1501   13  304.7           7312) Tj
+T*
+() Tj
+T*
+(Takeaway) Tj
+T*
+(Latest saved run produced 2318 rubies over 4.93h = 470.5 ruby/h = 11291/day actualized.) Tj
+T*
+(All 35 commanders doing only level 61 crossbow projects about 38191/day from packet-cycle data, not 70k/day.) Tj
+T*
+ET
+endstream
+endobj
+xref
+0 5
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000294 00000 n 
+trailer << /Size 5 /Root 1 0 R >>
+startxref
+1625
+%%EOF

@@ -2,7 +2,24 @@
   "attacks_sent": 248,
   "cra_consecutive_errors": 0,
   "cra_error_timestamps": [],
-  "last_cra": null,
+  "last_cra": {
+    "army_count": 50,
+    "lid": 16,
+    "sent_at": 1788163541,
+    "sent_by_proxy": true,
+    "target": {
+      "current_level": 61,
+      "id": 356,
+      "kingdom_id": 1,
+      "previous_last_attacked": 1788154364,
+      "target_level": 61,
+      "task_name": "sand_rbc_level_61_crossbow",
+      "x": 627,
+      "y": 589
+    },
+    "target_kind": "rbc",
+    "task_name": "sand_rbc_level_61_crossbow"
+  },
   "max_attacks": 500,
   "mode": "sands",
   "pending": null,

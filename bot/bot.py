@@ -86,7 +86,7 @@ CURRENT_ACCOUNT_NAME = "ventrilo"
 CURRENT_AID = DEFAULT_BACKFILL_AID
 SANDS_KID = 1
 TARGET_LEVEL = 61
-FIRST_13_COMMANDER_LIDS = (0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
+FIRST_13_COMMANDER_LIDS = (0, 2, 3, 6, 7, 8, 9, 10, 11, 16, 17, 18, 20, 21, 22)
 REQUEST_INTERVAL_RANGE = (20.0, 30.0)
 ADI_TO_CRA_DELAY_RANGE = (5.5, 13.0)
 IDLE_SLEEP_RANGE = (55.0, 145.0)
@@ -533,8 +533,8 @@ def reserve_target_for_task(conn: psycopg.Connection, task) -> dict[str, Any] | 
                         (
                             abs(x_coordinate - %s)
                             + abs(y_coordinate - %s)
-                            + random() * 24
-                        ) / 25
+                            + random() * 95
+                        ) / 35
                     ),
                     random()
                 LIMIT 1
@@ -643,7 +643,7 @@ def choose_commander(
                   AND lord_id = ANY(%s)
                   AND available_after <= %s
                   AND status NOT IN ('reserved', 'pending_cra', 'outbound')
-                ORDER BY lord_id
+                ORDER BY available_after, lord_id
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
                 """,
