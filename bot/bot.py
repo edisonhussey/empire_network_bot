@@ -35,6 +35,7 @@ for path in (SCAN_ROOT, SCAN_ROOT / "pygge_repo"):
 
 from bot.test_psql_connection import connect, read_connection_config
 from bot import account_context
+from bot import berimond
 from bot import storm_database as storm_db
 from bot.db_account import DEFAULT_BACKFILL_AID, ensure_account_columns
 from bot.storm_database import (
@@ -107,11 +108,30 @@ STORM_SOURCE_X = 675
 STORM_SOURCE_Y = 675
 STORM_HBW = -1
 STORM_PTT = 1
+BERIMOND_KID = berimond.KID
+BERIMOND_SOURCE_X = berimond.SOURCE_X
+BERIMOND_SOURCE_Y = berimond.SOURCE_Y
+BERIMOND_TARGET_X = berimond.TARGET_X
+BERIMOND_TARGET_Y = berimond.TARGET_Y
+BERIMOND_HBW = berimond.HBW
+BERIMOND_PTT = berimond.PTT
+BERIMOND_AV = berimond.AV
+BERIMOND_COMMANDER_COUNT = berimond.COMMANDER_COUNT
+BERIMOND_GLOBAL_ATTACK_COOLDOWN_SECONDS = berimond.GLOBAL_ATTACK_COOLDOWN_SECONDS
+BERIMOND_MAX_CRA_ERRORS = berimond.MAX_CRA_ERRORS
+BERIMOND_CRA_ERROR_WINDOW_SECONDS = berimond.CRA_ERROR_WINDOW_SECONDS
+BERIMOND_MAX_COMMANDER_OUT_SECONDS = berimond.MAX_COMMANDER_OUT_SECONDS
+BERIMOND_ALERT_ON_ERROR = berimond.ALERT_ON_ERROR
+BERIMOND_ALERT_SOUND_PATH = berimond.ALERT_SOUND_PATH
 PROXY_PENDING_TIMEOUT = 45.0
 
 
 def known_commander_lids() -> tuple[int, ...]:
     commander_lids = set(FIRST_13_COMMANDER_LIDS)
+    try:
+        commander_lids.update(task_scheduler.commander_range(1, BERIMOND_COMMANDER_COUNT))
+    except Exception:
+        pass
     for task in getattr(task_scheduler, "TASKS", ()):
         commander_lids.update(int(lid) for lid in getattr(task, "commander_lids", ()) or ())
     return tuple(sorted(commander_lids))
@@ -214,6 +234,22 @@ def ensure_bot_tables(conn: psycopg.Connection) -> None:
                 ON CONFLICT (aid, lord_id) DO NOTHING
                 """,
                 (aid, lid),
+            )
+    conn.commit()
+
+
+def ensure_commander_rows(conn: psycopg.Connection, lids: Iterable[int]) -> None:
+    aid = current_aid()
+    now = now_epoch()
+    with conn.cursor() as cur:
+        for lid in lids:
+            cur.execute(
+                """
+                INSERT INTO commander_state (aid, lord_id, available_after, status, updated_at)
+                VALUES (%s, %s, 0, 'available', %s)
+                ON CONFLICT (aid, lord_id) DO NOTHING
+                """,
+                (aid, int(lid), now),
             )
     conn.commit()
 
@@ -847,6 +883,130 @@ def record_attack(
     conn.commit()
 
 
+def record_berimond_attack(
+    conn: psycopg.Connection,
+    target: dict[str, Any],
+    march_id: int,
+    sent_at: int,
+    travel_seconds: int | None,
+    troop_count: int | None = None,
+    return_seconds: int | None = None,
+    lid: int | None = None,
+    task_name: str | None = None,
+) -> None:
+    aid = current_aid()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO attack (
+                aid,
+                kingdom_id,
+                x_coordinate,
+                y_coordinate,
+                march_id,
+                time_created,
+                troop_count,
+                duration,
+                return_duration,
+                target_kind,
+                target_id,
+                task_name,
+                lord_id,
+                commander_number,
+                status
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'berimond_fixed', NULL, %s, %s, %s, 'sent')
+            ON CONFLICT (aid, march_id) DO UPDATE SET
+                kingdom_id = EXCLUDED.kingdom_id,
+                x_coordinate = EXCLUDED.x_coordinate,
+                y_coordinate = EXCLUDED.y_coordinate,
+                time_created = EXCLUDED.time_created,
+                troop_count = EXCLUDED.troop_count,
+                duration = EXCLUDED.duration,
+                return_duration = EXCLUDED.return_duration,
+                target_kind = EXCLUDED.target_kind,
+                task_name = EXCLUDED.task_name,
+                lord_id = EXCLUDED.lord_id,
+                commander_number = EXCLUDED.commander_number,
+                status = EXCLUDED.status
+            """,
+            (
+                aid,
+                int(target.get("kingdom_id", BERIMOND_KID)),
+                int(target["x"]),
+                int(target["y"]),
+                int(march_id),
+                int(sent_at),
+                int(troop_count) if troop_count is not None else None,
+                int(travel_seconds) if travel_seconds is not None else None,
+                int(return_seconds) if return_seconds is not None else None,
+                task_name,
+                int(lid) if lid is not None else None,
+                task_scheduler.commander_human_number(lid),
+            ),
+        )
+    conn.commit()
+
+
+def mark_berimond_result(
+    conn: psycopg.Connection,
+    *,
+    lid: int,
+    target: dict[str, Any],
+    return_seconds: int | None,
+    coin_loot: int | None,
+    ruby_loot: int | None,
+    result_flag: int | None,
+    result_at: int | None = None,
+) -> bool:
+    epoch = now_epoch() if result_at is None else int(result_at)
+    aid = current_aid()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE attack
+            SET status = 'returning',
+                landed_at = %s,
+                result_received_at = %s,
+                return_duration = COALESCE(%s, return_duration),
+                coin_loot = COALESCE(%s, coin_loot),
+                ruby_loot = COALESCE(%s, ruby_loot),
+                result_flag = %s
+            WHERE id = (
+                SELECT id
+                FROM attack
+                WHERE aid = %s
+                  AND target_kind = 'berimond_fixed'
+                  AND kingdom_id = %s
+                  AND x_coordinate = %s
+                  AND y_coordinate = %s
+                  AND (lord_id = %s OR lord_id IS NULL)
+                  AND status = 'sent'
+                  AND time_created <= %s
+                ORDER BY time_created DESC NULLS LAST
+                LIMIT 1
+            )
+            """,
+            (
+                epoch,
+                epoch,
+                int(return_seconds) if return_seconds is not None else None,
+                coin_loot,
+                ruby_loot,
+                result_flag,
+                aid,
+                int(target.get("kingdom_id", BERIMOND_KID)),
+                int(target["x"]),
+                int(target["y"]),
+                int(lid),
+                epoch,
+            ),
+        )
+        updated = cur.rowcount > 0
+    conn.commit()
+    return updated
+
+
 def mark_rbc_result(
     conn: psycopg.Connection,
     *,
@@ -916,7 +1076,7 @@ def attack_run_stats(conn: psycopg.Connection, *, started_at: int | None = None)
             FROM attack
             WHERE aid = %s
               AND (%s <= 0 OR time_created >= %s)
-              AND target_kind IN ('rbc', 'storm_target')
+              AND target_kind IN ('rbc', 'storm_target', 'berimond_fixed')
             """,
             (aid, cutoff, cutoff),
         )
@@ -1129,6 +1289,49 @@ def build_storm_attack_payload(
     }
 
 
+def berimond_commander_lids(commander_count: int) -> tuple[int, ...]:
+    count = max(1, int(commander_count))
+    return task_scheduler.commander_range(1, count)
+
+
+def build_berimond_target(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "id": 0,
+        "kingdom_id": BERIMOND_KID,
+        "x": int(args.target_x),
+        "y": int(args.target_y),
+        "target_level": None,
+        "task_name": "berimond_fixed",
+    }
+
+
+def build_berimond_attack_payload(target: dict[str, Any], lid: int, args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "SX": int(args.source_x),
+        "SY": int(args.source_y),
+        "TX": int(target["x"]),
+        "TY": int(target["y"]),
+        "KID": BERIMOND_KID,
+        "LID": int(lid),
+        "WT": 0,
+        "HBW": int(args.hbw),
+        "BPC": 0,
+        "ATT": 0,
+        "AV": BERIMOND_AV,
+        "LP": 0,
+        "FC": 0,
+        "PTT": int(args.ptt),
+        "SD": 0,
+        "ICA": 0,
+        "CD": 99,
+        "A": berimond.ATTACK.to_payload(),
+        "BKS": [],
+        "AST": [-1, -1, -1],
+        "RW": [[-1, 0] for _ in range(8)],
+        "ASCT": 0,
+    }
+
+
 def wait_for_proxy_ready(timeout: float = 3.0) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -1169,6 +1372,51 @@ def prepare_proxy_transport(args: argparse.Namespace) -> None:
             "storm_source": {"x": int(args.source_x), "y": int(args.source_y), "hbw": int(args.hbw)},
             "storm_ptt": int(args.ptt),
             "target_fresh_seconds": int(args.target_fresh_seconds),
+            "started_at": now_epoch(),
+            "stopped_at": None,
+            "stop_reason": None,
+        }
+    )
+    save_proxy_control(state)
+
+
+def prepare_berimond_proxy_transport(args: argparse.Namespace) -> None:
+    target = build_berimond_target(args)
+    lids = berimond_commander_lids(args.commander_count)
+    try:
+        with connect(read_connection_config()) as conn:
+            ensure_bot_tables(conn)
+            ensure_commander_rows(conn, lids)
+            clear_proxy_awaiting_db(conn)
+    except Exception as exc:
+        raise RuntimeError(f"proxy_awaiting_db_reset_failed error={exc!r}") from exc
+    state = load_proxy_control()
+    state.update(
+        {
+            "running": True,
+            "transport_only": False,
+            "mode": "berimond",
+            "username": CURRENT_ACCOUNT_NAME,
+            "aid": current_aid(),
+            "account_root": str(BOT_STATE_DIR),
+            "control_file": str(CONTROL_FILE),
+            "pending": None,
+            "last_cra": None,
+            "attacks_sent": 0,
+            "max_attacks": int(args.max_attacks),
+            "berimond_target": target,
+            "berimond_source": {"x": int(args.source_x), "y": int(args.source_y), "hbw": int(args.hbw)},
+            "berimond_ptt": int(args.ptt),
+            "berimond_commander_lids": list(lids),
+            "berimond_global_attack_cooldown_seconds": float(args.global_attack_cooldown),
+            "berimond_max_cra_errors": int(args.berimond_max_cra_errors),
+            "berimond_cra_error_window_seconds": int(args.berimond_error_window_seconds),
+            "berimond_max_commander_out_seconds": int(args.berimond_max_commander_out_seconds),
+            "berimond_alert_on_error": bool(args.berimond_alert_on_error),
+            "berimond_alert_sound_path": str(args.berimond_alert_sound_path),
+            "berimond_attack_interval_target_seconds": float(args.attack_interval_target),
+            "cra_consecutive_errors": 0,
+            "cra_error_timestamps": [],
             "started_at": now_epoch(),
             "stopped_at": None,
             "stop_reason": None,
@@ -1487,10 +1735,54 @@ def run_storm_proxy(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_berimond_proxy(args: argparse.Namespace) -> int:
+    started_at = now_epoch()
+    prepare_berimond_proxy_transport(args)
+    lids = berimond_commander_lids(args.commander_count)
+    log(
+        f"berimond_proxy_start source={args.source_x}:{args.source_y} "
+        f"target={args.target_x}:{args.target_y} max_attacks={args.max_attacks} "
+        f"commander_count={args.commander_count} lids={list(lids)} "
+        f"global_cooldown={args.global_attack_cooldown:.1f}s"
+    )
+    stop_reason = "bot_py_complete"
+    try:
+        with connect(read_connection_config()) as conn:
+            ensure_bot_tables(conn)
+            while True:
+                ensure_proxy_driver_running()
+                state = load_proxy_control()
+                attacks_sent = int(state.get("attacks_sent", 0) or 0)
+                if state.get("running") is False:
+                    stop_reason = str(state.get("stop_reason") or "proxy_stopped")
+                    break
+                if attacks_sent >= int(args.max_attacks):
+                    stop_reason = f"max_attacks count={attacks_sent}"
+                    stop_proxy_transport(stop_reason)
+                    break
+                interruptible_proxy_sleep(0.5)
+    except SafetyStop as exc:
+        stop_reason = str(exc)
+        log(f"berimond_proxy_stopped reason={exc}", error=True)
+    finally:
+        state = load_proxy_control()
+        if state.get("running") is not False:
+            stop_proxy_transport(stop_reason)
+    try:
+        with connect(read_connection_config()) as conn:
+            ensure_bot_tables(conn)
+            stats = attack_run_stats(conn, started_at=started_at)
+    except Exception as exc:
+        log(f"berimond_summary_failed error={exc!r}", error=True)
+        stats = {}
+    log(f"berimond_proxy_done reason={stop_reason} summary={stats}")
+    return 0
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Conservative database-backed Sands/Storm runner.")
     parser.add_argument("--account-name", "--username", dest="account_name", required=True)
-    parser.add_argument("--mode", choices=("sands", "storm-proxy"), default="sands")
+    parser.add_argument("--mode", choices=("sands", "storm-proxy", "berimond-proxy"), default="sands")
     parser.add_argument("--account-config", type=Path, default=DEFAULT_ACCOUNT)
     parser.add_argument("--max-attacks", type=int, default=1)
     parser.add_argument("--max-cra-per-hour", type=int, default=MAX_CRA_PER_HOUR_DEFAULT)
@@ -1499,20 +1791,52 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--log-dir", type=Path, default=None)
     parser.add_argument("--storm-task", default="storm_custom")
     parser.add_argument("--levels", default="60,70,80")
-    parser.add_argument("--source-x", type=int, default=STORM_SOURCE_X)
-    parser.add_argument("--source-y", type=int, default=STORM_SOURCE_Y)
-    parser.add_argument("--hbw", type=int, default=STORM_HBW)
-    parser.add_argument("--ptt", type=int, default=STORM_PTT)
+    parser.add_argument("--source-x", type=int, default=None)
+    parser.add_argument("--source-y", type=int, default=None)
+    parser.add_argument("--hbw", type=int, default=None)
+    parser.add_argument("--ptt", type=int, default=None)
     parser.add_argument("--scan-min", type=float, default=STORM_SCAN_INTERVAL_RANGE[0])
     parser.add_argument("--scan-max", type=float, default=STORM_SCAN_INTERVAL_RANGE[1])
     parser.add_argument("--scan-radius", type=int, default=STORM_SCAN_RADIUS)
     parser.add_argument("--target-fresh-seconds", type=int, default=STORM_TARGET_FRESH_SECONDS)
     parser.add_argument("--use-randomizer-gaa-wait", action="store_true")
+    parser.add_argument("--target-x", type=int, default=BERIMOND_TARGET_X)
+    parser.add_argument("--target-y", type=int, default=BERIMOND_TARGET_Y)
+    parser.add_argument("--commander-count", type=int, default=BERIMOND_COMMANDER_COUNT)
+    parser.add_argument("--global-attack-cooldown", type=float, default=BERIMOND_GLOBAL_ATTACK_COOLDOWN_SECONDS)
+    parser.add_argument("--attack-interval-target", type=float, default=berimond.ADI_TO_CRA_TARGET_SECONDS)
+    parser.add_argument("--berimond-max-cra-errors", type=int, default=BERIMOND_MAX_CRA_ERRORS)
+    parser.add_argument("--berimond-error-window-seconds", type=int, default=BERIMOND_CRA_ERROR_WINDOW_SECONDS)
+    parser.add_argument("--berimond-max-commander-out-seconds", type=int, default=BERIMOND_MAX_COMMANDER_OUT_SECONDS)
+    parser.add_argument("--berimond-alert-sound-path", default=BERIMOND_ALERT_SOUND_PATH)
+    parser.add_argument("--berimond-alert-on-error", action=argparse.BooleanOptionalAction, default=BERIMOND_ALERT_ON_ERROR)
     args = parser.parse_args(argv)
     if args.scan_max < args.scan_min:
         parser.error("--scan-max must be >= --scan-min")
+    if args.mode == "berimond-proxy":
+        if args.source_x is None:
+            args.source_x = BERIMOND_SOURCE_X
+        if args.source_y is None:
+            args.source_y = BERIMOND_SOURCE_Y
+        if args.hbw is None:
+            args.hbw = BERIMOND_HBW
+        if args.ptt is None:
+            args.ptt = BERIMOND_PTT
+    else:
+        if args.source_x is None:
+            args.source_x = STORM_SOURCE_X
+        if args.source_y is None:
+            args.source_y = STORM_SOURCE_Y
+        if args.hbw is None:
+            args.hbw = STORM_HBW
+        if args.ptt is None:
+            args.ptt = STORM_PTT
     if args.mode == "storm-proxy" and args.max_attacks < 1:
         parser.error("--max-attacks must be >= 1 in storm-proxy mode")
+    if args.mode == "berimond-proxy" and args.max_attacks < 1:
+        parser.error("--max-attacks must be >= 1 in berimond-proxy mode")
+    if args.mode == "berimond-proxy" and args.commander_count < 1:
+        parser.error("--commander-count must be >= 1 in berimond-proxy mode")
     if args.mode == "storm-proxy" and args.max_cra_per_hour == MAX_CRA_PER_HOUR_DEFAULT:
         args.max_cra_per_hour = args.max_attacks
     return args
@@ -1532,6 +1856,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.mode == "storm-proxy":
             return run_storm_proxy(args)
+        if args.mode == "berimond-proxy":
+            return run_berimond_proxy(args)
         with connect(read_connection_config()) as conn:
             ensure_bot_tables(conn)
             set_runtime_value(conn, "max_cra_per_hour", args.max_cra_per_hour)

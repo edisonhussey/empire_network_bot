@@ -19,3 +19,10 @@ class Randomizer:
     def attack_send_waiting_time(self):
         mean = 7.0 + random.random() * 5.0
         return max(5.0, np.random.normal(loc=mean, scale=2.0))
+
+    def berimond_adi_to_cra_waiting_time(self):
+        mean = 2.2 + random.random() * 0.8
+        return max(1.2, np.random.normal(loc=mean, scale=0.55))
+
+    def berimond_attack_cooldown_jitter(self):
+        return random.uniform(0.15, 0.85)

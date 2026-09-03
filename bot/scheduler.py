@@ -13,9 +13,11 @@ if __package__ in {None, ""}:
     REPO_ROOT = Path(__file__).resolve().parents[1]
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
+    from bot import berimond
     from game_data import Attack, KINGDOM, TOOL, TROOP, Kingdom, side, wave
     from ranomizer import Randomizer
 else:
+    from . import berimond
     from .game_data import Attack, KINGDOM, TOOL, TROOP, Kingdom, side, wave
     from .ranomizer import Randomizer
 
@@ -451,6 +453,8 @@ STORM_CUSTOM_ATTACK = Attack(
         ),
     ),
 )
+
+BERIMOND_FIXED_ATTACK = berimond.ATTACK
 
 
 TASK_DEFINITIONS: tuple[TaskDefinition, ...] = (

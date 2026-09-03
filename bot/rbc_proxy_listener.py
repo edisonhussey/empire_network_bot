@@ -7,6 +7,7 @@ import json
 import math
 import pprint
 import random
+import subprocess
 import sys
 import time
 import zlib
@@ -82,6 +83,7 @@ next_proxy_action_epoch = 0.0
 last_client_server_header = bot.farm.SAND_SERVER_HEADER
 
 CONSOLE_LOG_PREFIXES = (
+    "berimond_",
     "storm_gaa_scan_sent",
     "storm_gaa_scan_new_pass",
     "storm_adi_sent",
@@ -380,6 +382,28 @@ def create_adi_packet(
             "SY": sy,
             "TX": int(target["x"]),
             "TY": int(target["y"]),
+            "KID": int(kingdom_id if kingdom_id is not None else target.get("kingdom_id", bot.SANDS_KID)),
+        },
+    )
+
+
+def create_aci_packet(
+    target: dict,
+    *,
+    source: tuple[int, int] | None = None,
+    kingdom_id: int | None = None,
+) -> str:
+    if source is None:
+        sx, sy = bot.farm.SOURCE_X, bot.farm.SOURCE_Y
+    else:
+        sx, sy = int(source[0]), int(source[1])
+    return xt_packet(
+        "aci",
+        {
+            "TX": int(target["x"]),
+            "TY": int(target["y"]),
+            "SX": sx,
+            "SY": sy,
             "KID": int(kingdom_id if kingdom_id is not None else target.get("kingdom_id", bot.SANDS_KID)),
         },
     )
@@ -895,6 +919,204 @@ def process_pending_storm_adi_payload(payload: dict) -> bool:
     return True
 
 
+def berimond_source(state: dict) -> tuple[int, int, int]:
+    source = state.get("berimond_source")
+    if not isinstance(source, dict):
+        raise RuntimeError("berimond_source_missing")
+    return int(source["x"]), int(source["y"]), int(source.get("hbw", bot.BERIMOND_HBW))
+
+
+def berimond_allowed_lids(state: dict) -> tuple[int, ...]:
+    raw = state.get("berimond_commander_lids")
+    if isinstance(raw, list) and raw:
+        return tuple(int(value) for value in raw)
+    count = int(state.get("commander_count", bot.BERIMOND_COMMANDER_COUNT) or bot.BERIMOND_COMMANDER_COUNT)
+    return bot.berimond_commander_lids(count)
+
+
+def berimond_max_commander_out_seconds(state: dict) -> int:
+    raw = state.get("berimond_max_commander_out_seconds", bot.BERIMOND_MAX_COMMANDER_OUT_SECONDS)
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return bot.BERIMOND_MAX_COMMANDER_OUT_SECONDS
+
+
+def cap_berimond_commander_available(state: dict, sent_at: int, available_after: float | None = None) -> float:
+    cap = int(sent_at) + berimond_max_commander_out_seconds(state)
+    if available_after is None:
+        return float(cap)
+    return float(min(float(available_after), float(cap)))
+
+
+def bool_from_state(value, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    if value is None:
+        return default
+    return bool(value)
+
+
+def play_berimond_error_sound(state: dict, reason: str) -> None:
+    enabled = bool_from_state(state.get("berimond_alert_on_error"), bot.BERIMOND_ALERT_ON_ERROR)
+    if not enabled:
+        return
+    path = str(state.get("berimond_alert_sound_path") or bot.BERIMOND_ALERT_SOUND_PATH)
+    try:
+        subprocess.Popen(
+            ["afplay", path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        control_log(f"berimond_alert_sound reason={reason} path={path}")
+    except Exception as exc:
+        control_log(f"berimond_alert_sound_failed reason={reason} error={exc!r}")
+
+
+def berimond_target(state: dict) -> dict:
+    target = state.get("berimond_target")
+    if isinstance(target, dict):
+        return {
+            "id": int(target.get("id", 0) or 0),
+            "kingdom_id": bot.BERIMOND_KID,
+            "x": int(target["x"]),
+            "y": int(target["y"]),
+            "target_level": target.get("target_level"),
+            "task_name": target.get("task_name") or "berimond_fixed",
+        }
+    return {
+        "id": 0,
+        "kingdom_id": bot.BERIMOND_KID,
+        "x": bot.BERIMOND_TARGET_X,
+        "y": bot.BERIMOND_TARGET_Y,
+        "target_level": None,
+        "task_name": "berimond_fixed",
+    }
+
+
+def build_berimond_attack_payload(state: dict, target: dict, lid: int) -> dict:
+    sx, sy, hbw = berimond_source(state)
+    return {
+        "SX": sx,
+        "SY": sy,
+        "TX": int(target["x"]),
+        "TY": int(target["y"]),
+        "KID": bot.BERIMOND_KID,
+        "LID": int(lid),
+        "WT": 0,
+        "HBW": hbw,
+        "BPC": 0,
+        "ATT": 0,
+        "AV": bot.BERIMOND_AV,
+        "LP": 0,
+        "FC": 0,
+        "PTT": int(state.get("berimond_ptt", bot.BERIMOND_PTT) or 0),
+        "SD": 0,
+        "ICA": 0,
+        "CD": 99,
+        "A": bot.berimond.ATTACK.to_payload(),
+        "BKS": [],
+        "AST": [-1, -1, -1],
+        "RW": [[-1, 0] for _ in range(8)],
+        "ASCT": 0,
+    }
+
+
+def queue_verified_berimond_cra(state: dict, pending: dict, target: dict, lid: int) -> None:
+    randomizer = task_scheduler.Randomizer()
+    wait = float(randomizer.berimond_adi_to_cra_waiting_time())
+    due_at = max(time.time() + wait, float(pending.get("global_attack_due_at", 0.0) or 0.0))
+    payload = build_berimond_attack_payload(state, target, lid)
+    pending.update(
+        {
+            "kind": "cra",
+            "target_kind": "berimond_fixed",
+            "target": target,
+            "task_name": "berimond_fixed",
+            "lid": int(lid),
+            "due_at": due_at,
+            "global_attack_due_at": float(pending.get("global_attack_due_at", 0.0) or 0.0),
+            "army_count": troop_count_from_payload(payload),
+            "attack_payload": payload,
+        }
+    )
+    state["pending"] = pending
+    save_control(state)
+    bot.persist_proxy_pending(db(), pending)
+    control_log(
+        f"berimond_aci_ok target={target['x']}:{target['y']} lid={lid} "
+        f"army_count={pending['army_count']} cra_due_in={due_at - time.time():.2f}s"
+    )
+
+
+def process_pending_berimond_aci_error(status) -> bool:
+    state = hydrate_control_awaiting(load_control())
+    pending = state.get("pending")
+    if (
+        not state.get("running")
+        or state.get("mode") != "berimond"
+        or not isinstance(pending, dict)
+        or pending.get("kind") != "aci"
+        or pending.get("target_kind") != "berimond_fixed"
+    ):
+        return False
+    lid = int_or_none(pending.get("lid"))
+    if lid is not None:
+        bot.release_commander(db(), lid, status=f"berimond_aci_status_{status}")
+    state["pending"] = None
+    bot.clear_proxy_pending_db(db())
+    stop_control(state, f"berimond_aci_status_{status}", clear_awaiting=True)
+    play_berimond_error_sound(state, f"aci_status_{status}")
+    control_log(f"berimond_aci_skip status={status} lid={lid} action=stopped")
+    return True
+
+
+def process_pending_berimond_aci_payload(payload: dict) -> bool:
+    state = hydrate_control_awaiting(load_control())
+    pending = state.get("pending")
+    target = target_from_pending(pending)
+    if (
+        not state.get("running")
+        or state.get("mode") != "berimond"
+        or not isinstance(pending, dict)
+        or pending.get("kind") != "aci"
+        or pending.get("target_kind") != "berimond_fixed"
+        or target is None
+    ):
+        return False
+    sent_at = float(pending.get("sent_at", 0) or 0)
+    if sent_at and time.time() - sent_at > 45.0:
+        return False
+    if not adi_payload_matches_target(payload, target):
+        return False
+
+    target_lids = raw_target_available_lids(payload)
+    allowed_lids = set(berimond_allowed_lids(state))
+    requested_lid = int_or_none(pending.get("lid"))
+    lid = requested_lid if requested_lid in target_lids and requested_lid in allowed_lids else None
+    if lid is None:
+        if requested_lid is not None:
+            bot.release_commander(db(), requested_lid, status="available")
+        lid = bot.choose_commander(db(), target_lids, allowed_lids, allowed_lids)
+    if lid is None:
+        state["pending"] = None
+        save_control(state)
+        bot.clear_proxy_pending_db(db())
+        pause_next_action((4.0, 7.0))
+        play_berimond_error_sound(state, "no_available_lid")
+        control_log(
+            f"berimond_aci_skip target={target['x']}:{target['y']} "
+            f"reason=no_available_lid allowed={sorted(allowed_lids)} target_lids={sorted(target_lids)}"
+        )
+        return True
+    if requested_lid is not None and requested_lid != lid:
+        control_log(f"berimond_aci_ok switched_lid={requested_lid}->{lid} target_lids={sorted(target_lids)}")
+    queue_verified_berimond_cra(state, pending, target, int(lid))
+    return True
+
+
 def movement_area(movement: dict, field: str) -> tuple[int, int, int] | None:
     area = movement.get(field)
     if not isinstance(area, list) or len(area) < 3:
@@ -943,7 +1165,7 @@ def shorten_commander_return(lid: int, march_id: int | None, rbc_id: int | None,
             UPDATE commander_state
             SET available_after = %s,
                 status = %s,
-                march_id = COALESCE(march_id, %s),
+                march_id = COALESCE(%s, march_id),
                 target_rbc_id = COALESCE(%s, target_rbc_id),
                 updated_at = %s
             WHERE aid = %s
@@ -1018,16 +1240,26 @@ def process_live_cra_response(decoded: str) -> bool:
         now = bot.now_epoch()
         release_pending_target(target, target_kind, status=reject_status)
         if lid is not None:
+            available_after = now + bot.HEURISTIC_RETURN_SECONDS + random.uniform(*bot.COMMANDER_RETURN_HOLD_RANGE)
+            if target_kind == "berimond_fixed":
+                sent_at_for_cap = int_or_none(last_cra.get("sent_at")) or now
+                available_after = cap_berimond_commander_available(state, sent_at_for_cap, available_after)
             bot.release_commander(
                 db(),
                 int(lid),
-                available_after=now + bot.HEURISTIC_RETURN_SECONDS + random.uniform(*bot.COMMANDER_RETURN_HOLD_RANGE),
+                available_after=available_after,
                 status=reject_status,
             )
+        error_window = 3600
+        max_window_errors = MAX_HOURLY_CRA_ERRORS - 1
+        if target_kind == "berimond_fixed":
+            error_window = int(state.get("berimond_cra_error_window_seconds", bot.BERIMOND_CRA_ERROR_WINDOW_SECONDS) or bot.BERIMOND_CRA_ERROR_WINDOW_SECONDS)
+            max_window_errors = int(state.get("berimond_max_cra_errors", bot.BERIMOND_MAX_CRA_ERRORS) or bot.BERIMOND_MAX_CRA_ERRORS)
+            play_berimond_error_sound(state, reject_status)
         hourly_errors = [
             int(value)
             for value in state.get("cra_error_timestamps", [])
-            if isinstance(value, (int, float)) and now - int(value) < 3600
+            if isinstance(value, (int, float)) and now - int(value) < error_window
         ]
         hourly_errors.append(now)
         consecutive_errors = int(state.get("cra_consecutive_errors", 0) or 0) + 1
@@ -1045,11 +1277,16 @@ def process_live_cra_response(decoded: str) -> bool:
             if target is not None
             else f"proxy_cra_error status={status} reason={reject_reason} lid={lid} task={task_name}"
         )
-        if consecutive_errors > MAX_CONSECUTIVE_CRA_ERRORS or len(hourly_errors) >= MAX_HOURLY_CRA_ERRORS:
+        stop_for_errors = (
+            len(hourly_errors) > max_window_errors
+            if target_kind == "berimond_fixed"
+            else consecutive_errors > MAX_CONSECUTIVE_CRA_ERRORS or len(hourly_errors) >= MAX_HOURLY_CRA_ERRORS
+        )
+        if stop_for_errors:
             state["running"] = False
             state["stopped_at"] = now
             state["stop_reason"] = (
-                f"{reject_status} consecutive={consecutive_errors} hourly={len(hourly_errors)}"
+                f"{reject_status} consecutive={consecutive_errors} errors={len(hourly_errors)} window={error_window}s"
             )
             save_control(state)
             control_log(f"proxy_stopped reason={state['stop_reason']}")
@@ -1061,8 +1298,7 @@ def process_live_cra_response(decoded: str) -> bool:
         pause_next_action(bot.REQUEST_INTERVAL_RANGE)
         control_log(
             f"proxy_cra_error_tolerated status={status} reason={reject_reason} consecutive={consecutive_errors} "
-            f"hourly={len(hourly_errors)} max_consecutive={MAX_CONSECUTIVE_CRA_ERRORS} "
-            f"max_hourly={MAX_HOURLY_CRA_ERRORS}"
+            f"errors={len(hourly_errors)} window={error_window}s max_errors={max_window_errors}"
         )
         return True
 
@@ -1109,6 +1345,20 @@ def process_live_cra_response(decoded: str) -> bool:
             troop_count=int_or_none(last_cra.get("army_count")),
             task_name=task_name,
             lid=int(lid),
+        )
+    elif target_kind == "berimond_fixed":
+        commander_available = cap_berimond_commander_available(state, sent_at, commander_available)
+        bot.mark_commander_outbound(db(), int(lid), int(target.get("id", 0) or 0), int(march_id), commander_available)
+        bot.record_berimond_attack(
+            db(),
+            target,
+            int(march_id),
+            sent_at,
+            travel_seconds,
+            troop_count=int_or_none(last_cra.get("army_count")),
+            return_seconds=return_seconds,
+            lid=int(lid),
+            task_name=task_name or "berimond_fixed",
         )
     elif int(target.get("id", 0) or 0):
         target_level = int(target.get("target_level", target.get("current_level", bot.TARGET_LEVEL)) or bot.TARGET_LEVEL)
@@ -1181,12 +1431,13 @@ def process_live_cat_response(decoded: str) -> bool:
 
     source_area = movement_area(movement, "SA")
     rbc_id = rbc_id_for_area(source_area)
+    packet_kid = int_or_none(movement.get("KID"))
     march_id = movement.get("MID")
     march_id_int = int(march_id) if march_id is not None else None
     return_seconds = int(float(movement.get("TT", 0) or 0))
     result_flag = int_or_none(attack.get("S")) if isinstance(attack, dict) else None
     coin_loot, ruby_loot = loot_from_result(attack.get("G") if isinstance(attack, dict) else None)
-    if march_id_int is not None:
+    if march_id_int is not None and packet_kid != bot.BERIMOND_KID:
         mark_storm_result(
             db(),
             march_id=march_id_int,
@@ -1197,6 +1448,7 @@ def process_live_cat_response(decoded: str) -> bool:
             raw_result=payload if isinstance(payload, dict) else {},
         )
     rbc_result_updated = False
+    berimond_result_updated = False
     # CAT is a separate return movement, so its MID can differ from the original CRA MID.
     # Match RBC results by the attacked RBC plus the commander LID instead.
     if rbc_id is not None:
@@ -1209,14 +1461,29 @@ def process_live_cat_response(decoded: str) -> bool:
             ruby_loot=ruby_loot,
             raw_result=payload if isinstance(payload, dict) else {},
         )
+    elif packet_kid == bot.BERIMOND_KID and source_area is not None:
+        _, x_coordinate, y_coordinate = source_area
+        berimond_result_updated = bot.mark_berimond_result(
+            db(),
+            lid=lid,
+            target={
+                "kingdom_id": bot.BERIMOND_KID,
+                "x": x_coordinate,
+                "y": y_coordinate,
+            },
+            return_seconds=return_seconds,
+            coin_loot=coin_loot,
+            ruby_loot=ruby_loot,
+            result_flag=result_flag,
+        )
     return_epoch = bot.now_epoch() + return_seconds + random.uniform(*bot.COMMANDER_RETURN_HOLD_RANGE)
     shorten_commander_return(lid, march_id_int, rbc_id, return_epoch)
     target_text = f"{source_area[1]}:{source_area[2]}" if source_area is not None else "unknown"
-    packet_kid = int_or_none(movement.get("KID"))
     control_log(
         f"proxy_cat_return target={target_text} kid={packet_kid} lid={lid} mid={march_id_int} "
         f"result_flag={result_flag} coin_loot={coin_loot} ruby_loot={ruby_loot} "
-        f"return_duration={return_seconds} rbc_attack_updated={rbc_result_updated} available_after={int(return_epoch)}"
+        f"return_duration={return_seconds} rbc_attack_updated={rbc_result_updated} "
+        f"berimond_attack_updated={berimond_result_updated} available_after={int(return_epoch)}"
     )
     return True
 
@@ -1245,6 +1512,53 @@ def handle_storm_mode(state: dict) -> bool:
         )
         return False
     queue_pending_storm_cra(state, target, lid, task)
+    return True
+
+
+def next_berimond_global_due(state: dict) -> float:
+    cooldown = float(state.get("berimond_global_attack_cooldown_seconds", bot.BERIMOND_GLOBAL_ATTACK_COOLDOWN_SECONDS) or 0.0)
+    last_sent = float(state.get("last_global_attack_sent_at", 0.0) or 0.0)
+    if cooldown <= 0.0 or last_sent <= 0.0:
+        return time.time()
+    randomizer = task_scheduler.Randomizer()
+    return last_sent + cooldown + float(randomizer.berimond_attack_cooldown_jitter())
+
+
+def handle_berimond_mode(state: dict) -> bool:
+    target = berimond_target(state)
+    allowed_lids = set(berimond_allowed_lids(state))
+    lid = bot.choose_commander(db(), allowed_lids, allowed_lids, allowed_lids)
+    if lid is None:
+        next_wait = next_allowed_commander_wait(allowed_lids, allowed_lids)
+        if next_wait is None:
+            pause_next_action((4.0, 8.0))
+        else:
+            lower = max(1.0, min(float(next_wait) - 3.0, 60.0))
+            upper = max(lower + 1.0, min(float(next_wait), 90.0))
+            pause_next_action((lower, upper))
+        control_log(f"berimond_idle reason=no_available_lid lids={sorted(allowed_lids)} next_wait={next_wait}")
+        return False
+
+    global_due = next_berimond_global_due(state)
+    lead = float(state.get("berimond_attack_interval_target_seconds", 3.0) or 3.0)
+    aci_due = max(time.time(), global_due - max(0.5, lead))
+    pending = {
+        "kind": "aci",
+        "target_kind": "berimond_fixed",
+        "target": target,
+        "task_name": "berimond_fixed",
+        "lid": int(lid),
+        "due_at": aci_due,
+        "sent_at": None,
+        "global_attack_due_at": global_due,
+    }
+    state["pending"] = pending
+    save_control(state)
+    bot.persist_proxy_pending(db(), pending)
+    control_log(
+        f"berimond_aci_queued target={target['x']}:{target['y']} kid={target['kingdom_id']} "
+        f"lid={lid} aci_due_in={aci_due - time.time():.2f}s global_cra_due_in={global_due - time.time():.2f}s"
+    )
     return True
 
 
@@ -1333,8 +1647,58 @@ async def proxy_control_loop() -> None:
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
 
+            if isinstance(pending, dict) and pending.get("kind") == "aci" and pending.get("target_kind") == "berimond_fixed":
+                due_at = float(pending.get("due_at", 0.0) or 0.0)
+                if time.time() < due_at:
+                    await asyncio.sleep(CONTROL_POLL_SECONDS)
+                    continue
+                sent_at = float(pending.get("sent_at", 0.0) or 0.0)
+                if sent_at:
+                    if time.time() - sent_at > 45.0:
+                        lid = int_or_none(pending.get("lid"))
+                        if lid is not None:
+                            bot.release_commander(db(), lid, status="berimond_aci_timeout")
+                        state["pending"] = None
+                        save_control(state)
+                        bot.clear_proxy_pending_db(db())
+                        play_berimond_error_sound(state, "aci_timeout")
+                        control_log(f"berimond_aci_skip reason=timeout lid={lid}")
+                        pause_next_action((4.0, 8.0))
+                    await asyncio.sleep(CONTROL_POLL_SECONDS)
+                    continue
+                target = target_from_pending(pending)
+                lid = int_or_none(pending.get("lid"))
+                if target is None or lid is None:
+                    state["pending"] = None
+                    save_control(state)
+                    bot.clear_proxy_pending_db(db())
+                    continue
+                sx, sy, _ = berimond_source(state)
+                inject_packet(create_aci_packet(target, source=(sx, sy), kingdom_id=bot.BERIMOND_KID))
+                pending["sent_at"] = time.time()
+                state["pending"] = pending
+                save_control(state)
+                bot.persist_proxy_pending(db(), pending)
+                control_log(
+                    f"berimond_aci_sent target={target['x']}:{target['y']} kid={target['kingdom_id']} "
+                    f"lid={lid} global_cra_due_in={float(pending.get('global_attack_due_at', 0.0) or 0.0) - time.time():.2f}s"
+                )
+                await asyncio.sleep(CONTROL_POLL_SECONDS)
+                continue
+
             if isinstance(pending, dict) and pending.get("kind") == "cra":
                 due_at = float(pending.get("due_at", 0.0) or 0.0)
+                if state.get("mode") == "berimond":
+                    global_due = float(pending.get("global_attack_due_at", 0.0) or 0.0)
+                    if global_due <= 0.0:
+                        global_due = next_berimond_global_due(state)
+                        pending["global_attack_due_at"] = global_due
+                    due_at = max(due_at, global_due)
+                    if due_at != float(pending.get("due_at", 0.0) or 0.0):
+                        pending["due_at"] = due_at
+                        state["pending"] = pending
+                        save_control(state)
+                        bot.persist_proxy_pending(db(), pending)
                 if time.time() < due_at:
                     await asyncio.sleep(CONTROL_POLL_SECONDS)
                     continue
@@ -1347,13 +1711,20 @@ async def proxy_control_loop() -> None:
                     continue
                 attack_payload = pending.get("attack_payload")
                 if not isinstance(attack_payload, dict):
-                    attack_payload = bot.build_attack_payload(target, int(lid))
+                    if pending.get("target_kind") == "berimond_fixed":
+                        attack_payload = build_berimond_attack_payload(state, target, int(lid))
+                    else:
+                        attack_payload = bot.build_attack_payload(target, int(lid))
                 packet = xt_packet("cra", attack_payload)
                 army_count = troop_count_from_payload(attack_payload)
                 sent_at = bot.now_epoch()
                 commander_next = sent_at + bot.HEURISTIC_RETURN_SECONDS + random.uniform(*bot.COMMANDER_RETURN_HOLD_RANGE)
+                if pending.get("target_kind") == "berimond_fixed":
+                    commander_next = cap_berimond_commander_available(state, sent_at)
                 bot.mark_commander_pending(db(), int(lid), int(target["id"]), commander_next)
                 inject_packet(packet)
+                if state.get("mode") == "berimond":
+                    state["last_global_attack_sent_at"] = float(sent_at)
                 state["pending"] = None
                 state["last_cra"] = {
                     "target": target,
@@ -1373,7 +1744,10 @@ async def proxy_control_loop() -> None:
                     f"army_count={army_count} travel_duration=pending"
                 )
                 increment_attacks_sent(state)
-                pause_next_action(bot.REQUEST_INTERVAL_RANGE)
+                if state.get("mode") == "berimond":
+                    next_proxy_action_epoch = 0.0
+                else:
+                    pause_next_action(bot.REQUEST_INTERVAL_RANGE)
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
 
@@ -1387,6 +1761,11 @@ async def proxy_control_loop() -> None:
 
             if state.get("mode") == "storm":
                 handle_storm_mode(state)
+                await asyncio.sleep(CONTROL_POLL_SECONDS)
+                continue
+
+            if state.get("mode") == "berimond":
+                handle_berimond_mode(state)
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
 
@@ -1508,32 +1887,51 @@ def process_live_message(decoded: str) -> None:
     if process_live_cat_response(decoded):
         return
     parsed = parse_xt_packet(decoded.strip())
+    if parsed and parsed.get("command") == "aci" and parsed.get("status") not in {None, "0", 0}:
+        if process_pending_berimond_aci_error(parsed.get("status")):
+            return
     if parsed and parsed.get("command") == "adi" and parsed.get("status") not in {None, "0", 0}:
+        if process_pending_berimond_aci_error(parsed.get("status")):
+            return
         if process_pending_storm_adi_error(parsed.get("status")):
             return
 
     payload = parse_live_payload(decoded, "gaa")
     exact_adi = False
+    exact_aci = False
     if payload is not None and process_storm_gaa_payload(payload):
         return
     if payload is None:
         payload = parse_live_payload(decoded, "adi")
         exact_adi = True
     if payload is None:
+        payload = parse_live_payload(decoded, "aci")
+        exact_aci = True
+    if payload is None:
         return
 
-    if exact_adi and process_pending_storm_adi_payload(payload):
-        return
+    if exact_aci:
+        if process_pending_berimond_aci_payload(payload):
+            return
+    if exact_adi:
+        if process_pending_berimond_aci_payload(payload):
+            return
+        if process_pending_storm_adi_payload(payload):
+            return
 
     if exact_adi:
         row = adi_target_row(payload)
         packet_kid = row[0] if row is not None else None
         rows = [row] if row is not None else []
+    elif exact_aci:
+        packet_kid = int_or_none(payload.get("KID", (payload.get("gaa") or {}).get("KID")))
+        rows = []
     else:
         packet_kid, rows = live_rbc_rows_from_payload(payload)
     if not rows:
-        if packet_kid is not None:
-            control_log(f"no_npc_rbc_or_exact_level packet_kid={packet_kid} source={'adi' if exact_adi else 'gaa'}")
+        if packet_kid is not None and not (packet_kid == bot.BERIMOND_KID and not exact_adi):
+            source = "aci" if exact_aci else ("adi" if exact_adi else "gaa")
+            control_log(f"no_npc_rbc_or_exact_level packet_kid={packet_kid} source={source}")
         return
 
     rows_by_location = {
