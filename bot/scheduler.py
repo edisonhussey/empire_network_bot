@@ -14,11 +14,11 @@ if __package__ in {None, ""}:
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
     from bot import berimond
-    from game_data import Attack, KINGDOM, TOOL, TROOP, Kingdom, side, wave
+    from game_data import Attack, KINGDOM, TOOL, Kingdom, Troop, side, wave
     from ranomizer import Randomizer
 else:
     from . import berimond
-    from .game_data import Attack, KINGDOM, TOOL, TROOP, Kingdom, side, wave
+    from .game_data import Attack, KINGDOM, TOOL, Kingdom, Troop, side, wave
     from .ranomizer import Randomizer
 
 
@@ -367,7 +367,7 @@ def allocate_task_definitions(
 SAND_LEVEL_61_RBC_ATTACK = Attack(
     wave1=wave(
         left=side(
-            units=[(TROOP.crossbowman, 50)],
+            units=[(Troop.CROSSBOWMAN, 50)],
         )
     )
 )
@@ -375,41 +375,41 @@ SAND_LEVEL_61_RBC_ATTACK = Attack(
 MEAD_FLANK_ATTACK = Attack(
     wave1=wave(
         left = side(
-            units = [(216, 30)],
+            units = [(Troop.VALKYRIE_RANGER_10, 30)],
             tools = [(TOOL.scaling_ladder, 5)]
         ),
         right = side(
-            units = [(216, 30)],
+            units = [(Troop.VALKYRIE_RANGER_10, 30)],
             tools = [(TOOL.scaling_ladder, 5)]
         )
     ),
     wave2 = wave(
         left = side(
-            units = [(216, 30)],
+            units = [(Troop.VALKYRIE_RANGER_10, 30)],
             tools = [(TOOL.scaling_ladder, 5)]
         ),
         right = side(
-            units = [(216, 30)],
+            units = [(Troop.VALKYRIE_RANGER_10, 30)],
             tools = [(TOOL.scaling_ladder, 5)]
         )
     ),
     wave3 = wave(
         left = side(
-            units = [(216, 30)],
+            units = [(Troop.VALKYRIE_RANGER_10, 30)],
             tools = [(TOOL.scaling_ladder, 5)]
         ),
         right = side(
-            units = [(216, 30)],
+            units = [(Troop.VALKYRIE_RANGER_10, 30)],
             tools = [(TOOL.scaling_ladder, 5)]
         )
     ),
     wave4 = wave(
         left = side(
-            units = [(216, 30)],
+            units = [(Troop.VALKYRIE_RANGER_10, 30)],
             tools = [(TOOL.scaling_ladder, 5)]
         ),
         right = side(
-            units = [(216, 30)],
+            units = [(Troop.VALKYRIE_RANGER_10, 30)],
             tools = [(TOOL.scaling_ladder, 5)]
         )
     )
@@ -422,34 +422,34 @@ MEAD_FLANK_ATTACK = Attack(
 STORM_CUSTOM_ATTACK = Attack(
     wave1=wave(
         left=side(
-            units=[(TROOP.demon_horror, 50)],
+            units=[(Troop.DEMON_HORROR, 50)],
         ),
         right= side(
-            units=[(TROOP.demon_horror, 50)],
+            units=[(Troop.DEMON_HORROR, 50)],
         ),
     ),
     wave2=wave(
         left=side(
-            units=[(TROOP.demon_horror, 50)],
+            units=[(Troop.DEMON_HORROR, 50)],
         ),
         right= side(
-            units=[(TROOP.demon_horror, 50)],
+            units=[(Troop.DEMON_HORROR, 50)],
         ),
     ),
     wave3=wave(
         left=side(
-            units=[(TROOP.demon_horror, 50)],
+            units=[(Troop.DEMON_HORROR, 50)],
         ),
         right= side(
-            units=[(TROOP.demon_horror, 50)],
+            units=[(Troop.DEMON_HORROR, 50)],
         ),
     ),
     wave4=wave(
         left=side(
-            units=[(TROOP.demon_horror, 50)],
+            units=[(Troop.DEMON_HORROR, 50)],
         ),
         right= side(
-            units=[(TROOP.demon_horror, 50)],
+            units=[(Troop.DEMON_HORROR, 50)],
         ),
     ),
 )
@@ -462,8 +462,8 @@ TASK_DEFINITIONS: tuple[TaskDefinition, ...] = (
         "sand_rbc_level_61_crossbow",
         kingdom=KINGDOM.sand,
         target_level=61,
-        commanders=15,
-        priority=10,
+        commanders=16,
+        priority=20,
         attack=SAND_LEVEL_61_RBC_ATTACK,
         tags=("rbc", "sand"),
         notes="50 crossbowmen on left flank. Uses live ADI/CRA/GAM/CAT state before sending.",
@@ -471,9 +471,9 @@ TASK_DEFINITIONS: tuple[TaskDefinition, ...] = (
     task_definition(
         "sand_rbc_level_36_60_mead_flank",
         kingdom=KINGDOM.sand,
-        target_levels=tuple(range(36, 61)),
-        commanders=20,
-        priority=20,
+        target_levels=tuple(range(35, 61)),
+        commanders=19,
+        priority=10,
         enabled=True,
         attack=MEAD_FLANK_ATTACK,
         tags=("rbc", "sand", "mead"),

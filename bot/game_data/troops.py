@@ -80,9 +80,38 @@ class Troop(Enum):
     CORRUPTED_VETERAN_HALBERDIER = "corrupted_veteran_halberdier"
     CORRUPTED_VETERAN_LONGBOWMAN = "corrupted_veteran_longbowman"
     SHIELD_MAIDEN_0 = "shield_maiden_0"
+    SHIELD_MAIDEN_1 = "shield_maiden_1"
+    SHIELD_MAIDEN_2 = "shield_maiden_2"
+    SHIELD_MAIDEN_3 = "shield_maiden_3"
+    SHIELD_MAIDEN_4 = "shield_maiden_4"
+    SHIELD_MAIDEN_5 = "shield_maiden_5"
+    SHIELD_MAIDEN_6 = "shield_maiden_6"
+    SHIELD_MAIDEN_7 = "shield_maiden_7"
+    SHIELD_MAIDEN_8 = "shield_maiden_8"
+    SHIELD_MAIDEN_9 = "shield_maiden_9"
     VALKYRIE_RANGER_0 = "valkyrie_ranger_0"
+    VALKYRIE_RANGER_1 = "valkyrie_ranger_1"
+    VALKYRIE_RANGER_2 = "valkyrie_ranger_2"
+    VALKYRIE_RANGER_3 = "valkyrie_ranger_3"
+    VALKYRIE_RANGER_4 = "valkyrie_ranger_4"
+    VALKYRIE_RANGER_5 = "valkyrie_ranger_5"
+    VALKYRIE_RANGER_6 = "valkyrie_ranger_6"
+    VALKYRIE_RANGER_7 = "valkyrie_ranger_7"
+    VALKYRIE_RANGER_8 = "valkyrie_ranger_8"
+    VALKYRIE_RANGER_9 = "valkyrie_ranger_9"
+    VALKYRIE_RANGER_10 = "valkyrie_ranger_10"
     PROTECTOR_OF_THE_NORTH_0 = "protector_of_the_north_0"
     VALKYRIE_SNIPER_0 = "valkyrie_sniper_0"
+    VALKYRIE_SNIPER_1 = "valkyrie_sniper_1"
+    VALKYRIE_SNIPER_2 = "valkyrie_sniper_2"
+    VALKYRIE_SNIPER_3 = "valkyrie_sniper_3"
+    VALKYRIE_SNIPER_4 = "valkyrie_sniper_4"
+    VALKYRIE_SNIPER_5 = "valkyrie_sniper_5"
+    VALKYRIE_SNIPER_6 = "valkyrie_sniper_6"
+    VALKYRIE_SNIPER_7 = "valkyrie_sniper_7"
+    VALKYRIE_SNIPER_8 = "valkyrie_sniper_8"
+    VALKYRIE_SNIPER_9 = "valkyrie_sniper_9"
+    VALKYRIE_SNIPER_10 = "valkyrie_sniper_10"
     DIREWOLF_277 = "direwolf_277"
     EASTER_CHAMPIONESS = "easter_championess"
     VALKYRIE_HUNTRESS = "valkyrie_huntress"
@@ -1006,9 +1035,199 @@ class Troop(Enum):
                 "travel_speed": 34,
                 "mead_consumption": 2
             },
+            "shield_maiden_1": {
+                "id": 196,
+                "name": "shield_maiden_1",
+                "attack_power": 225,
+                "melee_defence": 28,
+                "ranged_defence": 10,
+                "loot_capacity": 43,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "shield_maiden_2": {
+                "id": 197,
+                "name": "shield_maiden_2",
+                "attack_power": 225,
+                "melee_defence": 28,
+                "ranged_defence": 10,
+                "loot_capacity": 43,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "shield_maiden_3": {
+                "id": 198,
+                "name": "shield_maiden_3",
+                "attack_power": 225,
+                "melee_defence": 28,
+                "ranged_defence": 10,
+                "loot_capacity": 43,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "shield_maiden_4": {
+                "id": 199,
+                "name": "shield_maiden_4",
+                "attack_power": 225,
+                "melee_defence": 28,
+                "ranged_defence": 10,
+                "loot_capacity": 43,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "shield_maiden_5": {
+                "id": 200,
+                "name": "shield_maiden_5",
+                "attack_power": 225,
+                "melee_defence": 28,
+                "ranged_defence": 10,
+                "loot_capacity": 43,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "shield_maiden_6": {
+                "id": 201,
+                "name": "shield_maiden_6",
+                "attack_power": 225,
+                "melee_defence": 28,
+                "ranged_defence": 10,
+                "loot_capacity": 43,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "shield_maiden_7": {
+                "id": 202,
+                "name": "shield_maiden_7",
+                "attack_power": 225,
+                "melee_defence": 28,
+                "ranged_defence": 10,
+                "loot_capacity": 43,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "shield_maiden_8": {
+                "id": 203,
+                "name": "shield_maiden_8",
+                "attack_power": 225,
+                "melee_defence": 28,
+                "ranged_defence": 10,
+                "loot_capacity": 43,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "shield_maiden_9": {
+                "id": 204,
+                "name": "shield_maiden_9",
+                "attack_power": 225,
+                "melee_defence": 28,
+                "ranged_defence": 10,
+                "loot_capacity": 43,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
             "valkyrie_ranger_0": {
                 "id": 205,
                 "name": "valkyrie_ranger_0",
+                "attack_power": 210,
+                "melee_defence": 19,
+                "ranged_defence": 32,
+                "loot_capacity": 40,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_ranger_1": {
+                "id": 206,
+                "name": "valkyrie_ranger_1",
+                "attack_power": 210,
+                "melee_defence": 19,
+                "ranged_defence": 32,
+                "loot_capacity": 40,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_ranger_2": {
+                "id": 207,
+                "name": "valkyrie_ranger_2",
+                "attack_power": 210,
+                "melee_defence": 19,
+                "ranged_defence": 32,
+                "loot_capacity": 40,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_ranger_3": {
+                "id": 208,
+                "name": "valkyrie_ranger_3",
+                "attack_power": 210,
+                "melee_defence": 19,
+                "ranged_defence": 32,
+                "loot_capacity": 40,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_ranger_4": {
+                "id": 209,
+                "name": "valkyrie_ranger_4",
+                "attack_power": 210,
+                "melee_defence": 19,
+                "ranged_defence": 32,
+                "loot_capacity": 40,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_ranger_5": {
+                "id": 210,
+                "name": "valkyrie_ranger_5",
+                "attack_power": 210,
+                "melee_defence": 19,
+                "ranged_defence": 32,
+                "loot_capacity": 40,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_ranger_6": {
+                "id": 211,
+                "name": "valkyrie_ranger_6",
+                "attack_power": 210,
+                "melee_defence": 19,
+                "ranged_defence": 32,
+                "loot_capacity": 40,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_ranger_7": {
+                "id": 212,
+                "name": "valkyrie_ranger_7",
+                "attack_power": 210,
+                "melee_defence": 19,
+                "ranged_defence": 32,
+                "loot_capacity": 40,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_ranger_8": {
+                "id": 213,
+                "name": "valkyrie_ranger_8",
+                "attack_power": 210,
+                "melee_defence": 19,
+                "ranged_defence": 32,
+                "loot_capacity": 40,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_ranger_9": {
+                "id": 214,
+                "name": "valkyrie_ranger_9",
+                "attack_power": 210,
+                "melee_defence": 19,
+                "ranged_defence": 32,
+                "loot_capacity": 40,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_ranger_10": {
+                "id": 216,
+                "name": "valkyrie_ranger_10",
                 "attack_power": 210,
                 "melee_defence": 19,
                 "ranged_defence": 32,
@@ -1029,6 +1248,106 @@ class Troop(Enum):
             "valkyrie_sniper_0": {
                 "id": 228,
                 "name": "valkyrie_sniper_0",
+                "attack_power": 32,
+                "melee_defence": 80,
+                "ranged_defence": 210,
+                "loot_capacity": 5,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_sniper_1": {
+                "id": 229,
+                "name": "valkyrie_sniper_1",
+                "attack_power": 32,
+                "melee_defence": 80,
+                "ranged_defence": 210,
+                "loot_capacity": 5,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_sniper_2": {
+                "id": 230,
+                "name": "valkyrie_sniper_2",
+                "attack_power": 32,
+                "melee_defence": 80,
+                "ranged_defence": 210,
+                "loot_capacity": 5,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_sniper_3": {
+                "id": 231,
+                "name": "valkyrie_sniper_3",
+                "attack_power": 32,
+                "melee_defence": 80,
+                "ranged_defence": 210,
+                "loot_capacity": 5,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_sniper_4": {
+                "id": 232,
+                "name": "valkyrie_sniper_4",
+                "attack_power": 32,
+                "melee_defence": 80,
+                "ranged_defence": 210,
+                "loot_capacity": 5,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_sniper_5": {
+                "id": 233,
+                "name": "valkyrie_sniper_5",
+                "attack_power": 32,
+                "melee_defence": 80,
+                "ranged_defence": 210,
+                "loot_capacity": 5,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_sniper_6": {
+                "id": 234,
+                "name": "valkyrie_sniper_6",
+                "attack_power": 32,
+                "melee_defence": 80,
+                "ranged_defence": 210,
+                "loot_capacity": 5,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_sniper_7": {
+                "id": 235,
+                "name": "valkyrie_sniper_7",
+                "attack_power": 32,
+                "melee_defence": 80,
+                "ranged_defence": 210,
+                "loot_capacity": 5,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_sniper_8": {
+                "id": 236,
+                "name": "valkyrie_sniper_8",
+                "attack_power": 32,
+                "melee_defence": 80,
+                "ranged_defence": 210,
+                "loot_capacity": 5,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_sniper_9": {
+                "id": 237,
+                "name": "valkyrie_sniper_9",
+                "attack_power": 32,
+                "melee_defence": 80,
+                "ranged_defence": 210,
+                "loot_capacity": 5,
+                "travel_speed": 34,
+                "mead_consumption": 2
+            },
+            "valkyrie_sniper_10": {
+                "id": 238,
+                "name": "valkyrie_sniper_10",
                 "attack_power": 32,
                 "melee_defence": 80,
                 "ranged_defence": 210,

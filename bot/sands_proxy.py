@@ -5,6 +5,8 @@ import json
 import re
 import sys
 import time
+from collections import Counter, defaultdict
+from statistics import mean, median
 from pathlib import Path
 
 
@@ -86,20 +88,137 @@ def bot_duration_text(state: dict) -> str:
     return f"{hours:02d}:{minutes:02d}"
 
 
+def seconds_text(seconds: float | None) -> str:
+    if seconds is None:
+        return "n/a"
+    seconds = max(0.0, float(seconds))
+    if seconds < 60.0:
+        return f"{seconds:.1f}s"
+    minutes = seconds / 60.0
+    if minutes < 60.0:
+        return f"{minutes:.1f}m"
+    return f"{minutes / 60.0:.1f}h"
+
+
+def count_text(counter: Counter, *, limit: int = 8) -> str:
+    if not counter:
+        return "none"
+    return ", ".join(f"{key}:{count}" for key, count in counter.most_common(limit))
+
+
+def sands_run_analytics(conn, started_at: int) -> dict:
+    cutoff = int(started_at or 0)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                lord_id,
+                time_created,
+                duration,
+                return_duration,
+                task_name,
+                target_level,
+                landed_at
+            FROM attack
+            WHERE aid = %s
+              AND kingdom_id = %s
+              AND target_kind = 'rbc'
+              AND (%s <= 0 OR time_created >= %s)
+            ORDER BY time_created NULLS LAST
+            """,
+            (bot.current_aid(), bot.SANDS_KID, cutoff, cutoff),
+        )
+        rows = cur.fetchall()
+
+    sent_rows = [row for row in rows if row[1] is not None]
+    sent_rows.sort(key=lambda row: int(row[1]))
+    launch_spacings = [
+        int(next_row[1]) - int(prev_row[1])
+        for prev_row, next_row in zip(sent_rows, sent_rows[1:])
+        if int(next_row[1]) >= int(prev_row[1])
+    ]
+
+    by_lord_id = defaultdict(list)
+    for row in sent_rows:
+        lord_id = row[0]
+        if lord_id is None:
+            continue
+        by_lord_id[int(lord_id)].append(row)
+
+    unused_after_return = []
+    for commander_rows in by_lord_id.values():
+        commander_rows.sort(key=lambda row: int(row[1]))
+        for current, next_row in zip(commander_rows, commander_rows[1:]):
+            sent_at = int(current[1])
+            duration = current[2]
+            return_duration = current[3]
+            if duration is None or return_duration is None:
+                continue
+            returned_at = sent_at + int(duration) + int(return_duration)
+            gap = int(next_row[1]) - returned_at
+            if gap >= 0:
+                unused_after_return.append(gap)
+
+    levels = Counter(str(row[5]) for row in rows if row[5] is not None)
+    tasks = Counter(str(row[4]) for row in rows if row[4])
+    completed = sum(1 for row in rows if row[6] is not None)
+    return {
+        "attacks": len(rows),
+        "completed": completed,
+        "commanders_used": len(by_lord_id),
+        "idle_gaps": unused_after_return,
+        "launch_spacings": launch_spacings,
+        "levels": levels,
+        "tasks": tasks,
+    }
+
+
 def stop_summary(state: dict, reason: str | None = None) -> str:
     reason_text = reason or state.get("stop_reason") or "stopped"
     attacks_sent = int(state.get("attacks_sent", 0) or 0)
-    stats_text = ""
+    lines = [
+        f"reason={reason_text}",
+        f"runtime={bot_duration_text(state)} attacks_sent={attacks_sent}",
+    ]
     try:
+        started_at = int(state.get("started_at") or 0)
         with connect(read_connection_config()) as conn:
-            stats = bot.attack_run_stats(conn, started_at=int(state.get("started_at") or 0))
-        stats_text = (
-            f" db_attacks={stats['db_attacks']} db_completed={stats['db_completed']} "
+            stats = bot.attack_run_stats(conn, started_at=started_at)
+            analytics = sands_run_analytics(conn, started_at)
+        lines.append(
+            f"db_attacks={stats['db_attacks']} db_completed={stats['db_completed']} "
             f"coin_loot={stats['coin_loot']} ruby_loot={stats['ruby_loot']}"
         )
-    except Exception:
-        stats_text = ""
-    return f"reason={reason_text} attacks_sent={attacks_sent} duration={bot_duration_text(state)}{stats_text}"
+        idle_gaps = analytics["idle_gaps"]
+        launch_spacings = analytics["launch_spacings"]
+        idle_avg = mean(idle_gaps) if idle_gaps else None
+        idle_median = median(idle_gaps) if idle_gaps else None
+        under_minute = sum(1 for gap in idle_gaps if gap <= 60)
+        spacing_avg = mean(launch_spacings) if launch_spacings else None
+        spacing_median = median(launch_spacings) if launch_spacings else None
+        lines.extend(
+            [
+                (
+                    f"sands_rbc attacks={analytics['attacks']} completed={analytics['completed']} "
+                    f"commanders_used={analytics['commanders_used']}"
+                ),
+                (
+                    "commander_unused_after_return "
+                    f"mean={seconds_text(idle_avg)} median={seconds_text(idle_median)} "
+                    f"under_60s={under_minute}/{len(idle_gaps)}"
+                ),
+                (
+                    "launch_spacing "
+                    f"mean={seconds_text(spacing_avg)} median={seconds_text(spacing_median)} "
+                    f"samples={len(launch_spacings)}"
+                ),
+                f"target_levels={count_text(analytics['levels'])}",
+                f"tasks={count_text(analytics['tasks'])}",
+            ]
+        )
+    except Exception as exc:
+        lines.append(f"summary_db_error={type(exc).__name__}: {exc}")
+    return "\n".join(lines)
 
 
 def stop_control(state: dict, reason: str) -> dict:
@@ -154,7 +273,7 @@ def monitor_start() -> None:
                     time.sleep(0.5)
                     continue
             reason = state.get("stop_reason") or "stopped"
-            print(f"proxy bot stopped {stop_summary(state, reason)}", flush=True)
+            print(f"\nproxy bot stopped\n{stop_summary(state, reason)}", flush=True)
             return
         stopped_seen_at = None
         time.sleep(0.5)
@@ -180,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.end:
         state = stop_control(state, "manual_end")
-        print(f"proxy bot stopped {stop_summary(state)}; mitmproxy session can stay open ({CONTROL_FILE})")
+        print(f"\nproxy bot stopped\n{stop_summary(state)}\nmitmproxy session can stay open ({CONTROL_FILE})")
         return 0
 
     state = {
@@ -209,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         state = stop_control(load_control(), "keyboard_interrupt")
         print(
-            f"\nproxy bot stopped from Ctrl+C; {stop_summary(state)}",
+            f"\nproxy bot stopped from Ctrl+C\n{stop_summary(state)}",
             flush=True,
         )
     return 0

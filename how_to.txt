@@ -1,6 +1,18 @@
 How to run the proxy bot
 ========================
 
+
+
+
+----
+python bot/bot.py --account-name ventrilo --mode berimond-proxy --max-attacks 300 --commander-count 16
+cd /Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot
+source venv/bin/activate
+python bot/proxy_bot.py --account-name ventrilo --mode sands --start --max-attacks 200
+
+
+
+
 This is based on what was actually active last night / this morning, not just
 the newest file by modified time.
 
