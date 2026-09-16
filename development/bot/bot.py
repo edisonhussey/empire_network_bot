@@ -561,14 +561,10 @@ def reserve_target_for_task(conn: psycopg.Connection, task) -> dict[str, Any] | 
                   AND current_level = ANY(%s)
                   AND COALESCE(last_attacked, 0) <= %s
                 ORDER BY
+                    abs(x_coordinate - %s)
+                    + abs(y_coordinate - %s)
+                    + random() * 4,
                     COALESCE(last_attacked, 0),
-                    floor(
-                        (
-                            abs(x_coordinate - %s)
-                            + abs(y_coordinate - %s)
-                            + random() * 95
-                        ) / 35
-                    ),
                     random()
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
