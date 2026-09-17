@@ -17,7 +17,9 @@ REPO_ROOT = find_repo_root(Path(__file__).resolve())
 CREDENTIALS_DIR = REPO_ROOT / "credentials"
 
 
-def _read_env(path: Path) -> dict[str, str]:
+def read_env(path: Path) -> dict[str, str]:
+    """Read a simple ``KEY = VALUE`` credentials file."""
+
     values: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         stripped = line.strip()
@@ -32,11 +34,19 @@ def credentials_path(username: str) -> Path:
     return CREDENTIALS_DIR / f"{username}.env"
 
 
+def available_usernames() -> tuple[str, ...]:
+    """Every account that has a ``credentials/<username>.env`` file."""
+
+    if not CREDENTIALS_DIR.is_dir():
+        return ()
+    return tuple(sorted(path.stem for path in CREDENTIALS_DIR.glob("*.env")))
+
+
 def resolve_aid(username: str) -> str:
     path = credentials_path(username)
     if not path.exists():
         raise FileNotFoundError(f"missing credentials file: {path}")
-    values = _read_env(path)
+    values = read_env(path)
     aid = values.get("AID") or values.get("ACCOUNT_ID") or values.get("account_id")
     if not aid:
         raise ValueError(f"missing AID in {path}")
@@ -45,7 +55,7 @@ def resolve_aid(username: str) -> str:
 
 def account_record(username: str) -> dict[str, str]:
     path = credentials_path(username)
-    values = _read_env(path)
+    values = read_env(path)
     return {
         "username": username,
         "aid": resolve_aid(username),

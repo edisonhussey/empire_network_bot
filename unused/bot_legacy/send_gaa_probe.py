@@ -20,7 +20,7 @@ REPO_ROOT = find_repo_root(Path(__file__).resolve())
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from bot.sand_rbc_farm.main import extract_raw_packet, parse_xt_packet
+from bot.packets import extract_raw_packet, parse_xt_packet
 
 
 CONTROL_FILE = REPO_ROOT / "bot" / "proxy_control.json"

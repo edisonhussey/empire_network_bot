@@ -1,0 +1,31 @@
+# Run from the repo root (or use: python empire.py <same args> from anywhere)
+# DO NOT run `python -m bot.cli` from inside bot/ - bot.py shadows the package.
+
+# 1. log in with the listener running, then check who is live:
+python -m bot.cli session
+
+# 2a. build the RBC target list once (whoever is logged in - no account flag):
+python -m bot.cli db populate
+
+# 2b. or keep it running: keeps ingesting new captures until Ctrl+C
+#     --poll is the SCAN INTERVAL in seconds (not a duration), default 10
+python -m bot.cli db populate --watch              # scan every 10s
+python -m bot.cli db populate --watch --poll 30    # scan every 30s
+
+# Reading the output:
+#   watch pass=1 new=15 [with_data=2 no_map_data=3 already_done=10] npc_rows=240
+#   with_data    = files that carried map scans and added targets
+#   no_map_data  = files with no GAA/ADI map data (e.g. you were idle)
+#   already_done = files this run had already ingested earlier
+# A block of zeros is normal once a capture is caught up. RBC data only appears
+# when the game sends GAA map responses (opening the map, or a scan run).
+
+# 3. run:
+python -m bot.cli proxy start --max-attacks 200
+
+# 4. keep an eye on capture folder sizes / trim them:
+python -m bot.cli db logs
+python -m bot.cli db logs --prune --apply
+
+# Account flags are an override only, and are refused if they disagree with
+# who is actually logged in.

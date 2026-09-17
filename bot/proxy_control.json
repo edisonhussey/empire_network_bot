@@ -1,33 +1,26 @@
 {
-  "attacks_sent": 248,
+  "attacks_sent": 0,
+  "castle_inventory": {
+    "10": 462,
+    "105": 17,
+    "11": 980,
+    "12": 251,
+    "611": 212,
+    "614": 1870,
+    "622": 21,
+    "624": 33,
+    "625": 53,
+    "627": 34,
+    "641": 1,
+    "714": 858,
+    "715": 4068,
+    "9": 68
+  },
   "cra_consecutive_errors": 0,
   "cra_error_timestamps": [],
-  "last_cra": {
-    "army_count": 50,
-    "lid": 16,
-    "sent_at": 1788163541,
-    "sent_by_proxy": true,
-    "target": {
-      "current_level": 61,
-      "id": 356,
-      "kingdom_id": 1,
-      "previous_last_attacked": 1788154364,
-      "target_level": 61,
-      "task_name": "sand_rbc_level_61_crossbow",
-      "x": 627,
-      "y": 589
-    },
-    "target_kind": "rbc",
-    "task_name": "sand_rbc_level_61_crossbow"
-  },
-  "max_attacks": 500,
+  "max_attacks": 200,
   "mode": "sands",
   "pending": null,
-  "runner": "proxy_bot.py",
   "running": false,
-  "sands_task_cursor": 0,
-  "started_at": 1787521344,
-  "stop_reason": "keyboard_interrupt",
-  "stopped_at": 1787541408,
-  "transport_only": false
+  "stop_reason": "stale_placeholder"
 }

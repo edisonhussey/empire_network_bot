@@ -11,7 +11,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -35,8 +35,11 @@ for path in (SCAN_ROOT, SCAN_ROOT / "pygge_repo"):
 
 from bot.test_psql_connection import connect, read_connection_config
 from bot import account_context
+from bot import accounts
 from bot import berimond
 from bot import storm_database as storm_db
+from bot import db as bot_db
+from bot import tasks as task_defs
 from bot.db_account import DEFAULT_BACKFILL_AID, ensure_account_columns
 from bot.storm_database import (
     STORM_KID,
@@ -45,7 +48,12 @@ from bot.storm_database import (
     release_storm_target,
     reserve_storm_target,
 )
-from bot.sand_rbc_farm import main as farm
+from bot import attacks, packets
+
+#: Castle coordinates, resolved at login by ``connect_sands``. Fall back to the
+#: protocol defaults so payload builders always have a usable value.
+SOURCE_X = packets.DEFAULT_SOURCE_X
+SOURCE_Y = packets.DEFAULT_SOURCE_Y
 
 try:
     from event_worker.castles import find_castle_xy
@@ -65,8 +73,10 @@ except ImportError:
 # /// use the function 4.4 + 2**(rand(1,4.5)) as the increase anti bot cooldown after theoretical cooldown
 # ///base increase is 3 hours + time once landed, else use heuristic 20 mins + 3 hours from sent. whichever is lower. then apply the randomization funciton outlines. 
 
-# //read sand_rbc_farm it works well. we want to create 2 version one with debugging mitprox, and another version that uses the log in timeout structure from pygge
-# but the underlying core and event sequencing, of queue for requests / processing .
+# //historical note: the old sand_rbc_farm state loop was removed. Its packet
+# //parsers and protocol constants now live in bot/packets.py, and its attack
+# //objects in bot/attacks.py. See bot/DESIGN_NOTES.md for how these design
+# //notes map onto the current code.
 
 # //only apply the sand rbc 50 crosswbomen cra packet for first 13 commander count. on left flank and once sent update the datbase to last_attacked. use this same field to deteremine later on if it can be attacked. strict 20 sec + random 0-10 timeout between request intervals. also need an adi before cra with also randomized, anti bot detection. 
 
@@ -96,7 +106,8 @@ TARGET_NO_LID_RETRY_RANGE = (18 * 60.0, 44 * 60.0)
 TARGET_BAD_LEVEL_RETRY_RANGE = (2.5 * 3600.0, 4.0 * 3600.0)
 TARGET_ERROR_RETRY_RANGE = (21 * 60.0, 53 * 60.0)
 HEURISTIC_RETURN_SECONDS = 30 * 60
-RETURN_HEURISTIC_MULTIPLIER = 0.3
+DEFAULT_RETURN_HEURISTIC_MULTIPLIER = 0.3
+RETURN_HEURISTIC_MULTIPLIER = DEFAULT_RETURN_HEURISTIC_MULTIPLIER
 COMMANDER_RETURN_HOLD_RANGE = (10.0, 20.0)
 MAX_CRA_PER_HOUR_DEFAULT = 3
 MAX_CONSECUTIVE_ERRORS = 2
@@ -148,6 +159,7 @@ def current_aid() -> str:
 
 def configure_account(account_name: str | None = None, aid: str | None = None):
     global CURRENT_ACCOUNT_NAME, CURRENT_AID, BOT_STATE_DIR, DEFAULT_LOG_DIR, CONTROL_FILE
+    global RETURN_HEURISTIC_MULTIPLIER
     if account_name:
         context = account_context.for_account_name(account_name)
     elif aid:
@@ -159,10 +171,42 @@ def configure_account(account_name: str | None = None, aid: str | None = None):
     BOT_STATE_DIR = context.root
     DEFAULT_LOG_DIR = context.logs_dir
     CONTROL_FILE = context.control_file
-    farm.COMMANDER_STATE_PATH = context.gamestate_dir / "commander_state.json"
-    farm.RBC_STATE_PATH = context.gamestate_dir / "rbc_state.json"
-    farm.LATEST_SERVER_MESSAGES = context.latest_logs_dir
+    RETURN_HEURISTIC_MULTIPLIER = DEFAULT_RETURN_HEURISTIC_MULTIPLIER
+    if context.username:
+        try:
+            values = accounts.load_account(context.username).values()
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            log(f"account_env_load_failed account={context.username} error={exc!r}", error=True)
+            values = {}
+        raw_multiplier = values.get("RETURN_HEURISTIC_MULTIPLIER") or values.get("GGE_RETURN_HEURISTIC_MULTIPLIER")
+        if raw_multiplier:
+            try:
+                RETURN_HEURISTIC_MULTIPLIER = max(0.0, float(raw_multiplier))
+            except ValueError:
+                log(
+                    f"return_multiplier_invalid account={context.username} value={raw_multiplier!r}",
+                    error=True,
+                )
+            else:
+                log(
+                    f"return_multiplier account={context.username} "
+                    f"value={RETURN_HEURISTIC_MULTIPLIER:g}"
+                )
     storm_db.set_account_aid(context.aid)
+
+    # Commander LIDs differ per account, so load this account's own roster from
+    # what the listener learned BEFORE allocating tasks - allocation hands out
+    # commander numbers from that pool.
+    try:
+        with bot_db.connection() as conn:
+            roster = bot_db.read_account_commander_lids(conn, context.aid)
+    except psycopg.Error as exc:
+        log(f"commander_pool_load_failed aid={context.aid} error={exc!r}", error=True)
+        roster = ()
+    task_scheduler.set_commander_pool(roster)
+
+    # The task plan follows the account, so a new account needs no task edits.
+    task_defs.set_active_account(context.username or None)
     return context
 
 
@@ -437,6 +481,7 @@ def wait_between_adi_and_cra() -> None:
 
 
 def connect_sands(account_config: Path):
+    global SOURCE_X, SOURCE_Y
     if connect_and_login is None or find_castle_xy is None:
         raise RuntimeError("event_worker is not importable; set GGE_SCAN_ROOT to the scan_coordinates folder")
     while True:
@@ -446,8 +491,8 @@ def connect_sands(account_config: Path):
             sx, sy, cid = find_castle_xy(castles, kingdom=BURNING_SANDS)
             socket.go_to_castle(BURNING_SANDS, cid if cid is not None else -1)
             socket.open_map(BURNING_SANDS)
-            farm.SOURCE_X = int(sx)
-            farm.SOURCE_Y = int(sy)
+            SOURCE_X = int(sx)
+            SOURCE_Y = int(sy)
             log(f"connected_sands source={sx}:{sy} castle_id={cid}")
             return socket
         except LoginTemporarilyBlocked as exc:
@@ -553,6 +598,10 @@ def reserve_target_for_task(conn: psycopg.Connection, task) -> dict[str, Any] | 
         return None
     now = now_epoch()
     aid = current_aid()
+    # Rank by distance from this account's own castle in that kingdom. The
+    # learned castle is used rather than the protocol default, which belongs to
+    # a different account and would rank targets from the wrong side of the map.
+    source_x, source_y = source_for_kingdom(conn, int(task.kingdom_id))
     with conn.transaction():
         with conn.cursor() as cur:
             cur.execute(
@@ -572,7 +621,7 @@ def reserve_target_for_task(conn: psycopg.Connection, task) -> dict[str, Any] | 
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
                 """,
-                (aid, int(task.kingdom_id), list(levels), now, farm.SOURCE_X, farm.SOURCE_Y),
+                (aid, int(task.kingdom_id), list(levels), now, source_x, source_y),
             )
             row = cur.fetchone()
             if row is None:
@@ -767,17 +816,96 @@ def mark_commander_outbound(conn: psycopg.Connection, lid: int, rbc_id: int, mar
     conn.commit()
 
 
-def build_attack_payload(target: dict[str, Any], lid: int, task=None) -> dict[str, Any]:
-    attack_payload = task.attack_payload() if task is not None else farm.LEVEL_61.to_payload()
+#: Lazily opened connection used only by `source_for_kingdom` when a caller has
+#: no connection of its own. Keeps the lookup self-sufficient so that forgetting
+#: `conn=` can never silently fall back to a hardcoded castle.
+_source_conn: psycopg.Connection | None = None
+
+
+def _source_connection() -> psycopg.Connection | None:
+    global _source_conn
+    if _source_conn is None or getattr(_source_conn, "closed", False):
+        try:
+            _source_conn = bot_db.connection()
+        except psycopg.Error as exc:
+            log(f"source_connection_failed error={exc!r}", error=True)
+            return None
+    return _source_conn
+
+
+def source_for_kingdom(conn: psycopg.Connection | None, kingdom_id: int) -> tuple[int, int]:
+    """The account's own castle in a kingdom, learned from the proxy traffic.
+
+    Supplying the kingdom id is enough - the coordinates are read from what the
+    listener persisted (`gbd` castle list / `jaa` landing area), so nothing has
+    to be hardcoded per account or per kingdom. The connection is optional: when
+    it is missing one is opened here, because a caller that forgets it used to
+    send from the wrong castle and get "NOT IN OWNED CASTLE" back.
+    """
+
+    global _source_conn
+    if conn is None:
+        conn = _source_connection()
+    if conn is not None:
+        try:
+            entry = bot_db.read_account_sources(conn, current_aid()).get(str(int(kingdom_id)))
+        except psycopg.Error as exc:
+            _source_conn = None
+            log(f"source_lookup_failed kid={kingdom_id} error={exc!r}", error=True)
+            entry = None
+        if entry:
+            return int(entry["x"]), int(entry["y"])
+    log(
+        f"source_unknown kid={kingdom_id} account={current_aid()} "
+        f"falling_back_to={SOURCE_X}:{SOURCE_Y}",
+        error=True,
+    )
+    return SOURCE_X, SOURCE_Y
+
+
+def hbw_for_kingdom(conn: psycopg.Connection | None, kingdom_id: int) -> int:
+    """Travel option for this account's castle in a kingdom.
+
+    The value differs by account/session context. Ventrilo's observed Sands
+    attacks use the protocol fallback, while pingpoko's accepted live CRA uses a
+    different value learned into account sources.
+    """
+
+    global _source_conn
+    if conn is None:
+        conn = _source_connection()
+    if conn is not None:
+        try:
+            entry = bot_db.read_account_sources(conn, current_aid()).get(str(int(kingdom_id)))
+        except psycopg.Error as exc:
+            _source_conn = None
+            log(f"hbw_lookup_failed kid={kingdom_id} error={exc!r}", error=True)
+            entry = None
+        if isinstance(entry, dict) and entry.get("hbw") is not None:
+            return int(entry["hbw"])
+    return packets.HBW_VALUE
+
+
+def build_attack_payload(
+    target: dict[str, Any],
+    lid: int,
+    task=None,
+    *,
+    conn: psycopg.Connection | None = None,
+) -> dict[str, Any]:
+    attack_payload = task.attack_payload() if task is not None else attacks.SANDS_LV61.to_payload()
+    kid = int(target.get("kingdom_id", SANDS_KID))
+    sx, sy = source_for_kingdom(conn, kid)
+    hbw = hbw_for_kingdom(conn, kid)
     return {
-        "SX": farm.SOURCE_X,
-        "SY": farm.SOURCE_Y,
+        "SX": sx,
+        "SY": sy,
         "TX": int(target["x"]),
         "TY": int(target["y"]),
-        "KID": int(target.get("kingdom_id", SANDS_KID)),
+        "KID": kid,
         "LID": int(lid),
         "WT": 0,
-        "HBW": farm.HBW_VALUE,
+        "HBW": hbw,
         "BPC": 0,
         "ATT": 0,
         "AV": 0,
@@ -1096,8 +1224,8 @@ def send_one_attack(socket, conn: psycopg.Connection) -> bool:
         wait_for_request_slot(conn)
         target_info = socket.get_target_infos(
             BURNING_SANDS,
-            farm.SOURCE_X,
-            farm.SOURCE_Y,
+            SOURCE_X,
+            SOURCE_Y,
             int(target["x"]),
             int(target["y"]),
             quiet=False,
@@ -1127,7 +1255,7 @@ def send_one_attack(socket, conn: psycopg.Connection) -> bool:
         wait_for_request_slot(conn)
         sent_at = now_epoch()
         mark_commander_pending(conn, lid, target["id"], sent_at + HEURISTIC_RETURN_SECONDS)
-        socket.send_json_command("cra", build_attack_payload(target, lid))
+        socket.send_json_command("cra", build_attack_payload(target, lid, conn=conn))
         response = socket.wait_for_json_response("cra")
         status = response.get("payload", {}).get("status") if isinstance(response, dict) else None
         if status not in (0, "0", None):
@@ -1184,11 +1312,11 @@ def storm_target_levels(task, raw_levels: str | None) -> tuple[int, ...]:
 
 
 def chunk_start(value: int) -> int:
-    return max(0, int(value) - (int(value) % farm.MAP_CHUNK_SIZE))
+    return max(0, int(value) - (int(value) % packets.MAP_CHUNK_SIZE))
 
 
 def storm_scan_pass_radius(base_radius: int) -> int:
-    base = max(farm.MAP_CHUNK_SIZE * 3, int(base_radius))
+    base = max(packets.MAP_CHUNK_SIZE * 3, int(base_radius))
     roll = random.random()
     if roll < 0.18:
         return random.randint(max(40, base - 35), max(45, base - 12))
@@ -1199,10 +1327,10 @@ def storm_scan_pass_radius(base_radius: int) -> int:
 
 def storm_scan_chunks(center_x: int, center_y: int, radius: int) -> list[tuple[int, int]]:
     offsets: list[tuple[int, int]] = []
-    steps = range(-int(radius), int(radius) + 1, farm.MAP_CHUNK_SIZE)
+    steps = range(-int(radius), int(radius) + 1, packets.MAP_CHUNK_SIZE)
     for dx in steps:
         for dy in steps:
-            if math.hypot(dx, dy) <= int(radius) + farm.MAP_CHUNK_SIZE / 2:
+            if math.hypot(dx, dy) <= int(radius) + packets.MAP_CHUNK_SIZE / 2:
                 offsets.append((dx, dy))
     random.shuffle(offsets)
     if offsets and random.random() < 0.78:
@@ -1212,7 +1340,7 @@ def storm_scan_chunks(center_x: int, center_y: int, radius: int) -> list[tuple[i
             + random.uniform(-radius * 0.45, radius * 0.45)
         )
     return [
-        (chunk_start(center_x + dx - farm.MAP_CHUNK_SIZE // 2), chunk_start(center_y + dy - farm.MAP_CHUNK_SIZE // 2))
+        (chunk_start(center_x + dx - packets.MAP_CHUNK_SIZE // 2), chunk_start(center_y + dy - packets.MAP_CHUNK_SIZE // 2))
         for dx, dy in offsets
     ]
 
@@ -1462,8 +1590,8 @@ def queue_storm_gaa(ax1: int, ay1: int) -> None:
         "kid": STORM_KID,
         "ax1": int(ax1),
         "ay1": int(ay1),
-        "ax2": int(ax1) + farm.MAP_CHUNK_SIZE - 1,
-        "ay2": int(ay1) + farm.MAP_CHUNK_SIZE - 1,
+        "ax2": int(ax1) + packets.MAP_CHUNK_SIZE - 1,
+        "ay2": int(ay1) + packets.MAP_CHUNK_SIZE - 1,
         "queued_at": time.time(),
     }
     queued_at = queue_proxy_pending(pending)
@@ -1777,7 +1905,7 @@ def run_berimond_proxy(args: argparse.Namespace) -> int:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Conservative database-backed Sands/Storm runner.")
-    parser.add_argument("--account-name", "--username", dest="account_name", required=True)
+    accounts.add_account_arguments(parser)
     parser.add_argument("--mode", choices=("sands", "storm-proxy", "berimond-proxy"), default="sands")
     parser.add_argument("--account-config", type=Path, default=DEFAULT_ACCOUNT)
     parser.add_argument("--max-attacks", type=int, default=1)
@@ -1806,7 +1934,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--berimond-max-commander-out-seconds", type=int, default=BERIMOND_MAX_COMMANDER_OUT_SECONDS)
     parser.add_argument("--berimond-alert-sound-path", default=BERIMOND_ALERT_SOUND_PATH)
     parser.add_argument("--berimond-alert-on-error", action=argparse.BooleanOptionalAction, default=BERIMOND_ALERT_ON_ERROR)
-    args = parser.parse_args(argv)
+    args = parser.parse_args(accounts.apply_account_flags(list(sys.argv[1:] if argv is None else argv)))
     if args.scan_max < args.scan_min:
         parser.error("--scan-max must be >= --scan-min")
     if args.mode == "berimond-proxy":
@@ -1841,13 +1969,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     global LOG_FILE
     args = parse_args(argv)
-    context = configure_account(args.account_name)
+    account = accounts.account_from_args(args)
+    args.account_name = account.username or None
+    context = configure_account(account.username or None, account.aid)
     if args.log_dir is None:
         args.log_dir = context.logs_dir
     args.log_dir.mkdir(parents=True, exist_ok=True)
     LOG_FILE = (args.log_dir / datetime.now().strftime("empire_bot_%Y%m%d_%H%M%S.log")).open("a", encoding="utf-8")
+    if args.mode in ("storm-proxy", "berimond-proxy") or not args.dry_run:
+        mismatch = accounts.session_mismatch(account)
+        if mismatch:
+            log(f"REFUSING TO START: {mismatch}", error=True)
+            log("log in with that account, or pass the matching --<username>", error=True)
+            return 2
     socket = None
-    attacks = 0
+    attacks_sent = 0
     consecutive_errors = 0
     try:
         if args.mode == "storm-proxy":
@@ -1865,14 +2001,14 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             socket = connect_sands(args.account_config)
             while True:
-                if attacks >= args.max_attacks:
-                    log(f"max_attacks_reached count={attacks}")
+                if attacks_sent >= args.max_attacks:
+                    log(f"max_attacks_reached count={attacks_sent}")
                     return 0
                 try:
                     acted = send_one_attack(socket, conn)
                     consecutive_errors = 0
                     if acted:
-                        attacks += 1
+                        attacks_sent += 1
                     if not args.loop:
                         return 0
                     if not acted:

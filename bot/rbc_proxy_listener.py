@@ -28,7 +28,36 @@ REPO_ROOT = find_repo_root(Path(__file__).resolve())
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# Reload the bot modules before importing names from them.
+#
+# mitmproxy re-executes this script whenever the file changes. Without this, the
+# re-executed imports would bind whatever the *cached* modules hold, so a change
+# to one of them would silently have no effect - or, when a new name is added,
+# fail the whole reload and leave the addon unloaded. Order matters: packets and
+# game data first, then attacks, then scheduler before tasks (tasks capture the
+# scheduler's classes), then the runner last.
+for _module_name in (
+    "bot.packets",
+    "bot.game_data",
+    "bot.accounts",
+    "bot.account_context",
+    "bot.db",
+    "bot.berimond",
+    "bot.attacks",
+    "bot.scheduler",
+    "bot.tasks",
+    "bot.populate_database_rbc",
+    "bot.storm_database",
+):
+    try:
+        importlib.reload(importlib.import_module(_module_name))
+    except Exception as _exc:  # pragma: no cover - startup diagnostics only
+        print(f"[rbc_proxy_listener] module_reload_failed module={_module_name} error={_exc!r}", flush=True)
+
 from bot import account_context
+from bot import accounts
+from bot import db as bot_db
+from bot import packets as packets_module
 from bot import populate_database_rbc as rbc_db
 from bot.populate_database_rbc import adi_target_row, gaa_level_from_value, upsert_rbc_rows
 from bot import bot
@@ -45,11 +74,29 @@ from bot.storm_database import (
 )
 from bot.test_psql_connection import connect, read_connection_config
 from bot.network_sender.websockets import OUTER_WEBSOCKET
-from bot.sand_rbc_farm.main import AREA_BARRON, parse_xt_packet
+from bot.packets import (
+    AREA_BARRON,
+    HBW_VALUE,
+    MAP_CHUNK_SIZE,
+    SAND_SERVER_HEADER,
+    SOURCE_X,
+    SOURCE_Y,
+    army_shortfall,
+    inventory_from_payload,
+    login_identity_from_packet,
+    parse_xt_packet,
+    tool_count,
+    tool_limit_violations,
+    commander_lids_from_payload,
+    source_from_area,
+    sources_by_kingdom,
+)
 
 
 bot = importlib.reload(bot)
-task_scheduler = importlib.reload(importlib.import_module("bot.scheduler"))
+# Already reloaded above, before `bot.tasks` captured its classes - re-import
+# the module object rather than reloading it again and splitting the two.
+task_scheduler = importlib.import_module("bot.scheduler")
 
 
 HERE = REPO_ROOT / "bot"
@@ -70,6 +117,14 @@ MAX_HOURLY_CRA_ERRORS = 5
 CRA_STATUS_REASONS = {
     # Observed server reject: requested LID is already assigned to another active march.
     256: "lord_in_use",
+    # Observed server reject: the game shows "the action could not be performed".
+    # Caused by asking for more tools per wave than the game allows - 7 ladders
+    # with 30 troops is refused, 5 ladders with 30 troops is accepted.
+    5: "action_could_not_be_performed",
+    # Observed server reject: the game shows "not enough troops". Caused by
+    # sending an army the castle cannot supply, e.g. the generic level-61
+    # crossbowman payload to an account that owns no crossbowmen there.
+    313: "not_enough_troops",
 }
 
 current_file = None
@@ -80,7 +135,19 @@ zlib_streams = {}
 db_conn = None
 control_task = None
 next_proxy_action_epoch = 0.0
-last_client_server_header = bot.farm.SAND_SERVER_HEADER
+last_client_server_header = SAND_SERVER_HEADER
+
+#: How often to check the capture folder against its size cap.
+CAPTURE_PRUNE_INTERVAL_SECONDS = 60.0
+_capture_prune_at = 0.0
+
+#: Login name of the account whose handshake we already recorded, so the work is
+#: only done once per session instead of on every packet. Also marks that a live
+#: login has been seen, which is authoritative for path binding.
+_detected_login: str | None = None
+
+#: Control files already reported as unusable, so the 1s poll cannot spam.
+_ignored_control_files: set[str] = set()
 
 CONSOLE_LOG_PREFIXES = (
     "berimond_",
@@ -136,32 +203,179 @@ def control_log(message: str) -> None:
 
 
 def control_candidates() -> list[Path]:
-    paths = [DEFAULT_CONTROL_FILE]
+    """Control files to consider, most specific first.
+
+    Account-scoped files come before the shared root file, so a real account's
+    state always wins over the placeholder.
+    """
+
+    paths: list[Path] = []
     account_root = HERE / "account_data"
     if account_root.exists():
         paths.extend(sorted(account_root.glob("*/proxy_control.json")))
+    paths.append(DEFAULT_CONTROL_FILE)
     return paths
 
 
-def bind_account_from_state(state: dict) -> None:
-    global CAPTURE_FOLDER, CONTROL_LOG, CONTROL_FILE
-    aid = state.get("aid")
-    username = state.get("username") or state.get("account_name")
-    if not aid:
+def control_state_belongs_to_account(state: dict) -> bool:
+    """Whether a running control file names the account that owns it.
+
+    A state that claims to be running but carries no username/aid cannot be
+    bound to an account, so adopting it would run the bot anonymously against
+    whatever plan happens to be loaded. Refusing it is what keeps a leftover
+    placeholder in the repo root from silently hijacking a session.
+    """
+
+    if state.get("username") or state.get("account_name") or state.get("aid"):
+        return True
+    return not state.get("running")
+
+
+def maybe_update_sources(decoded: str) -> None:
+    """Learn the account's own castle per kingdom from the live traffic.
+
+    ``gbd`` (sent at login) embeds the full castle list, and ``jaa`` reports the
+    area just landed in. Persisting them means SX/SY never have to be hardcoded:
+    supplying a kingdom id is enough.
+    """
+
+    parsed = parse_xt_packet(decoded.strip())
+    if not parsed:
         return
-    context = account_context.for_aid(str(aid), str(username) if username else None)
+    command = parsed.get("command")
+    payload = parsed.get("payload")
+
+    if command == "gbd":
+        # The same packet carries the account's commander roster. LIDs differ
+        # between accounts, so this is what makes commander numbers resolve
+        # correctly without hardcoding anything.
+        roster = commander_lids_from_payload(payload)
+        if roster:
+            try:
+                learned = bot_db.update_account_commander_lids(db(), bot.current_aid(), roster)
+            except Exception as exc:
+                control_log(f"commander_pool_update_failed error={exc!r}")
+            else:
+                if learned:
+                    control_log(
+                        f"commander_pool_learned account={bot.current_aid()} "
+                        f"count={len(roster)} first={roster[:6]}"
+                    )
+
+    if command in {"gbd", "gcl"}:
+        discovered = sources_by_kingdom(payload)
+    elif command == "jaa":
+        landed = source_from_area(payload)
+        discovered = {landed[0]: landed[3]} if landed else {}
+    else:
+        return
+
+    if not discovered:
+        return
+
+    try:
+        changed = bot_db.update_account_sources(db(), bot.current_aid(), discovered)
+    except Exception as exc:
+        control_log(f"source_update_failed command={command} error={exc!r}")
+        return
+
+    if changed:
+        control_log(
+            f"source_learned command={command} account={bot.current_aid()} "
+            + " ".join(
+                f"kid={kid}:{entry['x']}:{entry['y']}({entry['name'] or '?'})"
+                for kid, entry in sorted(changed.items())
+            )
+        )
+
+
+def bind_paths(context) -> None:
+    """Point capture/control/log paths at one account's directory."""
+
+    global CAPTURE_FOLDER, CONTROL_LOG, CONTROL_FILE
     CONTROL_FILE = context.control_file
     CAPTURE_FOLDER = context.logs_dir
     CONTROL_LOG = context.listener_log
-    bot.configure_account(str(username) if username else None, str(aid))
-    rbc_db.set_account_aid(str(aid))
+
+
+def detect_login_account(decoded: str) -> None:
+    """Record which account is logged in, from the login handshake.
+
+    Identity is the login name (``NOM``). ``AID`` in this packet is a *shared
+    portal account id* - identical for every game account under one login - so it
+    cannot be used to tell accounts apart.
+
+    The account's capture/control paths are rebound here so this session's
+    captures land under the right account, instead of whichever account the
+    control file last mentioned. Only the account name/id and display name are
+    stored; the LT/RCT session tokens are never kept.
+    """
+
+    global _detected_login
+
+    identity = login_identity_from_packet(decoded)
+    if identity is None:
+        return
+
+    login_name = identity["name"]
+    key = login_name.strip().lower()
+    if key == _detected_login:
+        return
+
+    try:
+        account = accounts.account_for_login_name(login_name)
+    except (OSError, ValueError) as exc:
+        control_log(f"account_resolve_failed login_name={login_name!r} error={exc!r}")
+        return
+
+    _detected_login = key
+    accounts.write_session(account, display_name=login_name, source="lli")
+
+    bind_paths(account.context)
+    CAPTURE_FOLDER.mkdir(parents=True, exist_ok=True)
+    bot.configure_account(account.username or None, account.aid)
+    rbc_db.set_account_aid(account.aid)
+
+    control_log(
+        f"account_detected login_name={login_name!r} account={account.name} "
+        f"aid={account.aid} portal_aid={identity.get('portal_account_id') or '?'}"
+    )
+
+    try:
+        is_new = bot_db.register_account(account.aid, conn=db())
+    except Exception as exc:
+        control_log(f"account_register_failed aid={account.aid} error={exc!r}")
+        return
+
+    if is_new:
+        control_log(f"account_registered account={account.name} aid={account.aid} new=yes")
+
+
+def bind_account_from_state(state: dict) -> None:
+    # A live login is authoritative for where captures and control files go; the
+    # control file can be stale because it is written when a run starts, not when
+    # a login happens.
+    if _detected_login:
+        return
+
+    state_aid = state.get("aid")
+    username = state.get("username") or state.get("account_name")
+    if not state_aid:
+        return
+    context = account_context.for_aid(str(state_aid), str(username) if username else None)
+    bind_paths(context)
+    bot.configure_account(str(username) if username else None, str(state_aid))
+    rbc_db.set_account_aid(str(state_aid))
 
 
 def load_control() -> dict:
     global CONTROL_FILE
     selected_path = CONTROL_FILE if CONTROL_FILE.exists() else None
     selected_state: dict | None = None
-    for path in control_candidates():
+    # Once a login is seen, stay locked to that account's control file so we
+    # cannot pick up a different account's stale state.
+    candidates = [CONTROL_FILE] if _detected_login else control_candidates()
+    for path in candidates:
         if not path.exists():
             continue
         try:
@@ -169,6 +383,12 @@ def load_control() -> dict:
         except json.JSONDecodeError:
             continue
         if not isinstance(data, dict):
+            continue
+        if data.get("running") and not control_state_belongs_to_account(data):
+            # Reported once, not once per 1s poll.
+            if str(path) not in _ignored_control_files:
+                _ignored_control_files.add(str(path))
+                control_log(f"control_state_ignored reason=no_account file={path}")
             continue
         if selected_state is None:
             selected_path = path
@@ -358,11 +578,39 @@ def xt_packet(
     server_header: str | None = None,
 ) -> str:
     return "%xt%{}%{}%{}%{}%".format(
-        server_header or last_client_server_header or bot.farm.SAND_SERVER_HEADER,
+        server_header or last_client_server_header or SAND_SERVER_HEADER,
         command,
         int(request_id),
         json.dumps(payload, separators=(",", ":")),
     )
+
+
+def current_source_for(kingdom_id: int) -> tuple[int, int]:
+    """The account's own castle in a kingdom, learned from live traffic.
+
+    Every injected packet that names a source (adi, aci, cra) must use this, or
+    the server rejects it with "NOT IN OWNED CASTLE". Falls back to the protocol
+    default only when nothing has been learned yet.
+    """
+
+    try:
+        return bot.source_for_kingdom(db(), int(kingdom_id))
+    except Exception as exc:
+        control_log(f"source_lookup_failed kid={kingdom_id} error={exc!r}")
+        return SOURCE_X, SOURCE_Y
+
+
+def packet_source(
+    target: dict,
+    source: tuple[int, int] | None,
+    kingdom_id: int | None,
+) -> tuple[int, int]:
+    """Source coordinates for a packet: explicit wins, else the learned castle."""
+
+    if source is not None:
+        return int(source[0]), int(source[1])
+    kid = int(kingdom_id if kingdom_id is not None else target.get("kingdom_id", bot.SANDS_KID))
+    return current_source_for(kid)
 
 
 def create_adi_packet(
@@ -371,10 +619,7 @@ def create_adi_packet(
     source: tuple[int, int] | None = None,
     kingdom_id: int | None = None,
 ) -> str:
-    if source is None:
-        sx, sy = bot.farm.SOURCE_X, bot.farm.SOURCE_Y
-    else:
-        sx, sy = int(source[0]), int(source[1])
+    sx, sy = packet_source(target, source, kingdom_id)
     return xt_packet(
         "adi",
         {
@@ -393,10 +638,7 @@ def create_aci_packet(
     source: tuple[int, int] | None = None,
     kingdom_id: int | None = None,
 ) -> str:
-    if source is None:
-        sx, sy = bot.farm.SOURCE_X, bot.farm.SOURCE_Y
-    else:
-        sx, sy = int(source[0]), int(source[1])
+    sx, sy = packet_source(target, source, kingdom_id)
     return xt_packet(
         "aci",
         {
@@ -417,8 +659,8 @@ def create_gaa_packet(probe: dict) -> str:
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"bad gaa probe coordinates: {probe!r}") from exc
 
-    ax2 = int(probe.get("ax2", ax1 + bot.farm.MAP_CHUNK_SIZE - 1))
-    ay2 = int(probe.get("ay2", ay1 + bot.farm.MAP_CHUNK_SIZE - 1))
+    ax2 = int(probe.get("ax2", ax1 + MAP_CHUNK_SIZE - 1))
+    ay2 = int(probe.get("ay2", ay1 + MAP_CHUNK_SIZE - 1))
     return xt_packet(
         "gaa",
         {"KID": kid, "AX1": ax1, "AY1": ay1, "AX2": ax2, "AY2": ay2},
@@ -428,26 +670,26 @@ def create_gaa_packet(probe: dict) -> str:
 
 
 def chunk_start(value: int) -> int:
-    return max(0, int(value) - (int(value) % bot.farm.MAP_CHUNK_SIZE))
+    return max(0, int(value) - (int(value) % MAP_CHUNK_SIZE))
 
 
 def storm_scan_chunks(center_x: int, center_y: int, radius: int) -> list[tuple[int, int]]:
     offsets: list[tuple[int, int]] = []
-    steps = range(-int(radius), int(radius) + 1, bot.farm.MAP_CHUNK_SIZE)
+    steps = range(-int(radius), int(radius) + 1, MAP_CHUNK_SIZE)
     for dx in steps:
         for dy in steps:
-            if math.hypot(dx, dy) <= int(radius) + bot.farm.MAP_CHUNK_SIZE / 2:
+            if math.hypot(dx, dy) <= int(radius) + MAP_CHUNK_SIZE / 2:
                 offsets.append((dx, dy))
     random.shuffle(offsets)
     offsets.sort(key=lambda item: math.hypot(item[0], item[1]) + random.uniform(-22.0, 22.0))
     return [
-        (chunk_start(center_x + dx - bot.farm.MAP_CHUNK_SIZE // 2), chunk_start(center_y + dy - bot.farm.MAP_CHUNK_SIZE // 2))
+        (chunk_start(center_x + dx - MAP_CHUNK_SIZE // 2), chunk_start(center_y + dy - MAP_CHUNK_SIZE // 2))
         for dx, dy in offsets
     ]
 
 
 def create_cra_packet(target: dict, lid: int) -> str:
-    return xt_packet("cra", bot.build_attack_payload(target, lid))
+    return xt_packet("cra", bot.build_attack_payload(target, lid, conn=db()))
 
 
 def int_or_none(value) -> int | None:
@@ -488,7 +730,7 @@ def storm_source(state: dict) -> tuple[int, int, int]:
         raise RuntimeError("storm_source_missing")
     sx = int(source["x"])
     sy = int(source["y"])
-    hbw = int(source.get("hbw", bot.farm.HBW_VALUE))
+    hbw = int(source.get("hbw", HBW_VALUE))
     return sx, sy, hbw
 
 
@@ -561,8 +803,8 @@ def send_storm_gaa_scan(state: dict) -> bool:
         "kid": STORM_KID,
         "ax1": ax1,
         "ay1": ay1,
-        "ax2": ax1 + bot.farm.MAP_CHUNK_SIZE - 1,
-        "ay2": ay1 + bot.farm.MAP_CHUNK_SIZE - 1,
+        "ax2": ax1 + MAP_CHUNK_SIZE - 1,
+        "ay2": ay1 + MAP_CHUNK_SIZE - 1,
         "server_header": last_client_server_header,
     }
     packet = create_gaa_packet(probe)
@@ -633,6 +875,35 @@ def troop_count_from_payload(payload: dict) -> int:
                 if troop_id >= 0 and amount > 0:
                     total += amount
     return total
+
+
+def skip_pending_cra(
+    state: dict,
+    pending: dict,
+    target: dict | None,
+    lid,
+    reason: str,
+    detail: str = "",
+) -> None:
+    """Drop a queued CRA that must not be sent, releasing what it reserved.
+
+    Used for the cases where sending is pointless or harmful: the ADI handshake
+    went stale, the castle cannot supply the army, or the army cannot even be
+    rebuilt. The commander and the target are handed back so nothing leaks.
+    """
+
+    now = bot.now_epoch()
+    if isinstance(target, dict):
+        release_pending_target(target, pending.get("target_kind", "rbc"), status=reason)
+    if lid is not None:
+        bot.release_commander(db(), int(lid), available_after=now, status=reason)
+    state["pending"] = None
+    save_control(state)
+    bot.clear_proxy_pending_db(db())
+    control_log(
+        f"proxy_cra_skip reason={reason} task={pending.get('task_name')} lid={lid}"
+        + (f" {detail}" if detail else "")
+    )
 
 
 def target_from_pending(pending: dict | None) -> dict | None:
@@ -739,9 +1010,35 @@ def reserve_next_sands_target(state: dict) -> tuple[object | None, dict | None]:
     return None, None
 
 
+def adi_to_cra_seconds(pending: dict | None) -> float | None:
+    """How long ago the paired ADI was sent, or ``None`` if it was not recorded."""
+
+    if not isinstance(pending, dict):
+        return None
+    try:
+        return time.time() - float(pending.get("adi_sent_at"))
+    except (TypeError, ValueError):
+        return None
+
+
+def adi_to_cra_text(pending: dict | None) -> str:
+    gap = adi_to_cra_seconds(pending)
+    return "adi_to_cra=n/a" if gap is None else f"adi_to_cra={gap:.1f}s"
+
+
 def queue_pending_cra(state: dict, target: dict, lid: int, task=None) -> None:
     due_at = time.time() + random.uniform(*bot.ADI_TO_CRA_DELAY_RANGE)
-    payload = bot.build_attack_payload(target, lid, task)
+    # conn is required here: without it the source castle falls back to the
+    # protocol default and the server answers 53 "NOT IN OWNED CASTLE".
+    payload = bot.build_attack_payload(target, lid, task, conn=db())
+    # The CRA may only follow its ADI inside the server's window, so remember
+    # when the ADI went out - the gap is reported on every send and error.
+    adi_pending = state.get("pending")
+    adi_sent_at = (
+        adi_pending.get("sent_at")
+        if isinstance(adi_pending, dict) and adi_pending.get("kind") == "adi"
+        else None
+    )
     state["pending"] = {
         "kind": "cra",
         "target_kind": "rbc",
@@ -749,6 +1046,7 @@ def queue_pending_cra(state: dict, target: dict, lid: int, task=None) -> None:
         "task_name": task.name if task is not None else target.get("task_name"),
         "lid": int(lid),
         "due_at": due_at,
+        "adi_sent_at": adi_sent_at,
         "army_count": troop_count_from_payload(payload),
         "attack_payload": payload,
     }
@@ -759,6 +1057,7 @@ def queue_pending_cra(state: dict, target: dict, lid: int, task=None) -> None:
         f"proxy_cra_pending target={target['x']}:{target['y']} kid={target['kingdom_id']} "
         f"task={state['pending'].get('task_name')} level={target_level} "
         f"lid={lid} army_count={state['pending']['army_count']} "
+        f"tools={tool_count(payload)} waves={len(payload.get('A') or [])} hbw={payload.get('HBW')} "
         f"due_in={due_at - time.time():.1f}s"
     )
 
@@ -1149,15 +1448,33 @@ def rbc_id_for_area(area: tuple[int, int, int] | None) -> int | None:
 def shorten_commander_return(lid: int, march_id: int | None, rbc_id: int | None, return_epoch: float) -> None:
     with db().cursor() as cur:
         cur.execute(
-            "SELECT available_after FROM commander_state WHERE aid = %s AND lord_id = %s",
+            """
+            SELECT available_after, march_id, target_rbc_id
+            FROM commander_state
+            WHERE aid = %s AND lord_id = %s
+            """,
             (bot.current_aid(), int(lid)),
         )
         row = cur.fetchone()
         if row is None:
             return
         current_available = int(row[0] or 0)
+        current_march_id = int(row[1]) if row[1] is not None else None
+        current_rbc_id = int(row[2]) if row[2] is not None else None
+        if rbc_id is not None and current_rbc_id is not None and current_rbc_id != int(rbc_id):
+            control_log(
+                f"commander_return_skip reason=target_mismatch lid={lid} "
+                f"current_target={current_rbc_id} cat_target={rbc_id}"
+            )
+            return
+        if rbc_id is None and march_id is not None and current_march_id is not None and current_march_id != int(march_id):
+            control_log(
+                f"commander_return_skip reason=march_mismatch lid={lid} "
+                f"current_mid={current_march_id} cat_mid={march_id}"
+            )
+            return
         actual_available = int(return_epoch)
-        next_available = min(current_available, actual_available) if current_available > 0 else actual_available
+        next_available = actual_available
         now = bot.now_epoch()
         status = "returning" if next_available > now else "available"
         cur.execute(
@@ -1237,6 +1554,7 @@ def process_live_cra_response(decoded: str) -> bool:
     if status not in (None, "0", 0):
         reject_status = f"cra_status_{status}"
         reject_reason = cra_status_reason(status)
+        status_code = int_or_none(status)
         now = bot.now_epoch()
         release_pending_target(target, target_kind, status=reject_status)
         if lid is not None:
@@ -1272,12 +1590,16 @@ def process_live_cra_response(decoded: str) -> bool:
         control_log(
             (
                 f"proxy_cra_error status={status} reason={reject_reason} "
-                f"target={target['x']}:{target['y']} lid={lid} task={task_name}"
+                f"target={target['x']}:{target['y']} lid={lid} task={task_name} "
+                f"{adi_to_cra_text(last_cra)}"
             )
             if target is not None
-            else f"proxy_cra_error status={status} reason={reject_reason} lid={lid} task={task_name}"
+            else (
+                f"proxy_cra_error status={status} reason={reject_reason} lid={lid} "
+                f"task={task_name} {adi_to_cra_text(last_cra)}"
+            )
         )
-        stop_for_errors = (
+        stop_for_errors = status_code == 256 or (
             len(hourly_errors) > max_window_errors
             if target_kind == "berimond_fixed"
             else consecutive_errors > MAX_CONSECUTIVE_CRA_ERRORS or len(hourly_errors) >= MAX_HOURLY_CRA_ERRORS
@@ -1578,6 +1900,9 @@ async def proxy_control_loop() -> None:
                 stop_control(state, "max_attacks_already_reached")
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
+            # Pacing is handled by the request-interval pause, which is proven
+            # accepted: 56 of ventrilo's recorded adi->cra handshakes completed
+            # 21-30s apart and every one was accepted. Do not "speed it up".
             if not probe_pending and not scan_due and time.time() < next_proxy_action_epoch:
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
@@ -1601,8 +1926,8 @@ async def proxy_control_loop() -> None:
                 sent_at = bot.now_epoch()
                 ax1 = int(pending["ax1"])
                 ay1 = int(pending["ay1"])
-                ax2 = int(pending.get("ax2", ax1 + bot.farm.MAP_CHUNK_SIZE - 1))
-                ay2 = int(pending.get("ay2", ay1 + bot.farm.MAP_CHUNK_SIZE - 1))
+                ax2 = int(pending.get("ax2", ax1 + MAP_CHUNK_SIZE - 1))
+                ay2 = int(pending.get("ay2", ay1 + MAP_CHUNK_SIZE - 1))
                 kid = int(pending.get("kid", 4))
                 state["pending"] = None
                 state["last_gaa_probe"] = {
@@ -1702,6 +2027,22 @@ async def proxy_control_loop() -> None:
                 if time.time() < due_at:
                     await asyncio.sleep(CONTROL_POLL_SECONDS)
                     continue
+                adi_age = adi_to_cra_seconds(pending)
+                if adi_age is not None and adi_age > bot.PROXY_ADI_TO_CRA_TIMEOUT:
+                    # A pending that outlived its ADI (process restart, DB
+                    # hydration) can only be rejected, so drop it and carry on:
+                    # the next pass reserves a fresh target and sends a new ADI,
+                    # which is why this case takes no extra pause.
+                    skip_pending_cra(
+                        state,
+                        pending,
+                        target_from_pending(pending),
+                        pending.get("lid"),
+                        "adi_expired",
+                        adi_to_cra_text(pending),
+                    )
+                    await asyncio.sleep(CONTROL_POLL_SECONDS)
+                    continue
                 target = target_from_pending(pending)
                 lid = pending.get("lid")
                 if target is None or lid is None:
@@ -1714,7 +2055,72 @@ async def proxy_control_loop() -> None:
                     if pending.get("target_kind") == "berimond_fixed":
                         attack_payload = build_berimond_attack_payload(state, target, int(lid))
                     else:
-                        attack_payload = bot.build_attack_payload(target, int(lid))
+                        # Never invent an army. A pending that lost its payload
+                        # (DB hydration) has to be rebuilt from its own task, or
+                        # not sent at all - the generic fallback used to ask for
+                        # crossbowmen the account does not own.
+                        rebuild_task = sands_task_by_name(pending.get("task_name")) or sands_task_by_name(
+                            target.get("task_name")
+                        )
+                        target_level = target.get("target_level")
+                        if rebuild_task is None or (
+                            target_level is not None and not rebuild_task.accepts_level(target_level)
+                        ):
+                            skip_pending_cra(
+                                state,
+                                pending,
+                                target,
+                                lid,
+                                "no_attack_payload",
+                                f"task={pending.get('task_name')} level={target_level}",
+                            )
+                            pause_next_action(NO_TARGET_RETRY_RANGE)
+                            await asyncio.sleep(CONTROL_POLL_SECONDS)
+                            continue
+                        attack_payload = bot.build_attack_payload(target, int(lid), rebuild_task, conn=db())
+                inventory: dict[int, int] = {}
+                raw_inventory = state.get("castle_inventory")
+                if isinstance(raw_inventory, dict):
+                    for unit_id, count in raw_inventory.items():
+                        try:
+                            inventory[int(unit_id)] = int(count)
+                        except (TypeError, ValueError):
+                            continue
+                shortfall = army_shortfall(attack_payload, inventory) if inventory else []
+                if shortfall:
+                    # The castle cannot supply this army, so the server would only
+                    # answer "not enough troops". Skip it and say exactly which
+                    # unit is missing instead of burning the commander and ADI.
+                    skip_pending_cra(
+                        state,
+                        pending,
+                        target,
+                        lid,
+                        "army_short",
+                        " ".join(f"unit={unit} need={need} have={have}" for unit, need, have in shortfall),
+                    )
+                    pause_next_action(NO_TARGET_RETRY_RANGE)
+                    await asyncio.sleep(CONTROL_POLL_SECONDS)
+                    continue
+                violations = tool_limit_violations(attack_payload) if pending.get("target_kind", "rbc") == "rbc" else []
+                if violations:
+                    # Too many tools per wave for the troops carrying them: the
+                    # server answers status 5, "the action could not be
+                    # performed". Fix the attack in bot/attacks.py.
+                    skip_pending_cra(
+                        state,
+                        pending,
+                        target,
+                        lid,
+                        "tool_limit",
+                        " ".join(
+                            f"wave={wave}{flank} tools={tools} troops={troops}"
+                            for wave, flank, tools, troops in violations
+                        ),
+                    )
+                    pause_next_action(NO_TARGET_RETRY_RANGE)
+                    await asyncio.sleep(CONTROL_POLL_SECONDS)
+                    continue
                 packet = xt_packet("cra", attack_payload)
                 army_count = troop_count_from_payload(attack_payload)
                 sent_at = bot.now_epoch()
@@ -1732,6 +2138,7 @@ async def proxy_control_loop() -> None:
                     "task_name": pending.get("task_name"),
                     "lid": int(lid),
                     "sent_at": sent_at,
+                    "adi_sent_at": pending.get("adi_sent_at"),
                     "sent_by_proxy": True,
                     "army_count": army_count,
                 }
@@ -1741,7 +2148,8 @@ async def proxy_control_loop() -> None:
                     f"proxy_cra_sent target={target['x']}:{target['y']} kid={target['kingdom_id']} "
                     f"kind={pending.get('target_kind', 'rbc')} task={pending.get('task_name')} "
                     f"level={target.get('target_level', bot.TARGET_LEVEL)} lid={lid} mid=pending "
-                    f"army_count={army_count} travel_duration=pending"
+                    f"army_count={army_count} hbw={attack_payload.get('HBW')} travel_duration=pending "
+                    f"{adi_to_cra_text(state['last_cra'])}"
                 )
                 increment_attacks_sent(state)
                 if state.get("mode") == "berimond":
@@ -1794,6 +2202,42 @@ async def proxy_control_loop() -> None:
         await asyncio.sleep(CONTROL_POLL_SECONDS)
 
 
+def maybe_prune_captures() -> None:
+    """Keep the capture folder under its size cap, deleting only processed files.
+
+    Rate limited, and only ever removes captures that ``db populate`` has already
+    ingested, so nothing is lost before it is read.
+    """
+
+    global _capture_prune_at
+
+    now = time.time()
+    if now - _capture_prune_at < CAPTURE_PRUNE_INTERVAL_SECONDS:
+        return
+    _capture_prune_at = now
+
+    folder = CAPTURE_FOLDER
+    cap = bot_db.capture_max_bytes()
+    try:
+        before = bot_db.capture_folder_stats(folder)
+        if before["bytes"] <= cap:
+            return
+        processed = bot_db.processed_log_paths(db(), bot.current_aid())
+        result = bot_db.prune_capture_logs(folder, max_bytes=cap, processed=processed)
+    except Exception as exc:
+        control_log(f"capture_prune_failed dir={folder.name} error={exc!r}")
+        return
+
+    mib = 1024 * 1024
+    control_log(
+        f"capture_prune dir={folder.name} cap_mb={cap // mib} "
+        f"before={before['files']}f/{before['bytes'] // mib}MB "
+        f"deleted={result['deleted']} freed_mb={result['freed_bytes'] // mib} "
+        f"kept_unprocessed={result['protected']} now_mb={result['bytes'] // mib} "
+        f"over_cap={result['over_cap']}"
+    )
+
+
 def open_capture_file(ts: datetime):
     global current_file, last_roll
 
@@ -1805,6 +2249,7 @@ def open_capture_file(ts: datetime):
         current_file = path.open("a", encoding="utf-8")
         last_roll = ts
         control_log(f"capture_file path={path}")
+        maybe_prune_captures()
 
     return current_file
 
@@ -1956,6 +2401,12 @@ def process_live_message(decoded: str) -> None:
 
     state = load_control()
     pending = state.get("pending")
+    # The ADI response reports the attacking castle's stock in gui.I. Keeping it
+    # lets the CRA be checked against what the account actually owns, so an
+    # unaffordable army is skipped instead of rejected with "not enough troops".
+    inventory = inventory_from_payload(payload)
+    if inventory:
+        state["castle_inventory"] = {str(unit_id): count for unit_id, count in inventory.items()}
     target = target_from_pending(pending)
     if not state.get("running") or not isinstance(pending, dict) or pending.get("kind") != "adi" or target is None:
         return
@@ -2030,6 +2481,9 @@ def handle_websocket_message(flow: http.HTTPFlow) -> None:
     capture_file.write(f"[{ts.strftime('%H:%M:%S.%f')[:-3]}] {direction}\n{formatted}\n---\n")
     capture_file.flush()
 
+    detect_login_account(decoded)
+    maybe_update_sources(decoded)
+
     if msg.from_client:
         remember_client_header(decoded)
         return
@@ -2066,10 +2520,21 @@ def handle_websocket_end(flow: http.HTTPFlow) -> None:
 class RbcProxyListener:
     def load(self, loader) -> None:
         global control_task
+        # Bind to the recorded session immediately, so captures never land in the
+        # shared legacy bot/logs folder while we wait for the next login packet.
+        session_account = accounts.session_account()
+        if session_account is not None:
+            bind_paths(session_account.context)
+            bot.configure_account(session_account.username or None, session_account.aid)
+            rbc_db.set_account_aid(session_account.aid)
+            control_log(f"startup_bound_to_session account={session_account.name}")
         CAPTURE_FOLDER.mkdir(parents=True, exist_ok=True)
         if control_task is None or control_task.done():
             control_task = asyncio.create_task(proxy_control_loop())
-        control_log("rbc_proxy_listener_loaded receive_only=no controlled_by=proxy_control.json")
+        control_log(
+            f"rbc_proxy_listener_loaded receive_only=no controlled_by=proxy_control.json "
+            f"capture_dir={CAPTURE_FOLDER}"
+        )
 
     def websocket_message(self, flow: http.HTTPFlow) -> None:
         handle_websocket_message(flow)

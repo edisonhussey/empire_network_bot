@@ -1,101 +1,242 @@
-How to run the proxy bot
-========================
+====================================================================
+EMPIRE BOT - HOW TO RUN
+====================================================================
 
+Everything goes through one CLI.
 
+IMPORTANT - where to run it from. Run from the REPO ROOT:
 
+    cd /Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot
+    source venv/bin/activate
+    python -m bot.cli --help
 
-----
-python bot/bot.py --account-name ventrilo --mode berimond-proxy --max-attacks 300 --commander-count 16
-cd /Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot
-source venv/bin/activate
-python bot/proxy_bot.py --account-name ventrilo --mode sands --start --max-attacks 200
+Running `python -m bot.cli` from inside bot/ fails with a confusing error:
 
+    ModuleNotFoundError: No module named 'bot.test_psql_connection';
+    'bot' is not a package
 
+That is because bot/ contains bot.py, and Python searches the current directory
+first, so `import bot` picks up the standalone module instead of the package.
+If you want to run from anywhere (including inside bot/), use the launcher:
 
+    python empire.py db populate
+    cd bot && python ../empire.py session
 
-This is based on what was actually active last night / this morning, not just
-the newest file by modified time.
+Both forms are identical after startup.
 
-Run from the repo root:
+ACCOUNT SELECTION - you do not pass one. The account comes from the detected
+login session (see section 3). An explicit flag exists only to override:
 
-  cd /Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot
-  source venv/bin/activate
+    --ventrilo / --pingpoko    shorthand (from credentials/<name>.env)
+    --account-name X           explicit name or raw key
 
-1. Start the mitmproxy listener
+An override is verified against the live session and refused if it disagrees.
 
-For the bot-controlled RBC/Sands run, use:
+--------------------------------------------------------------------
+1. FIRST-TIME SETUP
+--------------------------------------------------------------------
 
-  mitmdump -s bot/rbc_proxy_listener.py
+Check which accounts exist:
 
-Leave that terminal open, then run the game/browser through proxy
-127.0.0.1:8080 and log in normally.
+    python -m bot.cli accounts
 
-The listener writes current runtime logs here:
+Create the database (if missing) and apply the schema:
 
-  bot/rbc_proxy_listener.log
+    python -m bot.cli db init
 
-It contains Aug 20 night / Aug 21 morning lines like:
+Populate RBC targets for whichever account you are logged in as:
 
-  rbc_proxy_listener_loaded receive_only=no controlled_by=proxy_control.json
-  proxy_cra_sent ...
-  proxy_cra_ack ...
+    python -m bot.cli db populate
 
-2. Start the bot from task definitions
+No account flag is needed - the account comes from the detected login session.
+Point it at the wrong folder only if you know why:
 
-Use the combined wrapper. In auto mode it now reads the enabled tasks in
-bot/scheduler.py:
+    python -m bot.cli db populate --logs-dir /some/other/folder
 
-  python bot/proxy_botv2.py --start --max-attacks 200
+To keep it running instead of one-shot (ingests new captures as they arrive,
+until Ctrl+C):
 
-If only Sands tasks are enabled, this starts Sands. If only Storm tasks are
-enabled, this starts Storm and uses the enabled Storm task.
+    python -m bot.cli db populate --watch        # 10s poll
+    python -m bot.cli db populate --watch 30     # 30s poll
 
-Status:
+Watch mode only reads captures whose write has settled (so the file the listener
+is still appending to is left until it rolls), and remembers size+mtime so an
+unchanged file is never re-read. Combined with the listener's automatic pruning
+of already-ingested captures, the folder stays bounded on its own.
 
-  python bot/proxy_botv2.py --status
+The logs directory defaults to that account's own
+bot/account_data/<aid>/logs. There is deliberately NO fallback to the shared
+bot/logs: captures belong to the account that produced them, and loading them
+under a different aid would inject another account's targets into this one.
+Use --logs-dir only to point at a different folder.
 
-Stop the bot driver, leaving mitmproxy open:
+Check what is in the database:
 
-  python bot/proxy_botv2.py --end
+    python -m bot.cli db status
+    python -m bot.cli --ventrilo db status
 
-Ctrl+C in the proxy_botv2.py terminal also stops the control loop.
+Note: db populate is per-account. Ventrilo's 5545 captures do NOT populate
+pingpoko; pingpoko needs its own captures, which appear the first time you log
+in as pingpoko with the listener running.
 
-3. Old Sands-only wrapper
+Is it working? db populate prints one line per file plus a summary. The
+"db_writes" total counts rows written, including repeated updates to the same
+target across many captures, so it is much larger than the number of distinct
+RBC locations. Compare with `db status`, which counts distinct targets.
 
-bot/proxy_bot.py is kept for the old Sands/RBC flow only. It hardcodes:
+--------------------------------------------------------------------
+2. NORMAL RUN (mitmproxy proxy flow)
+--------------------------------------------------------------------
 
-  mode: sands
-  runner: proxy_bot.py
+Terminal A - start the listener and leave it open:
 
-4. Important files
+    mitmdump -s bot/rbc_proxy_listener.py
 
-  bot/rbc_proxy_listener.py          mitmproxy listener used by the controlled bot
-  bot/bot.py                         core Sands/Storm bot logic
-  bot/proxy_botv2.py                 combined Sands/Storm driver
-  bot/proxy_bot.py                   Sands-only wrapper used by proxy_botv2 for Sands
-  bot/scheduler.py                   hardcoded enabled tasks and commander allocation
-  bot/sand_rbc_farm/main.py          packet parser and Sands packet helpers
-  bot/game_data/                     current attack/troop/tool/kingdom definitions
-  bot/network_sender/websockets.py   websocket endpoint matching
-  bot/proxy_control.json             runtime control state
-  bot/psql_connect.ini               database connection config
-  bot/rbc_proxy_listener.log         listener/bot action log
-  bot/logs/                          capture logs and proxy_botv2 logs
+Then run the game/browser through proxy 127.0.0.1:8080 and log in normally.
 
-5. About proxy_botv2.py
+Terminal B - drive the bot:
 
-  bot/proxy_botv2.py
+    python -m bot.cli --ventrilo proxy start --max-attacks 200
 
-Use this for normal runs. In --mode auto, it decides from the enabled
-bot/scheduler.py task definitions. You can still force Storm with --mode storm
-or force Sands with --mode sands if needed.
+Or with the direct entry point (same thing):
 
-6. About inject3.py
+    python bot/proxy_bot.py --ventrilo --start --max-attacks 200
 
-Shell history and start_inject3.txt show the old/manual command:
+Status / stop:
 
-  mitmdump -s inject3.py
+    python -m bot.cli --ventrilo proxy status
+    python -m bot.cli --ventrilo proxy end
 
-That is the manual injector flow where packets are appended to
-captures/inject3_send.txt. It is separate from the controlled proxy bot run
-that writes proxy_control.json and logs proxy_cra_sent/proxy_cra_ack.
+--mode auto picks Sands when only Sands tasks are enabled, Storm when only
+Storm tasks are enabled. Force it with --mode sands or --mode storm.
+
+--------------------------------------------------------------------
+3. ACCOUNT IDENTITY AND NOT MIXING UP ACCOUNTS
+--------------------------------------------------------------------
+
+The account **id is the login name** (the `NOM` field of the login handshake),
+not `AID`. This matters: `AID` is a *shared portal account id*, so every game
+account under one login reports the SAME value. Observed in real captures:
+
+    NOM='Ventrilo'   AID=1782860727866351909
+    NOM='pingpoko'   AID=1782860727866351909   <-- identical
+
+So AID cannot tell accounts apart. The login name is used as the scope key for
+the data directory and the `aid` column in every table.
+
+You never pass an account. Whatever is logged in is what runs:
+
+    python -m bot.cli session
+
+    detected_session account=pingpoko key=pingpoko login_name=pingpoko age_seconds=47 source=lli
+      credentials credentials/pingpoko.env
+      this is the account all commands use by default
+      db rbc=0 commander_state=35
+
+If you pass the WRONG account explicitly, it is refused:
+
+    REFUSING TO START: live session is 'pingpoko' (account=pingpoko) but you selected
+                       'ventrilo' (account=ventrilo)
+
+Notes:
+  * New accounts need no setup. A login name never seen before gets a
+    credentials/<name>.env created automatically and is registered in the tables
+    on first login, so it simply appears in the database.
+  * The session file is bot/account_data/session.json, rewritten on every login.
+    Logging in as a different account switches everything over to that account -
+    nothing needs restarting except a run that is already in flight.
+  * One-off migration, if you ever have data under old numeric keys:
+
+        python -m bot.cli db migrate-keys            # dry run
+        python -m bot.cli db migrate-keys --apply    # perform it
+
+    It refuses to merge two accounts into one key, so it cannot silently
+    collapse data.
+  * Only the account id and display name are stored - never the LT/RCT session tokens.
+  * A session older than 12 hours is ignored, so a stale file cannot silently
+    select the wrong account.
+  * If you never log in (or run without the listener), no session exists and the
+    guard simply does not fire - behaviour is exactly as before.
+
+--------------------------------------------------------------------
+4. INSPECTING THE PLAN
+--------------------------------------------------------------------
+
+    python -m bot.cli tasks              # task plan and commander allocation
+    python -m bot.cli tasks --plan       # also show the current kingdom plan
+    python -m bot.cli attacks            # attack registry
+    python -m bot.cli attacks --payload  # full JSON payload per attack
+    python -m bot.cli troops             # troop and tool ids for composing attacks
+
+--------------------------------------------------------------------
+5. RUN MODES SUMMARY
+--------------------------------------------------------------------
+
+    sands           proxy-driven Sands/RBC run (the daily driver)
+    storm-proxy     storm scan + attack
+    berimond-proxy  berimond fixed target
+
+    python -m bot.cli --ventrilo proxy start --mode sands
+    python -m bot.cli --ventrilo proxy start --mode storm
+    python -m bot.cli --ventrilo run --mode berimond-proxy --max-attacks 300 --commander-count 16
+
+--------------------------------------------------------------------
+6. WHERE TO EDIT THINGS
+--------------------------------------------------------------------
+
+  Want to change WHAT is sent?
+      bot/attacks.py        attack payloads as writable Attack objects
+
+  Want to change WHAT is farmed / which commanders?
+      bot/tasks.py          task plan; commander numbers assigned in task order
+
+  Want to change HOW scheduling works?
+      bot/scheduler.py      engine only (priority, allocation, rotation)
+
+  Want to change protocol parsing / packet framing?
+      bot/packets.py        pure parsers + constants
+
+  Want to add an ACCOUNT?
+      drop credentials/<name>.env  (USERNAME, PASSWORD, SERVER, AID)
+      the --<name> flag appears automatically
+
+  Architecture overview and the history of the old sand_rbc_farm loop:
+      bot/DESIGN_NOTES.md
+
+--------------------------------------------------------------------
+7. IMPORTANT FILES
+--------------------------------------------------------------------
+
+  bot/cli.py                     unified operator CLI
+  bot/accounts.py                credentials -> Account registry + flags + session
+  bot/account_data/session.json  which account the listener last saw log in
+  bot/db.py                      connection + schema (init/status)
+  bot/packets.py                 protocol constants + pure parsers
+  bot/attacks.py                 attack payloads (edit here)
+  bot/tasks.py                   task plan (edit here)
+  bot/scheduler.py               scheduling engine
+  bot/bot.py                     core runner
+  bot/proxy_bot.py               proxy driver
+  bot/sands_proxy.py             Sands analytics + control
+  bot/rbc_proxy_listener.py      mitmproxy listener
+  bot/populate_database_rbc.py   capture logs -> rbc table
+  bot/storm_database.py          storm_target table
+  bot/game_data/                 troop/tool/kingdom catalogues + Attack builders
+  bot/psql_connect.ini           database connection config
+  bot/proxy_control.json         fallback control file (account copies live in
+                                 bot/account_data/<aid>/proxy_control.json)
+  bot/DESIGN_NOTES.md            architecture + historical design notes
+  empire.py                      launcher: run the CLI from any directory
+
+  Legacy / superseded modules have been moved to unused/bot_legacy/.
+
+--------------------------------------------------------------------
+8. MANUAL INJECTOR (separate, unchanged)
+--------------------------------------------------------------------
+
+Shell history and start_inject3.txt show the old manual flow:
+
+    mitmdump -s inject3.py
+
+That appends packets to captures/inject3_send.txt. It is independent of the
+controlled proxy run that writes proxy_control.json.

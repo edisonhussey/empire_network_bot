@@ -13,12 +13,10 @@ if __package__ in {None, ""}:
     REPO_ROOT = Path(__file__).resolve().parents[1]
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
-    from bot import berimond
-    from game_data import Attack, KINGDOM, TOOL, Kingdom, Troop, side, wave
-    from ranomizer import Randomizer
+    from bot.game_data import Attack, KINGDOM, Kingdom
+    from bot.ranomizer import Randomizer
 else:
-    from . import berimond
-    from .game_data import Attack, KINGDOM, TOOL, Kingdom, Troop, side, wave
+    from .game_data import Attack, KINGDOM, Kingdom
     from .ranomizer import Randomizer
 
 
@@ -35,7 +33,7 @@ def kingdom_id(kingdom: Kingdom | int) -> int:
     return kingdom.id if hasattr(kingdom, "id") else int(kingdom)
 
 
-COMMANDER_LIDS_BY_HUMAN_NUMBER: CommanderPool = (
+DEFAULT_COMMANDER_LIDS_BY_HUMAN_NUMBER: CommanderPool = (
     0,
     2,
     3,
@@ -72,6 +70,27 @@ COMMANDER_LIDS_BY_HUMAN_NUMBER: CommanderPool = (
     41,
     42,
 )
+
+#: The active commander number -> LID map.
+#:
+#: Replaced per account from that account's own roster via `set_commander_pool`,
+#: because commander LIDs differ between accounts. The built-in default is only
+#: a fallback for a brand new account that has not logged in yet.
+COMMANDER_LIDS_BY_HUMAN_NUMBER: CommanderPool = DEFAULT_COMMANDER_LIDS_BY_HUMAN_NUMBER
+
+
+def set_commander_pool(lids: Sequence[int] | None) -> CommanderPool:
+    """Set the active number -> LID map from an account's own commander roster.
+
+    Falls back to the built-in default when nothing has been learned yet, so an
+    account never ends up with an empty pool (which would silently make every
+    task unallocatable).
+    """
+
+    global COMMANDER_LIDS_BY_HUMAN_NUMBER
+    cleaned = tuple(int(lid) for lid in (lids or ()))
+    COMMANDER_LIDS_BY_HUMAN_NUMBER = cleaned or DEFAULT_COMMANDER_LIDS_BY_HUMAN_NUMBER
+    return COMMANDER_LIDS_BY_HUMAN_NUMBER
 
 
 def commander_lid(human_number: int) -> int:
@@ -364,194 +383,31 @@ def allocate_task_definitions(
     return tasks
 
 
-SAND_LEVEL_61_RBC_ATTACK = Attack(
-    wave1=wave(
-        left=side(
-            units=[(Troop.CROSSBOWMAN, 50)],
-        )
-    )
-)
-
-MEAD_FLANK_ATTACK = Attack(
-    wave1=wave(
-        left = side(
-            units = [(Troop.VALKYRIE_RANGER_10, 30)],
-            tools = [(TOOL.scaling_ladder, 5)]
-        ),
-        right = side(
-            units = [(Troop.VALKYRIE_RANGER_10, 30)],
-            tools = [(TOOL.scaling_ladder, 5)]
-        )
-    ),
-    wave2 = wave(
-        left = side(
-            units = [(Troop.VALKYRIE_RANGER_10, 30)],
-            tools = [(TOOL.scaling_ladder, 5)]
-        ),
-        right = side(
-            units = [(Troop.VALKYRIE_RANGER_10, 30)],
-            tools = [(TOOL.scaling_ladder, 5)]
-        )
-    ),
-    wave3 = wave(
-        left = side(
-            units = [(Troop.VALKYRIE_RANGER_10, 30)],
-            tools = [(TOOL.scaling_ladder, 5)]
-        ),
-        right = side(
-            units = [(Troop.VALKYRIE_RANGER_10, 30)],
-            tools = [(TOOL.scaling_ladder, 5)]
-        )
-    ),
-    wave4 = wave(
-        left = side(
-            units = [(Troop.VALKYRIE_RANGER_10, 30)],
-            tools = [(TOOL.scaling_ladder, 5)]
-        ),
-        right = side(
-            units = [(Troop.VALKYRIE_RANGER_10, 30)],
-            tools = [(TOOL.scaling_ladder, 5)]
-        )
-    )
-)
-
-# STORM_
-
-# Placeholder example. Replace the payload and enable it when you have the
-# storm task details. Keeping it explicit prevents accidental empty sends.
-STORM_CUSTOM_ATTACK = Attack(
-    wave1=wave(
-        left=side(
-            units=[(Troop.DEMON_HORROR, 50)],
-        ),
-        right= side(
-            units=[(Troop.DEMON_HORROR, 50)],
-        ),
-    ),
-    wave2=wave(
-        left=side(
-            units=[(Troop.DEMON_HORROR, 50)],
-        ),
-        right= side(
-            units=[(Troop.DEMON_HORROR, 50)],
-        ),
-    ),
-    wave3=wave(
-        left=side(
-            units=[(Troop.DEMON_HORROR, 50)],
-        ),
-        right= side(
-            units=[(Troop.DEMON_HORROR, 50)],
-        ),
-    ),
-    wave4=wave(
-        left=side(
-            units=[(Troop.DEMON_HORROR, 50)],
-        ),
-        right= side(
-            units=[(Troop.DEMON_HORROR, 50)],
-        ),
-    ),
-)
-
-BERIMOND_FIXED_ATTACK = berimond.ATTACK
-
-
-TASK_DEFINITIONS: tuple[TaskDefinition, ...] = (
-    task_definition(
-        "sand_rbc_level_61_crossbow",
-        kingdom=KINGDOM.sand,
-        target_level=61,
-        commanders=16,
-        priority=20,
-        attack=SAND_LEVEL_61_RBC_ATTACK,
-        tags=("rbc", "sand"),
-        notes="50 crossbowmen on left flank. Uses live ADI/CRA/GAM/CAT state before sending.",
-    ),
-    task_definition(
-        "sand_rbc_level_36_60_mead_flank",
-        kingdom=KINGDOM.sand,
-        target_levels=tuple(range(35, 61)),
-        commanders=19,
-        priority=10,
-        enabled=True,
-        attack=MEAD_FLANK_ATTACK,
-        tags=("rbc", "sand", "mead"),
-        notes="Placeholder mead flank attack for Sands RBC levels 36-60 using commanders 14-35.",
-    ),
-    # task_definition(
-    #     "storm_custom",
-    #     kingdom=KINGDOM.storm,
-    #     commanders=14,
-    #     priority=20,
-    #     enabled=True,
-    #     attack=STORM_CUSTOM_ATTACK,
-    #     tags=("storm",),
-    #     notes="Storm event target task. Adjust STORM_CUSTOM_ATTACK before running if needed.",
-    # ),
+#: Names that used to live here and now live in :mod:`bot.tasks`.
+_MOVED_TO_TASKS = frozenset(
+    {
+        "DEFAULT_SCHEDULER",
+        "TASKS",
+        "TASK_DEFINITIONS",
+        "create_bot",
+        "plan_summary",
+        "task_summary",
+    }
 )
 
 
-TASKS: list[Task] = allocate_task_definitions(TASK_DEFINITIONS)
+def __getattr__(name: str):
+    """Keep ``bot.scheduler.TASKS`` working now that the plan lives in bot.tasks."""
 
+    if name in _MOVED_TO_TASKS:
+        from bot import tasks as _tasks
 
-DEFAULT_SCHEDULER = Scheduler(
-    tasks=TASKS,
-    kingdom_order=(KINGDOM.sand, KINGDOM.storm),
-    kingdom_timeout=300.0,
-    current_kingdom=KINGDOM.sand,
-)
-
-
-def create_bot(
-    *,
-    kingdom_timeout: float = 300.0,
-    tasks: Sequence[Task] | None = None,
-    definitions: Sequence[TaskDefinition] | None = None,
-    kingdom_order: Sequence[Kingdom | int] = (KINGDOM.sand, KINGDOM.storm),
-    starting_kingdom: Kingdom | int = KINGDOM.sand,
-    first_commander: int = 1,
-) -> Scheduler:
-    if tasks is None:
-        tasks = allocate_task_definitions(
-            TASK_DEFINITIONS if definitions is None else definitions,
-            first_commander=first_commander,
-        )
-    return Scheduler(
-        tasks=list(tasks),
-        kingdom_order=tuple(kingdom_order),
-        kingdom_timeout=float(kingdom_timeout),
-        current_kingdom=starting_kingdom,
-    )
-
-
-def task_summary(tasks: Iterable[Task] = TASKS) -> str:
-    lines = []
-    for task in tasks:
-        if task.target_levels:
-            if task.target_levels == tuple(range(min(task.target_levels), max(task.target_levels) + 1)):
-                levels = f"{min(task.target_levels)}-{max(task.target_levels)}"
-            else:
-                levels = ",".join(str(level) for level in task.target_levels)
-        else:
-            levels = str(task.target_level)
-        lines.append(
-            f"{task.name}: enabled={task.enabled} kid={task.kingdom_id} "
-            f"levels={levels} lids={list(task.commander_lids)} "
-            f"max_active={task.max_active} priority={task.priority}"
-        )
-    return "\n".join(lines)
-
-
-def plan_summary(scheduler: Scheduler = DEFAULT_SCHEDULER) -> str:
-    plan = scheduler.current_plan()
-    task_names = ", ".join(task.name for task in plan.tasks) or "none"
-    return (
-        f"current_kid={plan.kingdom_id} timeout={plan.timeout_seconds:.1f}s "
-        f"tasks=[{task_names}]"
-    )
+        return getattr(_tasks, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 if __name__ == "__main__":
+    from bot.tasks import plan_summary, task_summary
+
     print(task_summary())
     print(plan_summary())

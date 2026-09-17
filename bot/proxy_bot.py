@@ -20,6 +20,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from bot import bot as core
+from bot import accounts
 from bot.storm_database import cleanup_expired_storm_targets, ensure_storm_tables
 from bot.test_psql_connection import connect, read_connection_config
 from bot import sands_proxy
@@ -30,9 +31,9 @@ CONTROL_FILE = REPO_ROOT / "bot" / "proxy_control.json"
 DEFAULT_LOG_DIR = REPO_ROOT / "bot" / "logs"
 
 
-def configure_account(account_name: str):
+def configure_account(account_name: str | None, aid: str | None = None):
     global CONTROL_FILE, DEFAULT_LOG_DIR
-    context = core.configure_account(account_name)
+    context = core.configure_account(account_name, aid)
     CONTROL_FILE = context.control_file
     DEFAULT_LOG_DIR = context.logs_dir
     return context
@@ -159,6 +160,17 @@ def should_run_sands(args: argparse.Namespace) -> bool:
 
 
 def start(args: argparse.Namespace) -> int:
+    account = accounts.load_account(args.account_name)
+    mismatch = accounts.session_mismatch(account)
+    if mismatch:
+        print(f"REFUSING TO START: {mismatch}", file=sys.stderr)
+        print(
+            "Log in with that account, or pass the matching --<username>. "
+            "Check with: python -m bot.cli session",
+            file=sys.stderr,
+        )
+        return 2
+
     if should_run_sands(args):
         return sands_proxy.main(["--account-name", args.account_name, "--start", "--max-attacks", str(int(args.max_attacks))])
 
@@ -181,7 +193,7 @@ def start(args: argparse.Namespace) -> int:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Proxy driver. Sands uses the old ADI/CRA DB loop; Storm drives scans.")
-    parser.add_argument("--account-name", "--username", dest="account_name", required=True)
+    accounts.add_account_arguments(parser)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--start", action="store_true", help="drive attacks through the active mitmproxy session")
     group.add_argument("--end", action="store_true", help="stop the driver and clear pending proxy work")
@@ -201,7 +213,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--target-fresh-seconds", type=int, default=core.STORM_TARGET_FRESH_SECONDS)
     parser.add_argument("--use-randomizer-gaa-wait", action="store_true")
     parser.add_argument("--log-dir", type=Path, default=None)
-    args = parser.parse_args(argv)
+    args = parser.parse_args(accounts.apply_account_flags(list(sys.argv[1:] if argv is None else argv)))
     if args.scan_max < args.scan_min:
         parser.error("--scan-max must be >= --scan-min")
     if args.start and args.max_attacks < 1:
@@ -211,7 +223,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    context = configure_account(args.account_name)
+    account = accounts.account_from_args(args)
+    args.account_name = account.name
+    context = configure_account(account.username or None, account.aid)
     if args.log_dir is None:
         args.log_dir = context.logs_dir
     if args.status:
