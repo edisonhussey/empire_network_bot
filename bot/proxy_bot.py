@@ -172,8 +172,17 @@ def start(args: argparse.Namespace) -> int:
         return 2
 
     if should_run_sands(args):
-        return sands_proxy.main(["--account-name", args.account_name, "--start", "--max-attacks", str(int(args.max_attacks))])
+        # Ctrl-C has to end the loop for whichever account is live, and the
+        # addon does the sending, so this must be installed before dispatch.
+        core.install_proxy_stop_guards("proxy_cli_exit")
+        try:
+            return sands_proxy.main(["--account-name", args.account_name, "--start", "--max-attacks", str(int(args.max_attacks))])
+        except KeyboardInterrupt:
+            core.stop_proxy_everywhere("keyboard_interrupt")
+            print("\nproxy bot stopped from Ctrl+C", flush=True)
+            return 130
 
+    core.install_proxy_stop_guards("proxy_cli_exit")
     args.log_dir.mkdir(parents=True, exist_ok=True)
     core.LOG_FILE = (args.log_dir / datetime.now().strftime("proxy_bot_%Y%m%d_%H%M%S.log")).open(
         "a",

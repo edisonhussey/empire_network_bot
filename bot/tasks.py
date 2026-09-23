@@ -81,7 +81,7 @@ SAND_LV35_61_DEATHLY_HORROR = task_definition(
     "sand_lv35_61_dh",
     kingdom=KINGDOM.sand,
     target_levels=tuple(range(35, 61)),
-    commanders=10,
+    commanders=18,
     priority=10,
     enabled=True,
     attack=SANDS_35_61_DEATHLY_HORROR,

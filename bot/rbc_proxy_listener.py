@@ -107,6 +107,9 @@ DEFAULT_CONTROL_FILE = CONTROL_FILE
 ROLL_SECONDS = 10
 CONTROL_POLL_SECONDS = 1.0
 NO_TARGET_RETRY_RANGE = (55.0, 145.0)
+#: Pending kinds that only read the map and never spend a commander. ``gaa_probe``
+#: scans one 13x13 chunk; ``fnt_probe`` is the client's "find target" button.
+PROBE_KINDS = ("gaa_probe", "fnt_probe")
 TARGET_WEBSOCKET = OUTER_WEBSOCKET
 STORM_TARGET_LEVELS_DEFAULT = (60, 70, 80)
 STORM_SCAN_INTERVAL_DEFAULT = (4.0, 6.0)
@@ -135,6 +138,8 @@ zlib_streams = {}
 db_conn = None
 control_task = None
 next_proxy_action_epoch = 0.0
+#: Last time the "running but no mode" notice was logged (see `_log_orphan_state_once`).
+_orphan_logged_at = 0.0
 last_client_server_header = SAND_SERVER_HEADER
 
 #: How often to check the capture folder against its size cap.
@@ -404,11 +409,62 @@ def load_control() -> dict:
     return selected_state
 
 
-def save_control(data: dict) -> None:
-    CONTROL_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = CONTROL_FILE.with_suffix(CONTROL_FILE.suffix + ".tmp")
+#: Keys the addon is the only writer of: its own runtime state. Everything else in
+#: the control file is a driver's *intent* (mode, targets, lids, max_attacks,
+#: berimond_source/commander_lids, ...) and must survive an addon write.
+#: ``running`` is deliberately NOT here - the driver owns the run, the addon only
+#: changes it in the two places that mean it (stop_control, tolerated-error resume),
+#: which write with ``merge=False``.
+_ADDON_OWNED_KEYS = frozenset(
+    {
+        "pending",
+        "last_cra",
+        "last_gaa_probe",
+        "last_kut",
+        "last_global_attack_sent_at",
+        "attacks_sent",
+        "cra_consecutive_errors",
+        "cra_error_timestamps",
+        "stopped_at",
+        "stop_reason",
+        "transport_only",
+        "berimond_stock",
+        "berimond_refill",
+        "berimond_refill_failed",
+        "berimond_returns",
+        "sands_task_cursor",
+    }
+)
+
+
+def save_control(data: dict, *, merge: bool = True) -> None:
+    """Write the control file without dropping the driver's intent.
+
+    The addon polls this file once a second, so the snapshot it holds is up to a
+    second old. Saving it whole used to overwrite whatever a driver had written in
+    between: on 2026-09-23 08:22:47 that erased ``mode`` (and with it the whole
+    berimond intent) while a run was live, and the addon then sat idle mid-run. With
+    ``merge`` (the default) the keys the addon owns are written over a *fresh* read,
+    so the driver's keys - and any of the addon's keys it did not touch - are kept.
+
+    ``merge=False`` is for the two places that intentionally change ``running``:
+    ``stop_control`` and the tolerated-error resume. Both already re-read the file
+    before deciding, and a stop has to win.
+    """
+
+    target = CONTROL_FILE
+    if merge:
+        disk = load_control()
+        if disk:
+            for key in _ADDON_OWNED_KEYS:
+                if key in data:
+                    disk[key] = data[key]
+            target = CONTROL_FILE
+            data = disk
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(target.suffix + ".tmp")
     tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    tmp.replace(CONTROL_FILE)
+    tmp.replace(target)
 
 
 def db():
@@ -664,6 +720,23 @@ def create_gaa_packet(probe: dict) -> str:
     return xt_packet(
         "gaa",
         {"KID": kid, "AX1": ax1, "AY1": ay1, "AX2": ax2, "AY2": ay2},
+        request_id=int(probe.get("request_id", 1) or 1),
+        server_header=probe.get("server_header"),
+    )
+
+
+def create_fnt_packet(probe: dict) -> str:
+    """The "find target" request.
+
+    An empty payload, and the server answers with the objective it selected -
+    ``{"X": .., "Y": .., "gaa": {...}}`` where the nested ``gaa`` carries the
+    ``AI`` row for that coordinate (captured 2026-09-22). This is how the game
+    itself picks a target, so it needs no coordinates and no chunk maths.
+    """
+
+    return xt_packet(
+        "fnt",
+        {},
         request_id=int(probe.get("request_id", 1) or 1),
         server_header=probe.get("server_header"),
     )
@@ -945,12 +1018,33 @@ def pause_next_action(seconds_range: tuple[float, float]) -> None:
     next_proxy_action_epoch = time.time() + random.uniform(*seconds_range)
 
 
+def _log_orphan_state_once(state: dict) -> None:
+    """Say once a minute that a running state has no mode to act on.
+
+    The 1s poll would otherwise flood the log, and "why is nothing happening" is
+    exactly what an operator needs to be told after the sand-farm catch-all went
+    away (see the comment on the dispatch in ``proxy_control_loop``).
+    """
+
+    global _orphan_logged_at
+    if time.time() - _orphan_logged_at < 60.0:
+        return
+    _orphan_logged_at = time.time()
+    control_log(
+        f"proxy_idle reason=no_mode mode={state.get('mode')!r} "
+        "(nothing to drive: storm/berimond set their own mode, sands farming is opt-in)"
+    )
+
+
 def stop_control(state: dict, reason: str, *, clear_awaiting: bool = True) -> None:
     state["running"] = False
     state["pending"] = None
     state["stopped_at"] = bot.now_epoch()
     state["stop_reason"] = reason
-    save_control(state)
+    # A stop has to win: write the whole state rather than merging, because
+    # ``running`` is the driver's key and this is one of the two places the addon
+    # legitimately changes it.
+    save_control(state, merge=False)
     if clear_awaiting:
         try:
             bot.clear_proxy_awaiting_db(db())
@@ -1391,6 +1485,11 @@ def process_pending_berimond_aci_payload(payload: dict) -> bool:
     if not adi_payload_matches_target(payload, target):
         return False
 
+    # The server's own answer carries the attacking camp's stock, and it arrives
+    # before every attack - the freshest possible "what is home". Pass ``state`` so
+    # the CRA this queues (which saves the same snapshot) cannot undo it.
+    record_berimond_stock(payload, source="aci", state=state)
+
     target_lids = raw_target_available_lids(payload)
     allowed_lids = set(berimond_allowed_lids(state))
     requested_lid = int_or_none(pending.get("lid"))
@@ -1613,10 +1712,29 @@ def process_live_cra_response(decoded: str) -> bool:
             save_control(state)
             control_log(f"proxy_stopped reason={state['stop_reason']}")
             return True
-        state["running"] = True
-        state["stopped_at"] = None
-        state["stop_reason"] = None
-        save_control(state)
+        # A tolerated error only means "keep going" for a run that IS still going.
+        # Somebody else may have ended it while this rejection was in flight - Ctrl-C
+        # in the CLI, `proxy end`, the stop guards - and writing running=true here
+        # regardless is what kept an ended session attacking. Never resurrect: take
+        # a fresh read, persist only the bookkeeping this path owns, and leave the
+        # stop fields alone unless the run is still live.
+        latest = load_control()
+        for key in ("last_cra", "pending", "cra_consecutive_errors", "cra_error_timestamps"):
+            latest[key] = state.get(key)
+        still_running = bool(latest.get("running"))
+        if still_running:
+            latest["stopped_at"] = None
+            latest["stop_reason"] = None
+        # ``latest`` is a fresh read and this path owns the run's fate, so write it
+        # whole: merging would keep a stale ``running`` from disk and could resurrect
+        # a run somebody stopped (the 2026-09-23 bug).
+        save_control(latest, merge=False)
+        if not still_running:
+            control_log(
+                f"proxy_cra_error_tolerated status={status} reason={reject_reason} "
+                f"consecutive={consecutive_errors} action=staying_stopped"
+            )
+            return True
         pause_next_action(bot.REQUEST_INTERVAL_RANGE)
         control_log(
             f"proxy_cra_error_tolerated status={status} reason={reject_reason} consecutive={consecutive_errors} "
@@ -1759,6 +1877,8 @@ def process_live_cat_response(decoded: str) -> bool:
     return_seconds = int(float(movement.get("TT", 0) or 0))
     result_flag = int_or_none(attack.get("S")) if isinstance(attack, dict) else None
     coin_loot, ruby_loot = loot_from_result(attack.get("G") if isinstance(attack, dict) else None)
+    if packet_kid == bot.BERIMOND_KID:
+        record_berimond_return(lid=lid, attack=attack, return_seconds=return_seconds)
     if march_id_int is not None and packet_kid != bot.BERIMOND_KID:
         mark_storm_result(
             db(),
@@ -1891,9 +2011,14 @@ async def proxy_control_loop() -> None:
         try:
             state = hydrate_control_awaiting(load_control())
             pending = state.get("pending")
-            probe_pending = isinstance(pending, dict) and pending.get("kind") == "gaa_probe"
+            probe_pending = isinstance(pending, dict) and pending.get("kind") in PROBE_KINDS
+            # A refill transfer is a reply to a rejection, not an attack: it must not
+            # sit behind the 20-30s pacing pause the rejection just set, or the
+            # supervisor times out (25s) on a request the addon simply had not looked
+            # at yet.
+            transfer_pending = isinstance(pending, dict) and pending.get("kind") == "kut_transfer"
             scan_due = storm_scan_due(state)
-            if not state.get("running") and not probe_pending:
+            if not state.get("running") and not probe_pending and not transfer_pending:
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
             if int(state.get("max_attacks", 0) or 0) and int(state.get("attacks_sent", 0) or 0) >= int(state.get("max_attacks", 0) or 0):
@@ -1903,7 +2028,7 @@ async def proxy_control_loop() -> None:
             # Pacing is handled by the request-interval pause, which is proven
             # accepted: 56 of ventrilo's recorded adi->cra handshakes completed
             # 21-30s apart and every one was accepted. Do not "speed it up".
-            if not probe_pending and not scan_due and time.time() < next_proxy_action_epoch:
+            if not probe_pending and not transfer_pending and not scan_due and time.time() < next_proxy_action_epoch:
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
             if not is_open_websocket(active_flow):
@@ -1921,16 +2046,23 @@ async def proxy_control_loop() -> None:
                 continue
 
             if probe_pending:
-                packet = create_gaa_packet(pending)
+                probe_kind = str(pending.get("kind"))
+                if probe_kind == "fnt_probe":
+                    packet = create_fnt_packet(pending)
+                    ax1 = ay1 = ax2 = ay2 = None
+                    kid = int(pending.get("kid", bot.BERIMOND_KID))
+                else:
+                    packet = create_gaa_packet(pending)
+                    ax1 = int(pending["ax1"])
+                    ay1 = int(pending["ay1"])
+                    ax2 = int(pending.get("ax2", ax1 + MAP_CHUNK_SIZE - 1))
+                    ay2 = int(pending.get("ay2", ay1 + MAP_CHUNK_SIZE - 1))
+                    kid = int(pending.get("kid", 4))
                 inject_packet(packet)
                 sent_at = bot.now_epoch()
-                ax1 = int(pending["ax1"])
-                ay1 = int(pending["ay1"])
-                ax2 = int(pending.get("ax2", ax1 + MAP_CHUNK_SIZE - 1))
-                ay2 = int(pending.get("ay2", ay1 + MAP_CHUNK_SIZE - 1))
-                kid = int(pending.get("kid", 4))
                 state["pending"] = None
                 state["last_gaa_probe"] = {
+                    "kind": probe_kind,
                     "kid": kid,
                     "ax1": ax1,
                     "ay1": ay1,
@@ -1941,7 +2073,44 @@ async def proxy_control_loop() -> None:
                 }
                 save_control(state)
                 bot.clear_proxy_pending_db(db())
-                control_log(f"gaa_probe_sent kid={kid} chunk={ax1}:{ay1}-{ax2}:{ay2}")
+                detail = f"chunk={ax1}:{ay1}-{ax2}:{ay2}" if ax1 is not None else "find_target"
+                name = "fnt" if probe_kind == "fnt_probe" else "gaa"
+                control_log(f"{name}_probe_sent kid={kid} {detail}")
+                pause_next_action(bot.REQUEST_INTERVAL_RANGE)
+                await asyncio.sleep(CONTROL_POLL_SECONDS)
+                continue
+
+            if isinstance(pending, dict) and pending.get("kind") == "kut_transfer":
+                # Refill: move troops/tools from a home castle into the kingdom.
+                # Gated like any other action (needs the run live), never a probe.
+                if not state.get("running"):
+                    await asyncio.sleep(CONTROL_POLL_SECONDS)
+                    continue
+                if not is_open_websocket(active_flow):
+                    # The supervisor watches for this to fail fast instead of
+                    # waiting out its timeout on a request nothing can send.
+                    control_log("kut_transfer_wait reason=no_active_websocket")
+                    await asyncio.sleep(CONTROL_POLL_SECONDS)
+                    continue
+                packet = create_kut_packet(pending)
+                inject_packet(packet)
+                sent_at = bot.now_epoch()
+                state["pending"] = None
+                state["last_kut"] = {
+                    "sent_at": sent_at,
+                    "scid": int(pending["scid"]),
+                    "skid": int(pending.get("skid", 0)),
+                    "tkid": int(pending.get("tkid", bot.BERIMOND_KID)),
+                    "units": [[int(unit), int(count)] for unit, count in pending.get("units") or []],
+                    "packet": packet,
+                }
+                save_control(state)
+                bot.clear_proxy_pending_db(db())
+                control_log(
+                    f"kut_sent scid={pending['scid']} skid={pending.get('skid', 0)} "
+                    f"tkid={pending.get('tkid', bot.BERIMOND_KID)} "
+                    + " ".join(f"u{int(unit)}={int(count)}" for unit, count in pending.get("units") or [])
+                )
                 pause_next_action(bot.REQUEST_INTERVAL_RANGE)
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
@@ -2086,7 +2255,16 @@ async def proxy_control_loop() -> None:
                             inventory[int(unit_id)] = int(count)
                         except (TypeError, ValueError):
                             continue
-                shortfall = army_shortfall(attack_payload, inventory) if inventory else []
+                # Only the RBC path has a trustworthy inventory: it is filled
+                # from the ADI response, and ADI is the Sands/Storm handshake.
+                # Berimond sends ACI -> CRA with no ADI, so this dict still holds
+                # whatever castle last answered an ADI - a Berimond camp's army
+                # measured against the Sands castle's stock, which skipped every
+                # berimond CRA on 2026-09-22 13:20 ("unit=14 need=4 have=0").
+                # If the camp really cannot supply the army the server answers
+                # 313 "not enough troops", which the rejection classifier reports.
+                checkable_inventory = inventory if pending.get("target_kind", "rbc") == "rbc" else {}
+                shortfall = army_shortfall(attack_payload, checkable_inventory) if checkable_inventory else []
                 if shortfall:
                     # The castle cannot supply this army, so the server would only
                     # answer "not enough troops". Skip it and say exactly which
@@ -2174,6 +2352,18 @@ async def proxy_control_loop() -> None:
 
             if state.get("mode") == "berimond":
                 handle_berimond_mode(state)
+                await asyncio.sleep(CONTROL_POLL_SECONDS)
+                continue
+
+            if state.get("mode") != "sands":
+                # ARCHITECTURE: this branch used to be a catch-all - any control file
+                # that was not storm/berimond became a kid=1 sand farm. So a leftover
+                # or partial state (mode absent, or a stale file after a crash) armed
+                # an indefinite farm of whatever the sand task list offered, mutating
+                # the same file and burning the same `running`/`attacks_sent` the other
+                # flows use. Farming is now OPT-IN: only `mode == "sands"` (what
+                # `bot.cli proxy start` / sands_proxy writes) gets here.
+                _log_orphan_state_once(state)
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
 
@@ -2326,10 +2516,220 @@ def live_rbc_rows_from_payload(payload: dict) -> tuple[int | None, list[tuple[in
     return packet_kid, rows
 
 
+def record_berimond_return(lid: int, attack: dict, return_seconds: int) -> None:
+    """Remember the army that is on its way back from a berimond attack.
+
+    The ``cat`` answer carries the survivors in ``A`` as ``[[unit, count], ...]``
+    and ``TT`` as the seconds that return leg takes, so this is a measured
+    "troops coming home", not an estimate. ``bot_berimond.py`` adds these up with
+    the camp stock (``gui``) to size a refill.
+    """
+
+    units: dict[int, int] = {}
+    for row in (attack.get("A") if isinstance(attack, dict) else None) or []:
+        if isinstance(row, (list, tuple)) and len(row) >= 2:
+            try:
+                units[int(row[0])] = int(row[1])
+            except (TypeError, ValueError):
+                continue
+    if not units:
+        return
+    now = bot.now_epoch()
+    state = load_control()
+    returns = [item for item in (state.get("berimond_returns") or []) if isinstance(item, dict)]
+    returns.append(
+        {
+            "at": now,
+            "arrives_at": now + int(return_seconds),
+            "lid": int(lid) if lid is not None else None,
+            "return_seconds": int(return_seconds),
+            "units": {str(unit_id): count for unit_id, count in units.items()},
+        }
+    )
+    # Keep a short history: only the recent ones matter for a refill estimate.
+    state["berimond_returns"] = returns[-40:]
+    save_control(state)
+    control_log(
+        f"berimond_return lid={lid} in={int(return_seconds)}s "
+        + " ".join(f"u{unit_id}={count}" for unit_id, count in sorted(units.items()))
+    )
+
+
+def create_kut_packet(transfer: dict) -> str:
+    """Move troops/tools from a home castle into a kingdom.
+
+    Captured 2026-09-22 10:49:43, refilling Berimond after it ran dry::
+
+        {"SCID": 16011862, "SKID": 0, "TKID": 10, "CID": -1,
+         "A": [[10, 302], [620, 705349]]}
+
+    ``SCID``/``SKID`` are the source castle and kingdom, ``TKID`` the target, and
+    ``A`` is ``[[unit_id, count], ...]``. The answer carries ``kpi.UT[].RS`` =
+    7200s of travel, which is why the player skips it.
+    """
+
+    units = [
+        [int(unit_id), int(count)]
+        for unit_id, count in transfer.get("units") or []
+        if int(count) > 0
+    ]
+    if not units:
+        raise ValueError(f"kut transfer has nothing to send: {transfer!r}")
+    payload = {
+        "SCID": int(transfer["scid"]),
+        "SKID": int(transfer.get("skid", 0)),
+        "TKID": int(transfer.get("tkid", bot.BERIMOND_KID)),
+        "CID": int(transfer.get("cid", -1)),
+        "A": units,
+    }
+    return xt_packet(
+        "kut",
+        payload,
+        request_id=int(transfer.get("request_id", 1) or 1),
+        server_header=transfer.get("server_header"),
+    )
+
+
+def process_live_kut_response(decoded: str) -> bool:
+    """Record the travel time of a ``kut`` transfer we just asked for.
+
+    The answer is ``{"kpi": {"UT": [{"KID": 10, "RS": 7200, "I": [...]}]}}``
+    - ``RS`` is the seconds until the troops arrive, which tells the supervisor
+    how long the camp will be short.
+    """
+
+    parsed = parse_xt_packet(decoded.strip())
+    if not parsed or parsed.get("command") != "kut":
+        return False
+    status = parsed.get("status")
+    if status not in (None, "0", 0):
+        # A refusal is a bare status with no body, e.g. the 2026-09-23 08:08:57 move
+        # of 252 VDH: %xt%kut%1%88% - the game showed "not enough space for aux
+        # units". Record it, otherwise the run resumed as if the camp had been
+        # topped up (no kpi -> no RS -> wait 0s) and immediately ate another 101.
+        state = load_control()
+        last = state.get("last_kut") if isinstance(state.get("last_kut"), dict) else {}
+        state["berimond_refill_failed"] = {
+            "at": bot.now_epoch(),
+            "status": str(status),
+            "requested": last.get("units"),
+            "scid": last.get("scid"),
+        }
+        save_control(state)
+        control_log(
+            f"berimond_refill_failed status={status} scid={last.get('scid')} "
+            + " ".join(
+                f"u{int(unit)}={int(count)}" for unit, count in (last.get("units") or [])
+            )
+        )
+        return True
+    payload = parsed.get("payload")
+    kpi = payload.get("kpi") if isinstance(payload, dict) else None
+    if not isinstance(kpi, dict):
+        return False
+    jobs = [job for job in (kpi.get("UT") or []) if isinstance(job, dict)]
+    if not jobs:
+        return False
+
+    state = load_control()
+    state["berimond_refill_failed"] = None
+    recorded = []
+    for job in jobs:
+        try:
+            kingdom_id = int(job.get("KID"))
+        except (TypeError, ValueError):
+            continue
+        seconds = int(float(job.get("RS", 0) or 0))
+        inventory = {}
+        for pair in job.get("I") or []:
+            if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                inventory[int(pair[0])] = int(pair[1])
+        recorded.append({"kingdom_id": kingdom_id, "seconds": seconds, "inventory": inventory})
+    if not recorded:
+        return False
+    state["berimond_refill"] = {"at": bot.now_epoch(), "jobs": recorded}
+    save_control(state)
+    control_log(
+        "berimond_refill_queued "
+        + "; ".join(
+            f"kid={item['kingdom_id']} arrives_in={item['seconds']}s "
+            + " ".join(f"u{unit_id}={count}" for unit_id, count in sorted(item["inventory"].items()))
+            for item in recorded
+        )
+    )
+    return True
+
+
+def record_berimond_stock(payload, *, source: str, state: dict | None = None) -> dict[int, int]:
+    """Remember the troop/tool stock a payload reports under ``gui.I``.
+
+    A ``gui`` answer is ``{"I": [[id, count], ...]}`` and the **ACI success**
+    payload nests the same thing. That second one matters more than it sounds: the
+    ACI answer arrives on every attack, so the camp's stock is refreshed from the
+    server right before each one, which is what the refill estimate needs for
+    "what is at home" (``berimond_stock``). Without it the stock is only known
+    when the player opens the camp's troop view by hand.
+
+    ``state`` is the caller's already-loaded snapshot, when it has one. The entry
+    is written into it as well as to disk, because the caller saves that snapshot
+    later (``queue_verified_berimond_cra`` -> ``save_control``) and without this
+    the fresh reading was silently replaced by an old one - which is why the
+    supervisor kept reporting a 2103s-old stock (`stale_camp_stock`) while the
+    addon had a reading six seconds old.
+    """
+
+    container = payload if isinstance(payload, dict) and isinstance(payload.get("gui"), dict) else None
+    inventory = inventory_from_payload(container if container is not None else {"gui": payload})
+    if not inventory:
+        return {}
+    entry = {
+        "at": bot.now_epoch(),
+        "source": source,
+        "inventory": {str(unit_id): count for unit_id, count in inventory.items()},
+    }
+    if state is not None:
+        state["berimond_stock"] = entry
+    latest = load_control()
+    latest["berimond_stock"] = entry
+    save_control(latest)
+    control_log(
+        f"berimond_stock source={source} "
+        + " ".join(f"u{unit_id}={count}" for unit_id, count in sorted(inventory.items()))
+    )
+    return inventory
+
+
+def process_live_gui_stock(decoded: str) -> bool:
+    """Remember the troop/tool stock a ``gui`` response reports.
+
+    The client asks with ``%xt%EmpireEx_21%gui%1%{}%`` and the server answers
+    ``{"I": [[id, count], ...]}`` - the same shape the ACI answer nests under
+    ``gui.I`` and ``adi`` nests under ``gui.I``. On 2026-09-22 this reported VDH
+    299 against the 302 capacity of the Berimond camp, which is where berimond
+    attacks launch from. It is the only cheap look at that camp's stock when the
+    client is not attacking, because the berimond flow never sends an ADI (so
+    ``state["castle_inventory"]`` never describes it).
+    """
+
+    parsed = parse_xt_packet(decoded.strip())
+    if not parsed or parsed.get("command") != "gui":
+        return False
+    if parsed.get("status") not in (None, "0", 0):
+        return False
+    payload = parsed.get("payload")
+    if not isinstance(payload, dict) or not isinstance(payload.get("I"), list):
+        return False
+    return bool(record_berimond_stock(payload, source="gui"))
+
+
 def process_live_message(decoded: str) -> None:
     if process_live_cra_response(decoded):
         return
     if process_live_cat_response(decoded):
+        return
+    if process_live_gui_stock(decoded):
+        return
+    if process_live_kut_response(decoded):
         return
     parsed = parse_xt_packet(decoded.strip())
     if parsed and parsed.get("command") == "aci" and parsed.get("status") not in {None, "0", 0}:

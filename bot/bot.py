@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import importlib
 import json
 import math
 import os
 import random
+import signal
 import sys
 import time
 from datetime import datetime
@@ -90,6 +92,9 @@ except ImportError:
 
 HERE = Path(__file__).resolve().parent
 BOT_STATE_DIR = REPO_ROOT / "bot"
+#: The un-rebound state dir, kept so the stop guards can find every account's
+#: control file after configure_account() has moved BOT_STATE_DIR to an account.
+DEFAULT_BOT_STATE_DIR = BOT_STATE_DIR
 DEFAULT_ACCOUNT = SCAN_ROOT / "ventrilo.ini"
 DEFAULT_LOG_DIR = BOT_STATE_DIR / "logs"
 CONTROL_FILE = BOT_STATE_DIR / "proxy_control.json"
@@ -401,11 +406,18 @@ def load_proxy_control() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def save_proxy_control(state: dict[str, Any]) -> None:
-    CONTROL_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = CONTROL_FILE.with_suffix(CONTROL_FILE.suffix + ".tmp")
+def save_proxy_control(state: dict[str, Any], path: Path | None = None) -> None:
+    """Write a control file atomically (``path`` defaults to the active account's).
+
+    The atomic replace matters: the addon polls this file about once a second, and
+    a partial read would look like a stopped run.
+    """
+
+    target = CONTROL_FILE if path is None else path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(target.suffix + ".tmp")
     tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    tmp.replace(CONTROL_FILE)
+    tmp.replace(target)
 
 
 def stop_proxy_transport(reason: str) -> None:
@@ -421,6 +433,104 @@ def stop_proxy_transport(reason: str) -> None:
             clear_proxy_awaiting_db(conn)
     except Exception as exc:
         log(f"proxy_db_clear_failed reason={reason} error={exc!r}", error=True)
+
+
+def control_file_candidates() -> list[Path]:
+    """Every control file the addon could be reading right now.
+
+    The addon drives the attacks, and it only reads the control file of the
+    account it is bound to (``account_data/<name>/proxy_control.json``), falling
+    back to the global one. So a stop written to the wrong file leaves the game
+    being attacked with nobody watching - which is exactly how an ended session
+    kept farming (its own file was never written).
+    """
+
+    candidates = [CONTROL_FILE, DEFAULT_BOT_STATE_DIR / "proxy_control.json"]
+    accounts_dir = DEFAULT_BOT_STATE_DIR / "account_data"
+    if accounts_dir.is_dir():
+        candidates.extend(sorted(accounts_dir.glob("*/proxy_control.json")))
+    unique: list[Path] = []
+    for path in candidates:
+        if path not in unique:
+            unique.append(path)
+    return unique
+
+
+def stop_proxy_everywhere(reason: str) -> list[Path]:
+    """Write ``running: false`` to every control file that is still running.
+
+    Ctrl-C (or any exit) has to end the loop for whichever account is live, not
+    just the one this process was told about, so this does not guess the account.
+    Returns the files that were actually changed.
+    """
+
+    stopped: list[Path] = []
+    for path in control_file_candidates():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(data, dict) or not data.get("running"):
+            continue
+        data["running"] = False
+        data["pending"] = None
+        data["stopped_at"] = now_epoch()
+        data["stop_reason"] = reason
+        try:
+            save_proxy_control(data, path)
+        except OSError:
+            continue
+        stopped.append(path)
+    if stopped:
+        log(f"proxy_stopped_everywhere reason={reason} files={[str(path) for path in stopped]}")
+        # A leftover pending row would let the addon resume the attack it was
+        # told to abandon, so clear it for the account this process knows about.
+        try:
+            with connect(read_connection_config()) as conn:
+                ensure_bot_tables(conn)
+                clear_proxy_awaiting_db(conn)
+        except Exception as exc:  # pragma: no cover - best effort on the way out
+            log(f"proxy_db_clear_failed reason={reason} error={exc!r}", error=True)
+    return stopped
+
+
+def install_proxy_stop_guards(reason: str = "process_exit") -> None:
+    """Make Ctrl-C, a kill, or a closed terminal end the proxy loop.
+
+    The *addon* sends the attacks, not this process, so anything that kills the
+    process without writing ``running: false`` leaves the game being attacked
+    unattended. Three guards cover that:
+
+    * ``atexit`` runs on every normal exit - including an unhandled
+      ``KeyboardInterrupt`` - so Ctrl-C always stops the loop, for any account;
+    * SIGTERM/SIGHUP (``kill``, closing the terminal) stop it and then re-raise
+      the signal so the process dies exactly as it would have;
+    * SIGINT is deliberately *not* intercepted, so the existing graceful
+      "stop after the current attack" handlers still see their KeyboardInterrupt.
+
+    Idempotent, and it never rewrites a control file that is already stopped.
+    """
+
+    if getattr(install_proxy_stop_guards, "_installed", False):
+        return
+    install_proxy_stop_guards._installed = True  # type: ignore[attr-defined]
+
+    atexit.register(stop_proxy_everywhere, reason)
+
+    def _on_signal(signum, _frame) -> None:
+        name = "terminal_closed" if signum == getattr(signal, "SIGHUP", None) else "terminated"
+        stop_proxy_everywhere(name)
+        try:
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+        except (OSError, ValueError):
+            raise SystemExit(130) from None
+
+    for name in ("SIGTERM", "SIGHUP"):
+        try:
+            signal.signal(getattr(signal, name), _on_signal)
+        except (AttributeError, ValueError, OSError):
+            continue
 
 
 def resume_proxy_transport_after_soft_reject(reason: str) -> None:
@@ -863,13 +973,35 @@ def source_for_kingdom(conn: psycopg.Connection | None, kingdom_id: int) -> tupl
     return SOURCE_X, SOURCE_Y
 
 
+#: Per-account ``HBW`` (travel option) overrides, ``{account: {kingdom: value}}``.
+#:
+#: Evidence, Sands RBC from pingpoko's castle 722:533:
+#:   * the real game client sent ``HBW=1004`` and the server accepted it
+#:     (``cra`` ack, status 0, MID returned);
+#:   * the bot sending ``HBW=1001`` to the same target was rejected with status 5,
+#:     "the action could not be performed".
+#: Ventrilo's accepted Sands attacks use the protocol default, so only accounts
+#: listed here are affected - everyone else keeps ``packets.HBW_VALUE``.
+ACCOUNT_HBW_OVERRIDES: dict[str, dict[int, int]] = {
+    "pingpoko": {SANDS_KID: 1004},
+}
+
+
 def hbw_for_kingdom(conn: psycopg.Connection | None, kingdom_id: int) -> int:
     """Travel option for this account's castle in a kingdom.
 
-    The value differs by account/session context. Ventrilo's observed Sands
-    attacks use the protocol fallback, while pingpoko's accepted live CRA uses a
-    different value learned into account sources.
+    Precedence: a per-account override from :data:`ACCOUNT_HBW_OVERRIDES` (a
+    value proven against a live capture for that one account), then a value
+    learned into account sources, then the protocol fallback.
     """
+
+    override = ACCOUNT_HBW_OVERRIDES.get(current_aid()) or {}
+    try:
+        kingdom_key: int | None = int(kingdom_id)
+    except (TypeError, ValueError):
+        kingdom_key = None
+    if kingdom_key is not None and override.get(kingdom_key) is not None:
+        return int(override[kingdom_key])
 
     global _source_conn
     if conn is None:

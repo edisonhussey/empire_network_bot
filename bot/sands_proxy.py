@@ -322,6 +322,7 @@ def main(argv: list[str] | None = None) -> int:
         "stop_reason": None,
     }
     save_control(state)
+    bot.install_proxy_stop_guards("sands_proxy_exit")
     print(f"proxy bot started mode=sands max_attacks={state['max_attacks']} control={CONTROL_FILE}")
     try:
         monitor_start()

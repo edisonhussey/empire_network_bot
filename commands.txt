@@ -1,5 +1,6 @@
 # Run from the repo root (or use: python empire.py <same args> from anywhere)
 # DO NOT run `python -m bot.cli` from inside bot/ - bot.py shadows the package.
+mitmdump -s bot/rbc_proxy_listener.py
 
 # 1. log in with the listener running, then check who is live:
 python -m bot.cli session
@@ -23,9 +24,204 @@ python -m bot.cli db populate --watch --poll 30    # scan every 30s
 # 3. run:
 python -m bot.cli proxy start --max-attacks 200
 
+# STOPPING: the addon inside mitmdump does the sending, not this process, so the
+# loop lives in the control file. Ctrl-C writes running=false to EVERY account's
+# control file (the one bound plus any other stale one), and so do SIGTERM
+# (`kill`), SIGHUP (closing the terminal) and normal exit via an atexit guard.
+# A `kill -9` cannot be caught - for that the addon would need a heartbeat.
+#   python -m bot.cli proxy end     <- explicit stop, mitmproxy can stay open
+#
+# THE ADDON ONLY DRIVES WHAT A DRIVER ASKED FOR (changed 2026-09-23): the dispatch
+# is mode-driven and there is NO catch-all any more:
+#   mode=storm     -> storm scans/attacks
+#   mode=berimond  -> the berimond loop (bot_berimond.py run writes this)
+#   mode=sands     -> the kid=1 sand farm, cycling bot/tasks.py TASKS by priority
+#                     (written by `bot.cli proxy start` / bot/sands_proxy.py)
+#   anything else  -> IDLE, logged once a minute as `proxy_idle reason=no_mode`
+# It used to be "not storm and not berimond => sand farm", so a leftover control
+# file (mode absent) armed an endless kid=1 ADI farm that ate the shared
+# running/attacks_sent the other flows use. Run ONE flow at a time: they share the
+# control file, so stopping either clears `running` (that is why a berimond run's
+# exit stops a sand farm).
+# If a session ever keeps attacking after you ended it, check for an orphan:
+#   grep -H '"running"' bot/proxy_control.json bot/account_data/*/proxy_control.json
+
 # 4. keep an eye on capture folder sizes / trim them:
 python -m bot.cli db logs
 python -m bot.cli db logs --prune --apply
 
 # Account flags are an override only, and are refused if they disagree with
 # who is actually logged in.
+
+# ----------------------------------------------------------------
+# BERIMOND (kid 10) - standalone driver, does not touch bot.py
+# ----------------------------------------------------------------
+
+ ./venv/bin/python bot_berimond.py --ventrilo --commander-count 16 run --max-attacks 300
+# RUN EVERYTHING FROM empire_network_bot/ WITH THE VENV PYTHON:
+#   ./venv/bin/python bot_berimond.py ...        (plain `python3` has no psycopg)
+# SHARED FLAGS GO *BEFORE* THE SUBCOMMAND (--ventrilo --commander-count 16 run).
+#
+# 0. PREREQS - mitmproxy must be running the addon and holding a live game
+#    websocket, and it must have SEEN A LOGIN since it loaded, otherwise it reads
+#    the alphabetically-first account's control file (pingpoko) and ignores
+#    ventrilo. Check both before you start:
+grep -E "rbc_proxy_listener_loaded|startup_bound_to_session" bot/account_data/ventrilo/rbc_proxy_listener.log | tail -2
+#
+# 1. WHAT IS ALIVE (no commander spent, no attack sent - presses the in-game
+#    find-target button once and prints the camp the game picks):
+./venv/bin/python bot_berimond.py --ventrilo --no-db discover --find 1
+#    other ways: --from-logs (the newest 600 captures, last 60 min), --find N
+#    (N presses, the game cycles its live list), --search x1,y1,x2,y2 (13x13
+#    chunk scan), --save (write the target cache), --force (probe even if a
+#    pending exists), --no-probe.
+#    NOTE --from-logs on its own STILL presses find once (--find defaults to 1);
+#    for a pure offline read:  discover --from-logs --no-probe
+#    NOTE --no-db also drops the learned camp, so source falls back to
+#    bot/berimond.py's SOURCE_X/Y (1310:111); `status` shows the learned one.
+#
+# 2. WHERE AM I (control state, commander cooldowns, recent attacks from the DB):
+./venv/bin/python bot_berimond.py --ventrilo status
+#
+# 3. ATTACK. This is the one that runs:
+./venv/bin/python bot_berimond.py --ventrilo --commander-count 16 run --max-attacks 300
+#    ORDER OF EVERY RUN (logged as `berimond_sequence=...`):
+#      1. LOOK   press find-target and pick from what the game hands back
+#                (`startup_lookup live=...`); it never inherits a defeated camp
+#                from the cache. The cache is only the fallback when the probe
+#                cannot answer (`startup_lookup_empty`). --target x:y pins a camp
+#                and skips the lookup; --no-probe skips probing entirely.
+#                If the game's answer differs from the cached camp that is logged
+#                as `startup_retarget` (adopt it, fresh cooldown).
+#      2. ATTACK repeat, pacing ACI->CRA 2.5+jitter and CRA->CRA >= 4+jitter.
+#      3. ON FAIL follow the sequence:
+#           press find once, then
+#             same camp named  -> army/commander problem: alert sound + backoff
+#                                 (army 180s, commander 30s, unverified 60s) and
+#                                 for army also try the REFILL first
+#             different camp   -> retarget: adopt it, fresh global cooldown,
+#                                 no backoff
+#             no map answer    -> class=unverified, pause, never guess
+#           a refused ACI (203) takes the same path before any CRA is sent
+#           too many rejections in one sequence (--error-tolerance 1) -> close
+#    Ctrl-C stops it AT ONCE, including a wait in progress (a probe deadline is
+#    25s x --find presses, so before this fix it looked like Ctrl-C did nothing).
+#    It also stops the addon transport and clears every other account's stale
+#    running flag. Exit code 130, log says `bot_berimond_interrupted`.
+#    If the find-target LOOKUP cannot be made at all (addon not loaded / game not
+#    connected) it refuses to start when no cached camp was seen within
+#    --cache-max-age (900s): a day-old row used to send the run into an ACI 203 on
+#    a dead camp and raise the alarm sound. Override with --target x:y or
+#    --cache-max-age 0 (trust anything, the old behaviour).
+#
+# WHAT IT PRINTS (the lines worth reading):
+#   berimond_sequence=lookup->attack->on_fail{...}   the order every run follows
+#   startup_lookup live=1 1199:54(hp=3720)   the camp it will attack (looked up
+#                                            BEFORE the first shot, every run)
+#   startup_lookup_empty cached=7 ...        probe could not answer, using cache
+#   startup_lookup_unavailable reason=... cache_fresh=0/8 window=900s
+#                                            the lookup could not be made and no
+#                                            cached camp is fresh -> refuses to
+#                                            start (exit 3) instead of attacking
+#                                            a stale camp
+#   startup_retarget cached=1201:96 -> target=1199:54   the game no longer offers
+#                                            the cached camp (same step the
+#                                            failure sequence takes)
+#   startup_lookup_skipped reason=pinned_target         --target x:y given
+#   intent_written target=... waiting_for_addon
+#   attacks_sent=N target=1199:54            one attack dispatched
+#   berimond_camp_stock age=8s need=u10=14 ... have=u10=260 ...   camp vs one hit
+#   berimond_refill_plan ... home=...+landed=...-away=...=...now+back=...+out~...
+#   berimond_error status=101 reason=unknown matched=True class=army
+#   berimond_aci_rejected / berimond_aci_retarget    camp died, adopted a new one
+#   target_probe target=... hp=...           liveness (hp falls as it is beaten)
+#   target_rotated / target_defeated         moved off a finished camp
+#   bot_berimond_done reason=... by_target={...} summary={...}
+# Log file: bot/account_data/ventrilo/bot_berimond.log
+# Exit codes: 0 ok, 2 wrong account session / missing subcommand, 3 no live target,
+#             4 probe failed, 5 stalled (skips with no attack sent),
+#             6 error budget exhausted, 130 interrupted (Ctrl-C).
+# A bare invocation (flags but no discover|status|run) now explains itself instead
+# of failing with argparse's one-liner.
+#
+# POLICY (defaults, see --help for all of them):
+#   --pick weakest|nearest|first      default weakest (lowest hp, shortest return)
+#   --max-attacks 100                 --commander-count 6 (use 16 for a real run)
+#   --error-tolerance 1               rejections tolerated in one sequence (no
+#                                     attack sent since the last one); the next
+#                                     one closes the run
+#   --army-backoff 180                army rejection (camp out of troops)
+#   --error-pause 30                  commander/unverified rejection (60 for
+#                                     unverified); a retarget waits 0
+#   --skip-tolerance 3                skips with no attack sent before giving up
+#   --probe-every 3                   attacks between liveness probes
+#   --global-cooldown 4.0             CRA -> CRA minimum (adds 0.15-0.85s jitter)
+#   --max-commander-out 360           cap on a lord's lockout before the CAT
+#   --cache-max-age 900               how recent a cached camp must be for the
+#                                     no-lookup fallback (0 = trust anything)
+# Timings: ACI -> CRA is 2.5 + jitter; CRA -> CRA is at least 4 + jitter (both
+# in bot/ranomizer.py plus the addon's global gate). Berimond sends NO adi - it is
+# aci -> cra; adi is the sands/storm handshake.
+# On a rejected CRA it asks the game (one find press): same camp named -> army or
+# commander problem, sound raised; different camp -> adopt it, fresh cooldown.
+# A refused ACI (`%xt%aci%1%203%`, addon stop_reason=berimond_aci_status_203) is
+# the same idea applied before any attack: ask the game, adopt a different camp
+# (`berimond_aci_retarget`), and only close the run when the budget runs out.
+#
+# REFILL = the `transfer_troops` phase. It runs ONCE per troop shortage (a CRA
+# 101/313 classed `army`, or a troop-shortage skip) - once per sequence, reset as
+# soon as an attack is actually sent, so a burst of rejections cannot queue a
+# transfer per rejection.
+#   transfer_troops_phase=start trigger=missing_troops status=101 ...
+#   transfer_troops_phase=plan ... home=..+landed=..-away=..=..now+back=..+out~..
+#   transfer_troops_phase=sent scid=.. skid=.. u10 +N camp_had={..}
+#   transfer_troops_phase=wait seconds=7200 (skip it in game to resume sooner)
+#   transfer_troops_phase=skipped reason=already_ran_this_sequence|no_source_castle
+#                                             |no_camp_stock|stale_camp_stock|no_refill_units
+#                                             |camp_has_enough
+#   transfer_troops_phase=skipped reason=transfer_in_flight arrives_in=..s
+#   transfer_troops_phase=refused status=88 ...   the game refused the move
+#   transfer_troops_phase=failed reason=...
+# The addon confirms each request with its own marker (probes `last_gaa_probe`, a
+# transfer `last_kut`) and the supervisor waits up to 45s for a transfer, because a
+# transfer can be queued while the addon's own 20-30s pacing pause is still running.
+# A transfer is not gated by that pause (it is a reply to a rejection, not an attack),
+# and with no websocket it fails fast with `kut_transfer_wait reason=no_active_websocket`.
+# REFUSALS: a success is `%xt%kut%1%0%{"kpi":{"UT":[{"KID":10,"RS":7200,..}]}}%` but a
+# refusal is a BARE status - `%xt%kut%1%88%` (2026-09-23 08:08:57, game said "not enough
+# space for aux units"). The addon records `berimond_refill_failed status=88` and the
+# phase logs `refused`; the run then backs off instead of resuming into an empty camp.
+# Troops-only moves are fine (144/168/278/286/314 all went through), so a refusal is a
+# STATE problem - most likely a second transfer while one was still marching, which is
+# why `request_refill` now skips with `reason=transfer_in_flight`.
+# It MEASURES what to send (nothing hardcoded):
+#   home      camp stock for that unit, from the `aci` (every attack) or `gui` capture
+#   landed    survivors from `cat` returns that came home after that snapshot
+#   away      (in_flight + resolved) x troops per attack - marches TAKE troops out
+#   now       home + landed - away        (what the camp holds right now)
+#   back      survivors on their way home right now (arrives_at in the future)
+#   out       marches whose result is not back yet x the measured survival ratio
+#             (survivors / troops carried, over the recorded `cat` returns);
+#             an unknown ratio counts them as lost
+#   total     now + back + out            (once the flyers land)
+#   missing   TOTAL_CAPACITY (bot/berimond.py, 302 for VDH; CAPACITY_BY_UNIT
+#             wins when it lists units) - total
+#   send      floor(--refill-safety * missing)     -> 0.9 by default
+# Counters are taken relative to the stock snapshot. Never trust a total above
+# the camp's capacity: that means the inputs are stale, not that the camp is full.
+# A queued refill replaces the 180s army backoff (the run is waiting for the
+# troops anyway); --army-backoff only applies when nothing could be sent.
+# SCID is learned from your last kut, so no castle id is hardcoded.
+#   --refill-units "10"         unit ids to top up (a 10:302 form still parses,
+#                               the count is ignored)     default 10
+#   --refill-safety 0.9         fraction of the estimated gap to send
+#   --refill-castle-id N        override the learned source castle
+#   --refill-wait 0             seconds to wait; 0 = use the game's RS (7200s)
+#   --refill-max-wait 7200      cap on that wait
+#   --refill-stock-max-age 900  ignore a camp stock older than this
+#   --no-refill                 disable
+# A refill is also triggered by a troop-shortage skip, not just a 101.
+#
+# If a run ever keeps attacking after you ended it, look for a control file that
+# is still marked running - that flag, not the process, is what drives the addon:
+#   grep -H '"running"' bot/proxy_control.json bot/account_data/*/proxy_control.json
