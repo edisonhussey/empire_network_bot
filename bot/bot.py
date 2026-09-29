@@ -5,7 +5,6 @@ import argparse
 import atexit
 import importlib
 import json
-import math
 import os
 import random
 import signal
@@ -38,18 +37,12 @@ for path in (SCAN_ROOT, SCAN_ROOT / "pygge_repo"):
 from bot.test_psql_connection import connect, read_connection_config
 from bot import account_context
 from bot import accounts
-from bot import berimond
-from bot import storm_database as storm_db
+from bot.event.berimond_kingdom import config as berimond
+from bot.event.storm import controller as storm_mode
+from bot.event.storm import database as storm_db
 from bot import db as bot_db
 from bot import tasks as task_defs
 from bot.db_account import DEFAULT_BACKFILL_AID, ensure_account_columns
-from bot.storm_database import (
-    STORM_KID,
-    cleanup_expired_storm_targets,
-    ensure_storm_tables,
-    release_storm_target,
-    reserve_storm_target,
-)
 from bot import attacks, packets
 
 #: Castle coordinates, resolved at login by ``connect_sands``. Fall back to the
@@ -77,7 +70,7 @@ except ImportError:
 
 # //historical note: the old sand_rbc_farm state loop was removed. Its packet
 # //parsers and protocol constants now live in bot/packets.py, and its attack
-# //objects in bot/attacks.py. See bot/DESIGN_NOTES.md for how these design
+# //objects in bot/event/<mode>/config.py. See bot/DESIGN_NOTES.md for how these design
 # //notes map onto the current code.
 
 # //only apply the sand rbc 50 crosswbomen cra packet for first 13 commander count. on left flank and once sent update the datbase to last_attacked. use this same field to deteremine later on if it can be attacked. strict 20 sec + random 0-10 timeout between request intervals. also need an adi before cra with also randomized, anti bot detection. 
@@ -116,14 +109,14 @@ RETURN_HEURISTIC_MULTIPLIER = DEFAULT_RETURN_HEURISTIC_MULTIPLIER
 COMMANDER_RETURN_HOLD_RANGE = (10.0, 20.0)
 MAX_CRA_PER_HOUR_DEFAULT = 3
 MAX_CONSECUTIVE_ERRORS = 2
-MAX_STORM_CONSECUTIVE_CRA_REJECTS = 2
-STORM_SCAN_INTERVAL_RANGE = (5.5, 12.5)
-STORM_SCAN_RADIUS = 96
-STORM_TARGET_FRESH_SECONDS = 120
-STORM_SOURCE_X = 675
-STORM_SOURCE_Y = 675
-STORM_HBW = -1
-STORM_PTT = 1
+MAX_STORM_CONSECUTIVE_CRA_REJECTS = storm_mode.MAX_CONSECUTIVE_CRA_REJECTS
+STORM_SCAN_INTERVAL_RANGE = storm_mode.SCAN_INTERVAL_RANGE
+STORM_SCAN_RADIUS = storm_mode.SCAN_RADIUS
+STORM_TARGET_FRESH_SECONDS = storm_mode.TARGET_FRESH_SECONDS
+STORM_SOURCE_X = storm_mode.SOURCE_X
+STORM_SOURCE_Y = storm_mode.SOURCE_Y
+STORM_HBW = storm_mode.HBW
+STORM_PTT = storm_mode.PTT
 BERIMOND_KID = berimond.KID
 BERIMOND_SOURCE_X = berimond.SOURCE_X
 BERIMOND_SOURCE_Y = berimond.SOURCE_Y
@@ -1423,69 +1416,29 @@ def send_one_attack(socket, conn: psycopg.Connection) -> bool:
 
 
 def active_storm_task(task_name: str):
-    for task in task_scheduler.TASKS:
-        if task.name == task_name:
-            if not task.enabled:
-                raise RuntimeError(f"storm task disabled: {task_name}")
-            return task
-    raise RuntimeError(f"storm task not found: {task_name}")
+    """Compatibility wrapper; Storm policy lives in the event package."""
+
+    return storm_mode.active_task(task_name)
 
 
 def storm_target_levels(task, raw_levels: str | None) -> tuple[int, ...]:
-    if raw_levels:
-        levels = tuple(sorted({int(item.strip()) for item in raw_levels.split(",") if item.strip()}))
-        if levels:
-            return levels
-    if getattr(task, "target_levels", ()):
-        return tuple(int(level) for level in task.target_levels)
-    if task.target_level is not None:
-        return (int(task.target_level),)
-    return (60, 70, 80)
+    return storm_mode.target_levels(task, raw_levels)
 
 
 def chunk_start(value: int) -> int:
-    return max(0, int(value) - (int(value) % packets.MAP_CHUNK_SIZE))
+    return storm_mode.chunk_start(value)
 
 
 def storm_scan_pass_radius(base_radius: int) -> int:
-    base = max(packets.MAP_CHUNK_SIZE * 3, int(base_radius))
-    roll = random.random()
-    if roll < 0.18:
-        return random.randint(max(40, base - 35), max(45, base - 12))
-    if roll < 0.74:
-        return random.randint(max(52, base - 12), base + 24)
-    return random.randint(base + 25, base + 55)
+    return storm_mode.scan_pass_radius(base_radius)
 
 
 def storm_scan_chunks(center_x: int, center_y: int, radius: int) -> list[tuple[int, int]]:
-    offsets: list[tuple[int, int]] = []
-    steps = range(-int(radius), int(radius) + 1, packets.MAP_CHUNK_SIZE)
-    for dx in steps:
-        for dy in steps:
-            if math.hypot(dx, dy) <= int(radius) + packets.MAP_CHUNK_SIZE / 2:
-                offsets.append((dx, dy))
-    random.shuffle(offsets)
-    if offsets and random.random() < 0.78:
-        focus_radius = random.uniform(radius * 0.25, radius * 1.05)
-        offsets.sort(
-            key=lambda item: abs(math.hypot(item[0], item[1]) - focus_radius)
-            + random.uniform(-radius * 0.45, radius * 0.45)
-        )
-    return [
-        (chunk_start(center_x + dx - packets.MAP_CHUNK_SIZE // 2), chunk_start(center_y + dy - packets.MAP_CHUNK_SIZE // 2))
-        for dx, dy in offsets
-    ]
+    return storm_mode.scan_chunks(center_x, center_y, radius)
 
 
 def storm_scan_wait_seconds(args: argparse.Namespace, randomizer) -> float:
-    lower = max(4.0, float(args.scan_min))
-    upper = max(lower, float(args.scan_max))
-    wait = random.triangular(lower, upper, (lower + upper) / 2)
-    if random.random() < 0.22:
-        wait += random.uniform(2.5, 9.0)
-    if args.use_randomizer_gaa_wait:
-        wait = max(wait, float(randomizer.gaa_waiting_time()))
-    return wait
+    return storm_mode.scan_wait_seconds(args, randomizer)
 
 
 def troop_count_from_payload(payload: dict[str, Any]) -> int:
@@ -1519,30 +1472,15 @@ def build_storm_attack_payload(
     hbw: int,
     ptt: int,
 ) -> dict[str, Any]:
-    return {
-        "SX": int(source_x),
-        "SY": int(source_y),
-        "TX": int(target["x"]),
-        "TY": int(target["y"]),
-        "KID": int(task.kingdom_id),
-        "LID": int(lid),
-        "WT": 0,
-        "HBW": int(hbw),
-        "BPC": 0,
-        "ATT": 0,
-        "AV": 0,
-        "LP": 0,
-        "FC": 0,
-        "PTT": int(ptt),
-        "SD": 0,
-        "ICA": 0,
-        "CD": 99,
-        "A": task.attack_payload(),
-        "BKS": [],
-        "AST": [-1, -1, -1],
-        "RW": [[-1, 0] for _ in range(8)],
-        "ASCT": 0,
-    }
+    return storm_mode.build_attack_payload(
+        target,
+        lid,
+        task,
+        source_x=source_x,
+        source_y=source_y,
+        hbw=hbw,
+        ptt=ptt,
+    )
 
 
 def berimond_commander_lids(commander_count: int) -> tuple[int, ...]:
@@ -1603,37 +1541,7 @@ def wait_for_proxy_ready(timeout: float = 3.0) -> None:
 
 
 def prepare_proxy_transport(args: argparse.Namespace) -> None:
-    try:
-        with connect(read_connection_config()) as conn:
-            ensure_bot_tables(conn)
-            clear_proxy_awaiting_db(conn)
-    except Exception as exc:
-        raise RuntimeError(f"proxy_awaiting_db_reset_failed error={exc!r}") from exc
-    state = load_proxy_control()
-    state.update(
-        {
-            "running": True,
-            "transport_only": True,
-            "mode": "storm",
-            "username": CURRENT_ACCOUNT_NAME,
-            "aid": current_aid(),
-            "account_root": str(BOT_STATE_DIR),
-            "control_file": str(CONTROL_FILE),
-            "pending": None,
-            "last_cra": None,
-            "attacks_sent": 0,
-            "max_attacks": int(args.max_attacks),
-            "storm_task": args.storm_task,
-            "target_levels": list(storm_target_levels(active_storm_task(args.storm_task), args.levels)),
-            "storm_source": {"x": int(args.source_x), "y": int(args.source_y), "hbw": int(args.hbw)},
-            "storm_ptt": int(args.ptt),
-            "target_fresh_seconds": int(args.target_fresh_seconds),
-            "started_at": now_epoch(),
-            "stopped_at": None,
-            "stop_reason": None,
-        }
-    )
-    save_proxy_control(state)
+    storm_mode.prepare_transport(args)
 
 
 def prepare_berimond_proxy_transport(args: argparse.Namespace) -> None:
@@ -1717,96 +1625,19 @@ def wait_for_gaa_sent(queued_at: float, timeout: float) -> dict[str, Any]:
 
 
 def queue_storm_gaa(ax1: int, ay1: int) -> None:
-    pending = {
-        "kind": "gaa_probe",
-        "kid": STORM_KID,
-        "ax1": int(ax1),
-        "ay1": int(ay1),
-        "ax2": int(ax1) + packets.MAP_CHUNK_SIZE - 1,
-        "ay2": int(ay1) + packets.MAP_CHUNK_SIZE - 1,
-        "queued_at": time.time(),
-    }
-    queued_at = queue_proxy_pending(pending)
-    sent = wait_for_gaa_sent(queued_at, PROXY_PENDING_TIMEOUT)
-    log(f"storm_gaa_sent chunk={sent['ax1']}:{sent['ay1']}-{sent['ax2']}:{sent['ay2']}")
+    storm_mode.queue_gaa(ax1, ay1)
 
 
 def last_cra_matches_target(last_cra: Any, target_id: int) -> bool:
-    if not isinstance(last_cra, dict):
-        return False
-    target = last_cra.get("target")
-    if not isinstance(target, dict):
-        return False
-    try:
-        return int(target.get("id")) == int(target_id)
-    except (TypeError, ValueError):
-        return False
+    return storm_mode.last_cra_matches_target(last_cra, target_id)
 
 
 def storm_target_result_status(conn: psycopg.Connection, target_id: int) -> str | None:
-    aid = current_aid()
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT status, sent_at, march_id
-            FROM storm_target
-            WHERE aid = %s
-              AND id = %s
-            """,
-            (aid, int(target_id)),
-        )
-        row = cur.fetchone()
-    if row is None:
-        return None
-    status, sent_at, march_id = row
-    if sent_at is not None and march_id is not None:
-        return "accepted"
-    if isinstance(status, str) and status.startswith("cra_status_"):
-        return "rejected"
-    if isinstance(status, str) and status.startswith("adi_"):
-        return "skipped"
-    return None
+    return storm_mode.target_result_status(conn, target_id)
 
 
 def wait_for_storm_cra_result(conn: psycopg.Connection, target_id: int, queued_at: float, timeout: float) -> str:
-    pre_cra_deadline = queued_at + PROXY_ADI_TO_CRA_TIMEOUT
-    cra_deadline: float | None = None
-    while True:
-        result = storm_target_result_status(conn, target_id)
-        if result is not None:
-            return result
-
-        state = load_proxy_control()
-        last = state.get("last_cra")
-        if last_cra_matches_target(last, target_id):
-            try:
-                sent_at = float(last.get("sent_at") or 0)
-            except (TypeError, ValueError):
-                sent_at = 0.0
-            if sent_at > 0:
-                cra_deadline = max(cra_deadline or 0.0, sent_at + timeout)
-
-        deadline = cra_deadline if cra_deadline is not None else pre_cra_deadline
-        if time.time() >= deadline:
-            grace_deadline = time.time() + PROXY_CRA_TIMEOUT_GRACE
-            while time.time() < grace_deadline:
-                result = storm_target_result_status(conn, target_id)
-                if result is not None:
-                    return result
-                time.sleep(0.5)
-            break
-
-        with conn.cursor() as cur:
-            cur.execute("SELECT status FROM storm_target WHERE aid = %s AND id = %s", (current_aid(), int(target_id)))
-            row = cur.fetchone()
-        if row is not None and isinstance(row[0], str):
-            if row[0].startswith("cra_status_"):
-                return "rejected"
-            if row[0].startswith("adi_"):
-                return "skipped"
-        ensure_proxy_driver_running()
-        time.sleep(0.5)
-    raise TimeoutError("cra_response_timeout")
+    return storm_mode.wait_for_cra_result(conn, target_id, queued_at, timeout)
 
 
 def queue_storm_cra(
@@ -1815,84 +1646,8 @@ def queue_storm_cra(
     lid: int,
     task,
     args: argparse.Namespace,
-) -> bool:
-    allowed_levels = storm_target_levels(task, args.levels)
-    if int(target.get("target_level") or -1) not in allowed_levels:
-        release_storm_target(conn, int(target["id"]))
-        release_commander(conn, lid, status="available")
-        log(
-            f"storm_cra_blocked_bad_level target={target['x']}:{target['y']} "
-            f"level={target.get('target_level')} allowed={list(allowed_levels)}",
-            error=True,
-        )
-        return False
-    payload = build_storm_attack_payload(
-        target,
-        lid,
-        task,
-        source_x=args.source_x,
-        source_y=args.source_y,
-        hbw=args.hbw,
-        ptt=args.ptt,
-    )
-    pending = {
-        "kind": "adi",
-        "target_kind": "storm_target",
-        "target": target,
-        "task_name": task.name,
-        "lid": int(lid),
-        "due_at": time.time(),
-        "army_count": troop_count_from_payload(payload),
-        "attack_payload": payload,
-    }
-    queued_at = queue_proxy_pending(pending)
-    log(
-        f"storm_adi_queued target={target['x']}:{target['y']} level={target.get('target_level')} "
-        f"lid={lid} army_count={pending['army_count']}"
-    )
-    try:
-        result = wait_for_storm_cra_result(conn, int(target["id"]), queued_at, PROXY_CRA_TIMEOUT)
-    except TimeoutError as exc:
-        release_commander(
-            conn,
-            lid,
-            available_after=now_epoch() + HEURISTIC_RETURN_SECONDS + random.uniform(*COMMANDER_RETURN_HOLD_RANGE),
-            status="cra_timeout",
-        )
-        release_storm_target(conn, int(target["id"]), status="cra_timeout")
-        stop_proxy_transport("storm_cra_timeout")
-        log(f"storm_cra_timeout target={target['x']}:{target['y']} lid={lid}", error=True)
-        raise SafetyStop(f"storm_cra_timeout target={target['x']}:{target['y']} lid={lid}") from exc
-    if result == "accepted":
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT march_id, duration
-                FROM attack
-                WHERE aid = %s
-                  AND target_kind = 'storm_target'
-                  AND target_id = %s
-                ORDER BY time_created DESC NULLS LAST
-                LIMIT 1
-                """,
-                (current_aid(), int(target["id"])),
-            )
-            row = cur.fetchone()
-        march_id, travel = row if row is not None else (None, None)
-        log(f"storm_cra_ack target={target['x']}:{target['y']} lid={lid} mid={march_id} travel_duration={travel}")
-    elif result == "skipped":
-        log(f"storm_adi_skipped target={target['x']}:{target['y']} lid={lid}")
-        return False
-    else:
-        release_commander(
-            conn,
-            lid,
-            available_after=now_epoch() + HEURISTIC_RETURN_SECONDS + random.uniform(*COMMANDER_RETURN_HOLD_RANGE),
-            status="cra_rejected",
-        )
-        log(f"storm_cra_rejected target={target['x']}:{target['y']} lid={lid}", error=True)
-        return "cra_rejected"
-    return True
+) -> bool | str:
+    return storm_mode.queue_cra(conn, target, lid, task, args)
 
 
 def send_one_storm_proxy_attack(
@@ -1900,95 +1655,12 @@ def send_one_storm_proxy_attack(
     task,
     target_levels: tuple[int, ...],
     args: argparse.Namespace,
-) -> bool:
-    cleanup_expired_storm_targets(conn)
-    target = reserve_storm_target(conn, target_levels=target_levels, fresh_seconds=int(args.target_fresh_seconds))
-    if target is None:
-        return False
-    lid = choose_commander(conn, set(task.commander_lids), set(task.commander_lids))
-    if lid is None:
-        release_storm_target(conn, int(target["id"]))
-        log(f"storm_skip target={target['x']}:{target['y']} reason=no_available_lid")
-        return True
-    delay = max(5.0, float(task_scheduler.Randomizer().attack_send_waiting_time()))
-    log(f"storm_attack_wait seconds={delay:.1f} target={target['x']}:{target['y']} lid={lid}")
-    queued_to_proxy = False
-    try:
-        interruptible_proxy_sleep(delay)
-        queued_to_proxy = True
-        return queue_storm_cra(conn, target, lid, task, args)
-    except BaseException:
-        if not queued_to_proxy:
-            release_storm_target(conn, int(target["id"]))
-            release_commander(conn, lid, status="available")
-        raise
+) -> bool | str:
+    return storm_mode.send_one_attack(conn, task, target_levels, args)
 
 
 def run_storm_proxy(args: argparse.Namespace) -> int:
-    task = active_storm_task(args.storm_task)
-    levels = storm_target_levels(task, args.levels)
-    scan_radius = storm_scan_pass_radius(int(args.scan_radius))
-    chunks = storm_scan_chunks(int(args.source_x), int(args.source_y), scan_radius)
-    if not chunks:
-        raise RuntimeError("storm_scan_no_chunks")
-    randomizer = task_scheduler.Randomizer()
-    attacks_sent = 0
-    consecutive_cra_rejects = 0
-    cursor = 0
-    prepare_proxy_transport(args)
-    log(
-        f"storm_proxy_start task={task.name} source={args.source_x}:{args.source_y} levels={list(levels)} "
-        f"max_attacks={args.max_attacks} scan={args.scan_min:.1f}-{args.scan_max:.1f}s radius={scan_radius}"
-    )
-    stop_reason = "bot_py_complete"
-    try:
-        with connect(read_connection_config()) as conn:
-            ensure_bot_tables(conn)
-            ensure_storm_tables(conn)
-            set_runtime_value(conn, "max_cra_per_hour", args.max_cra_per_hour)
-            while attacks_sent < int(args.max_attacks):
-                ensure_proxy_driver_running()
-                safety_check(conn, int(args.max_cra_per_hour))
-                acted = send_one_storm_proxy_attack(conn, task, levels, args)
-                if acted == "cra_rejected":
-                    consecutive_cra_rejects += 1
-                    if consecutive_cra_rejects > MAX_STORM_CONSECUTIVE_CRA_REJECTS:
-                        stop_reason = f"storm_consecutive_cra_rejects count={consecutive_cra_rejects}"
-                        stop_proxy_transport(stop_reason)
-                        raise SafetyStop(stop_reason)
-                    resume_proxy_transport_after_soft_reject("cra_rejected")
-                    wait = random.uniform(25.0, 55.0)
-                    log(
-                        f"storm_cra_reject_tolerated consecutive={consecutive_cra_rejects} "
-                        f"next_wait={wait:.1f}s"
-                    )
-                    interruptible_proxy_sleep(wait)
-                    continue
-                if acted:
-                    consecutive_cra_rejects = 0
-                    state = load_proxy_control()
-                    attacks_sent = int(state.get("attacks_sent", attacks_sent) or attacks_sent)
-                    continue
-                if cursor >= len(chunks):
-                    cursor = 0
-                    scan_radius = storm_scan_pass_radius(int(args.scan_radius))
-                    chunks = storm_scan_chunks(int(args.source_x), int(args.source_y), scan_radius)
-                    log(f"storm_scan_new_pass radius={scan_radius} chunks={len(chunks)}")
-                ax1, ay1 = chunks[cursor]
-                cursor += 1
-                queue_storm_gaa(ax1, ay1)
-                wait = storm_scan_wait_seconds(args, randomizer)
-                log(f"storm_scan_wait seconds={wait:.1f}")
-                interruptible_proxy_sleep(wait)
-    except SafetyStop as exc:
-        stop_reason = str(exc)
-        log(f"storm_proxy_stopped reason={exc}", error=True)
-    finally:
-        state = load_proxy_control()
-        if state.get("running") is not False:
-            stop_proxy_transport(stop_reason)
-    log(f"storm_proxy_done attacks_sent={attacks_sent}")
-    return 0
+    return storm_mode.run_proxy(args)
 
 
 def run_berimond_proxy(args: argparse.Namespace) -> int:
@@ -2045,7 +1717,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--loop", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--log-dir", type=Path, default=None)
-    parser.add_argument("--storm-task", default="storm_custom")
+    parser.add_argument("--storm-task", default="storm")
     parser.add_argument("--levels", default="60,70,80")
     parser.add_argument("--source-x", type=int, default=None)
     parser.add_argument("--source-y", type=int, default=None)

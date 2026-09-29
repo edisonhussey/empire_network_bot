@@ -36,7 +36,7 @@ python -m bot.cli proxy start --max-attacks 200
 #   mode=storm     -> storm scans/attacks
 #   mode=berimond  -> the berimond loop (bot_berimond.py run writes this)
 #   mode=sands     -> the kid=1 sand farm, cycling bot/tasks.py TASKS by priority
-#                     (written by `bot.cli proxy start` / bot/sands_proxy.py)
+#                     (written by `bot.cli proxy start` / the Sands controller)
 #   anything else  -> IDLE, logged once a minute as `proxy_idle reason=no_mode`
 # It used to be "not storm and not berimond => sand farm", so a leftover control
 # file (mode absent) armed an endless kid=1 ADI farm that ate the shared
@@ -57,7 +57,17 @@ python -m bot.cli db logs --prune --apply
 # BERIMOND (kid 10) - standalone driver, does not touch bot.py
 # ----------------------------------------------------------------
 
- ./venv/bin/python bot_berimond.py --ventrilo --commander-count 16 run --max-attacks 300
+# HANDS-OFF ENTRY POINT: edit bot/event/berimond_kingdom/run_config.json, then run this one process.
+# The Python controller finds/rotates targets, chooses commanders, handles errors,
+# and refills troops. The proxy only sends its explicit commands. If this process
+# is not running, Berimond cannot schedule another attack. Sands is never selected.
+./venv/bin/python run_berimond.py
+
+# Optional: use another config file.
+./venv/bin/python run_berimond.py /path/to/custom_berimond_config.json
+
+# Diagnostic/one-off CLI (the config runner above calls this internally):
+./venv/bin/python bot_berimond.py --ventrilo --commander-count 16 run --max-attacks 300
 # RUN EVERYTHING FROM empire_network_bot/ WITH THE VENV PYTHON:
 #   ./venv/bin/python bot_berimond.py ...        (plain `python3` has no psycopg)
 # SHARED FLAGS GO *BEFORE* THE SUBCOMMAND (--ventrilo --commander-count 16 run).
@@ -179,7 +189,6 @@ grep -E "rbc_proxy_listener_loaded|startup_bound_to_session" bot/account_data/ve
 #   transfer_troops_phase=skipped reason=already_ran_this_sequence|no_source_castle
 #                                             |no_camp_stock|stale_camp_stock|no_refill_units
 #                                             |camp_has_enough
-#   transfer_troops_phase=skipped reason=transfer_in_flight arrives_in=..s
 #   transfer_troops_phase=refused status=88 ...   the game refused the move
 #   transfer_troops_phase=failed reason=...
 # The addon confirms each request with its own marker (probes `last_gaa_probe`, a
@@ -192,29 +201,22 @@ grep -E "rbc_proxy_listener_loaded|startup_bound_to_session" bot/account_data/ve
 # space for aux units"). The addon records `berimond_refill_failed status=88` and the
 # phase logs `refused`; the run then backs off instead of resuming into an empty camp.
 # Troops-only moves are fine (144/168/278/286/314 all went through), so a refusal is a
-# STATE problem - most likely a second transfer while one was still marching, which is
-# why `request_refill` now skips with `reason=transfer_in_flight`.
-# It MEASURES what to send (nothing hardcoded):
-#   home      camp stock for that unit, from the `aci` (every attack) or `gui` capture
-#   landed    survivors from `cat` returns that came home after that snapshot
-#   away      (in_flight + resolved) x troops per attack - marches TAKE troops out
-#   now       home + landed - away        (what the camp holds right now)
-#   back      survivors on their way home right now (arrives_at in the future)
-#   out       marches whose result is not back yet x the measured survival ratio
-#             (survivors / troops carried, over the recorded `cat` returns);
-#             an unknown ratio counts them as lost
-#   total     now + back + out            (once the flyers land)
-#   missing   TOTAL_CAPACITY (bot/berimond.py, 302 for VDH; CAPACITY_BY_UNIT
-#             wins when it lists units) - total
-#   send      floor(--refill-safety * missing)     -> 0.9 by default
-# Counters are taken relative to the stock snapshot. Never trust a total above
-# the camp's capacity: that means the inputs are stale, not that the camp is full.
+# STATE problem: the request exceeded auxiliary-HQ capacity. The authoritative
+# ACI fields are `gui.I` (home) and `gui.TU` (assigned/out), both of which count.
+# It MEASURES what to send from those server values:
+#   occupied  gui.I[u10] + gui.TU[u10]
+#   missing   TOTAL_CAPACITY (400) - occupied
+#   send      min(--refill-safety * missing, 192)  -> 1.0 by default
+# Proven 2026-09-23: home=26, TU=163; 233 was refused because 422 > 400, then
+# the otherwise-identical manual 192 transfer was accepted because 381 <= 400.
+# The bot plans the same 192 for that state.
 # A queued refill replaces the 180s army backoff (the run is waiting for the
 # troops anyway); --army-backoff only applies when nothing could be sent.
 # SCID is learned from your last kut, so no castle id is hardcoded.
 #   --refill-units "10"         unit ids to top up (a 10:302 form still parses,
 #                               the count is ignored)     default 10
-#   --refill-safety 0.9         fraction of the estimated gap to send
+#   --refill-safety 0.7         target 70% of the 420 VDH allocation (=294), after projected returns
+#   --refill-time-skip          use two captured MS5 skips after KUT acceptance (default on)
 #   --refill-castle-id N        override the learned source castle
 #   --refill-wait 0             seconds to wait; 0 = use the game's RS (7200s)
 #   --refill-max-wait 7200      cap on that wait

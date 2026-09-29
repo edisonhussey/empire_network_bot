@@ -1,0 +1,19 @@
+{
+  "account": "ventrilo",
+  "commander_count": 16,
+  "max_attacks": 300,
+  "pick": "weakest",
+  "probe_every": 3,
+  "global_cooldown": 4.0,
+  "refill": true,
+  "refill_units": "10",
+  "refill_safety": 0.7,
+  "refill_castle_id": 16011862,
+  "refill_source_kingdom": 0,
+  "refill_wait": 0,
+  "refill_max_wait": 7200,
+  "refill_time_skip": true,
+  "refill_time_skip_type": "MS5",
+  "refill_max_time_skips": 2,
+  "error_tolerance": 1
+}

@@ -1,8 +1,9 @@
-"""Account registry driven by `credentials/*.env`.
+"""Account registry driven by credentials files and account-data folders.
 
-Adding an account is a data change, not a code change: drop a new
-``credentials/<name>.env`` file next to the existing ones and it automatically
-becomes available both as a CLI flag (``--<name>``) and in ``accounts`` output.
+Adding an account is a data change, not a code change: create either
+``credentials/<name>.env`` or ``bot/account_data/<name>/`` and it automatically
+becomes available in the registry and ``accounts`` output. Credentials-backed
+accounts also become CLI flags such as ``--ventrilo``.
 
 Every account keeps its own runtime state (control file, logs, latest server
 messages) under ``bot/account_data/<aid>/`` while sharing one database, with
@@ -19,6 +20,7 @@ import argparse
 import json
 import re
 import time
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
@@ -87,11 +89,56 @@ class Account:
         return self.context.latest_logs_dir
 
     def values(self) -> dict[str, str]:
-        return read_env(credentials_path(self.username))
+        path = Path(self.credentials) if self.credentials else credentials_path(self.username)
+        return read_env(path) if path.exists() else {}
+
+    @property
+    def slug(self) -> str:
+        """Stable, URL-safe identifier suitable for CLI and future web routes."""
+
+        return normalize_account_name(self.key)
+
+    @property
+    def python_name(self) -> str:
+        """Readable symbol name used by declarations, e.g. ``Ventrilo``."""
+
+        parts = re.split(r"[^a-zA-Z0-9]+", self.name)
+        value = "".join(part[:1].upper() + part[1:] for part in parts if part)
+        return value or "Account"
+
+    @property
+    def has_credentials(self) -> bool:
+        return bool(self.credentials and Path(self.credentials).is_file())
+
+    def to_public_dict(self) -> dict[str, object]:
+        """Serializable non-secret metadata for CLIs and a future website."""
+
+        return {
+            "key": self.key,
+            "slug": self.slug,
+            "name": self.name,
+            "username": self.username,
+            "server": self.server,
+            "has_credentials": self.has_credentials,
+            "root": str(self.root),
+        }
+
+    def __repr__(self) -> str:
+        return f"Account(name={self.name!r}, key={self.key!r}, server={self.server or '?'!r})"
 
 
 def available_accounts() -> tuple[str, ...]:
-    return available_usernames()
+    """Account keys discovered from either credentials or runtime folders."""
+
+    names = set(available_usernames())
+    account_root = account_context.BOT_DIR / "account_data"
+    if account_root.is_dir():
+        names.update(
+            path.name
+            for path in account_root.iterdir()
+            if path.is_dir() and not path.name.startswith(".")
+        )
+    return tuple(sorted(names))
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +304,38 @@ def _account_for_username(username: str) -> Account:
         credentials=str(path) if path.exists() else "",
         context=account_context.for_key(username, username),
     )
+
+
+class AccountRegistry(Mapping[str, Account]):
+    """Live view of accounts discovered from env files and state folders.
+
+    It deliberately stores no secrets and resolves objects on access, so adding
+    ``credentials/alice.env`` or ``bot/account_data/alice/`` requires no registry
+    edit or process restart in short-lived tools.
+    """
+
+    def __getitem__(self, key: str) -> Account:
+        try:
+            return load_account(key)
+        except FileNotFoundError as exc:
+            raise KeyError(key) from exc
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(available_accounts())
+
+    def __len__(self) -> int:
+        return len(available_accounts())
+
+    def require(self, key: str) -> Account:
+        """Resolve an account while preserving the detailed configuration error."""
+
+        return load_account(key)
+
+    def all(self) -> tuple[Account, ...]:
+        return tuple(self[key] for key in self)
+
+    def public_records(self) -> tuple[dict[str, object], ...]:
+        return tuple(account.to_public_dict() for account in self.all())
 
 
 def legacy_key_map() -> dict[str, str]:
@@ -446,8 +525,37 @@ def account_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser 
         fail(str(exc))
 
 
+# Public account catalogue. These explicit names are intentional: editors can
+# autocomplete them, jump to their definition and show the Account type on
+# hover, while ``ACCOUNTS`` remains dynamic for accounts added later.
+ACCOUNTS = AccountRegistry()
+Ventrilo: Account = ACCOUNTS.require("ventrilo")
+Pingpoko: Account = ACCOUNTS.require("pingpoko")
+
+
+def __getattr__(name: str) -> Account:
+    """Expose newly discovered accounts by their PascalCase ``python_name``.
+
+    Known accounts above remain explicit for IDE support. This fallback means a
+    newly added ``credentials/alice-smith.env`` is immediately addressable as
+    ``accounts.AliceSmith`` even before an explicit symbol is added.
+    """
+
+    for account in ACCOUNTS.all():
+        if account.python_name == name:
+            return account
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *(account.python_name for account in ACCOUNTS.all())})
+
+
 __all__ = [
+    "ACCOUNTS",
     "Account",
+    "AccountRegistry",
+    "Pingpoko",
     "SESSION_MAX_AGE_SECONDS",
     "account_for_login_name",
     "account_from_args",
@@ -466,5 +574,6 @@ __all__ = [
     "session_mismatch",
     "session_path",
     "split_account_flags",
+    "Ventrilo",
     "write_session",
 ]

@@ -21,9 +21,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from bot import bot as core
 from bot import accounts
-from bot.storm_database import cleanup_expired_storm_targets, ensure_storm_tables
+from bot.event.storm import controller as storm
+from bot.event.storm.database import cleanup_expired_storm_targets, ensure_storm_tables
 from bot.test_psql_connection import connect, read_connection_config
-from bot import sands_proxy
+from bot.event.sand import controller as sands_proxy
 from bot import scheduler as task_scheduler
 
 
@@ -115,8 +116,8 @@ def build_core_args(args: argparse.Namespace) -> SimpleNamespace:
         max_cra_per_hour=max_cra_per_hour,
         storm_task=selected_storm_task_name(args),
         levels=args.levels,
-        source_x=int(args.source_x),
-        source_y=int(args.source_y),
+        source_x=None if args.source_x is None else int(args.source_x),
+        source_y=None if args.source_y is None else int(args.source_y),
         hbw=int(args.hbw),
         ptt=int(args.ptt),
         scan_min=float(args.scan_min),
@@ -142,7 +143,7 @@ def selected_storm_task_name(args: argparse.Namespace) -> str:
     for task in task_scheduler.TASKS:
         if task.enabled and int(task.kingdom_id) != int(core.SANDS_KID):
             return task.name
-    return "storm_custom"
+    return "storm"
 
 
 def should_run_sands(args: argparse.Namespace) -> bool:
@@ -189,7 +190,10 @@ def start(args: argparse.Namespace) -> int:
         encoding="utf-8",
     )
     try:
-        return core.run_storm_proxy(build_core_args(args))
+        return storm.run_proxy(build_core_args(args))
+    except storm.StormSourceUnavailable as exc:
+        print(f"REFUSING TO START: {exc}", file=sys.stderr)
+        return 2
     except KeyboardInterrupt:
         core.stop_proxy_transport("keyboard_interrupt")
         print("\nproxy_bot stopped from Ctrl+C", flush=True)
@@ -212,14 +216,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-cra-per-hour", type=int, default=0, help="0 means use --max-attacks for this run")
     parser.add_argument("--task", default=None)
     parser.add_argument("--levels", default="60,70,80")
-    parser.add_argument("--source-x", type=int, default=core.STORM_SOURCE_X)
-    parser.add_argument("--source-y", type=int, default=core.STORM_SOURCE_Y)
-    parser.add_argument("--hbw", type=int, default=core.STORM_HBW)
-    parser.add_argument("--ptt", type=int, default=core.STORM_PTT)
-    parser.add_argument("--scan-min", type=float, default=core.STORM_SCAN_INTERVAL_RANGE[0])
-    parser.add_argument("--scan-max", type=float, default=core.STORM_SCAN_INTERVAL_RANGE[1])
-    parser.add_argument("--scan-radius", type=int, default=core.STORM_SCAN_RADIUS)
-    parser.add_argument("--target-fresh-seconds", type=int, default=core.STORM_TARGET_FRESH_SECONDS)
+    parser.add_argument(
+        "--source-x",
+        type=int,
+        default=storm.SOURCE_X,
+        help="explicit Storm source override; normally learned from login traffic",
+    )
+    parser.add_argument(
+        "--source-y",
+        type=int,
+        default=storm.SOURCE_Y,
+        help="explicit Storm source override; normally learned from login traffic",
+    )
+    parser.add_argument("--hbw", type=int, default=storm.HBW)
+    parser.add_argument("--ptt", type=int, default=storm.PTT)
+    parser.add_argument("--scan-min", type=float, default=storm.SCAN_INTERVAL_RANGE[0])
+    parser.add_argument("--scan-max", type=float, default=storm.SCAN_INTERVAL_RANGE[1])
+    parser.add_argument("--scan-radius", type=int, default=storm.SCAN_RADIUS)
+    parser.add_argument("--target-fresh-seconds", type=int, default=storm.TARGET_FRESH_SECONDS)
     parser.add_argument("--use-randomizer-gaa-wait", action="store_true")
     parser.add_argument("--log-dir", type=Path, default=None)
     args = parser.parse_args(accounts.apply_account_flags(list(sys.argv[1:] if argv is None else argv)))
@@ -227,6 +241,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--scan-max must be >= --scan-min")
     if args.start and args.max_attacks < 1:
         parser.error("--max-attacks must be >= 1")
+    if (args.source_x is None) != (args.source_y is None):
+        parser.error("--source-x and --source-y must be supplied together")
     return args
 
 

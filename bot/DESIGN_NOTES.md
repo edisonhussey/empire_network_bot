@@ -5,25 +5,25 @@
 | Module | Role |
 | --- | --- |
 | `bot/packets.py` | Protocol layer. `xt` framing plus **pure** parsers (`parse_xt_packet`, `extract_raw_packet`, `adi_level`, `sands_level_from_gaa_value`) and constants (`SAND_SERVER_HEADER`, `AREA_BARRON`, `MAP_CHUNK_SIZE`, `HBW_VALUE`). No I/O, no mutable state. |
-| `bot/attacks.py` | Every attack payload as a visible, writable `Attack` object, plus `ATTACK_REGISTRY`. This is where you change *what gets sent*. |
+| `bot/attacks.py` | Compatibility registry aggregating the mode-local attack configurations. |
 | `bot/tasks.py` | The task plan: which kingdom, which RBC levels, how many commanders, which attack. Commander numbers are handed out in task order. |
 | `bot/scheduler.py` | The scheduling engine only: `Task`, `TaskDefinition`, `Scheduler`, commander-number → LID mapping, kingdom rotation, greedy allocation. |
 | `bot/accounts.py` | Account registry driven by `credentials/*.env`. Dynamic `--<username>` flags, `Account` records, per-account paths. |
 | `bot/db.py` | Database connection and schema. `ensure_schema`, `init_database`, `table_counts`. |
 | `bot/cli.py` | Single operator entry point (`python -m bot.cli ...`). |
-| `bot/bot.py` | Core runner: attack sending, commander/target reservation, proxy control-file transport. |
-| `bot/proxy_bot.py` | Proxy driver (sands/storm/auto). |
-| `bot/sands_proxy.py` | Sands-mode analytics and control. |
+| `bot/bot.py` | Shared runner wrapper: accounts, commander/target reservation, safety checks and proxy control-file transport. |
+| `bot/proxy_bot.py` | Shared proxy driver and mode dispatcher. |
+| `bot/event/` | Mode-local controllers, attack/task configuration and short READMEs; start with `bot/event/README.md`. |
 | `bot/rbc_proxy_listener.py` | mitmproxy listener; drives packets inside the live session. |
 | `bot/populate_database_rbc.py` | Loads RBC targets into the DB from mitmproxy capture logs. |
-| `bot/storm_database.py` | `storm_target` table and storm-specific helpers. |
 | `bot/db_account.py` | Adds/repairs the `aid` column and composite keys. |
 | `bot/game_data/` | Troop/tool/kingdom catalogues and the in-house `Attack`/`side`/`wave` builders. |
 
 Removed / relocated:
 
 * `bot/sand_rbc_farm/` — the standalone state loop was dead code (no scheduler or
-  runner invoked it). Parsers → `bot/packets.py`, attacks → `bot/attacks.py`,
+  runner invoked it). Parsers → `bot/packets.py`, attacks → mode-local
+  `bot/event/*/config.py` files,
   state files deleted (Postgres owns state). Parser compatibility is covered by
   the fact that its helpers were already the only thing imported.
 * `bot/storm_scan_loop.py`, `bot/storm_proxy_control.py`, `bot/setup_storm_database.py`,
@@ -126,13 +126,13 @@ The original working notes in `bot/bot.py` are now implemented:
 | Base increase 3 hours + landed time | `target_next_epoch()` (`landed_at + 3 * 3600 + cooldown_extra_seconds()`) |
 | Strict 20 s + random 0–10 s between request intervals | `REQUEST_INTERVAL_RANGE`, `wait_for_request_slot()` |
 | ADI before CRA, shuffled | `ADI_TO_CRA_DELAY_RANGE`, `wait_between_adi_and_cra()` |
-| Level-61 only: 50 crossbowmen on the left flank | `bot/attacks.py::SANDS_LV61` |
+| Level-61 only: 50 crossbowmen on the left flank | `bot/event/sand/config.py::SANDS_LV61` |
 | Persist `last_attacked` and use it to gate re-attacks | `rbc.last_attacked`, `reserve_target_for_task()` |
 | Commanders persist between sessions | `commander_state` table keyed by `(aid, lord_id)` |
 
 ## How to add an attack
 
-1. Compose it in `bot/attacks.py` using the in-house builders:
+1. Compose it in the mode's `config.py` using the in-house builders:
 
    ```python
    SANDS_LV50 = Attack(
@@ -151,7 +151,7 @@ The current design already keeps the pieces separable for a future concurrent
 message system:
 
 * `bot/packets.py` is pure, so it is safe to import in any worker.
-* Attack/task data (`bot/attacks.py`, `bot/tasks.py`) is plain data with no
+* Mode-local attack/task configuration is plain data with no
   process affinity.
 * All cross-process state goes through Postgres, keyed by `aid`, and the
   existing locking uses `FOR UPDATE SKIP LOCKED` — which is exactly what lets

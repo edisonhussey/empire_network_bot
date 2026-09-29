@@ -1,8 +1,8 @@
-"""Task queue definitions — what the bot farms, with which commanders.
+"""Cross-mode task subscriptions and scheduler assembly.
 
-This is the editable "plan" layer. Each entry describes one repeatable job:
-which kingdom it runs in, which RBC levels it accepts, how many commanders it
-may consume and which :mod:`bot.attacks` payload it sends.
+Mode-specific task definitions live beside their attack configurations under
+``bot/event``. This module selects which tasks each account runs and assembles
+the shared scheduler plan.
 
 The scheduling *engine* (allocation, priority, kingdom rotation) lives in
 :mod:`bot.scheduler`; only the data lives here so it can be edited without
@@ -18,11 +18,13 @@ from __future__ import annotations
 from typing import Sequence
 
 from .accounts import normalize_account_name
-from .attacks import (
-    ATTACK_REGISTRY,
-    SANDS_35_61_DEATHLY_HORROR,
-    SANDS_LV36_60_MEAD,
-    SANDS_LV61,
+from .attacks import ATTACK_REGISTRY
+from .event.sand.config import (
+    SAND_KUNAI,
+    SAND_LV35_61_DEATHLY_HORROR,
+    SAND_LV36_60_MEAD_FLANK,
+    SAND_LV61_CROSSBOW,
+    SAND_LV61_CROSSBOW_20C,
 )
 from .game_data import KINGDOM, Attack
 from .scheduler import (
@@ -30,77 +32,8 @@ from .scheduler import (
     Task,
     TaskDefinition,
     allocate_task_definitions,
-    task_definition,
 )
-
-# ---------------------------------------------------------------------------
-# Task catalogue - each task is a standalone object
-# ---------------------------------------------------------------------------
-#
-# Write a task once, name it, and let accounts subscribe to it by name.
-# To vary one detail for one account, add another standalone task here rather
-# than mutating an existing one - then the object stays obvious and typed.
-
-SAND_LV61_CROSSBOW = task_definition(
-    "sand_rbc_level_61_crossbow",
-    kingdom=KINGDOM.sand,
-    target_level=61,
-    commanders=16,
-    priority=20,
-    attack=SANDS_LV61,
-    tags=("rbc", "sand"),
-    notes="50 crossbowmen on left flank. Uses live ADI/CRA/GAM/CAT state before sending.",
-)
-
-#: Same raid, more commanders and higher priority. A separate object so
-#: `sand_rbc_level_61_crossbow` stays exactly as it is for other accounts.
-SAND_LV61_CROSSBOW_20C = task_definition(
-    "sand_rbc_level_61_crossbow_20c",
-    kingdom=KINGDOM.sand,
-    target_level=61,
-    commanders=20,
-    priority=30,
-    attack=SANDS_LV61,
-    tags=("rbc", "sand"),
-    notes="As sand_rbc_level_61_crossbow but 20 commanders at higher priority.",
-)
-
-SAND_LV36_60_MEAD_FLANK = task_definition(
-    "sand_rbc_level_36_60_mead_flank",
-    kingdom=KINGDOM.sand,
-    target_levels=tuple(range(35, 61)),
-    commanders=19,
-    priority=10,
-    enabled=True,
-    attack=SANDS_LV36_60_MEAD,
-    tags=("rbc", "sand", "mead"),
-    notes="Mead flank attack for Sands RBC levels 36-60 using commanders 17-35.",
-)
-
-SAND_LV35_61_DEATHLY_HORROR = task_definition(
-    "sand_lv35_61_dh",
-    kingdom=KINGDOM.sand,
-    target_levels=tuple(range(35, 61)),
-    commanders=18,
-    priority=10,
-    enabled=True,
-    attack=SANDS_35_61_DEATHLY_HORROR,
-    tags=("rbc", "sand"),
-    notes="Deathly horror clear for Sands RBC levels 35-60, 30 + 5 ladders per side.",
-)
-
-# Uncomment once the Storm payload and source coordinates are confirmed.
-# `bot.attacks.STORM_DEMON_HORROR` holds the placeholder composition.
-# STORM_CUSTOM = task_definition(
-#     "storm_custom",
-#     kingdom=KINGDOM.storm,
-#     commanders=14,
-#     priority=20,
-#     enabled=True,
-#     attack=STORM_DEMON_HORROR,
-#     tags=("storm",),
-#     notes="Storm event target task.",
-# )
+from .subscriptions import ACCOUNT_TASKS, DEFAULT_TASKS, SUBSCRIPTIONS
 
 #: Every attack from :mod:`bot.attacks`, addressable by name, so a task can use
 #: one without importing it: ``attack=ATTACKS["sands_35_61_deathly_horror"]``
@@ -148,24 +81,6 @@ KINGDOM_TIMEOUT_SECONDS = 300.0
 #     needs no edits at all
 #   * an entry -> exactly those tasks, in that order
 
-#: The task list every account runs unless it subscribes to its own.
-DEFAULT_TASKS: tuple[TaskDefinition, ...] = (
-    SAND_LV61_CROSSBOW,
-    SAND_LV36_60_MEAD_FLANK,
-)
-
-#: Per-account subscriptions.
-ACCOUNT_TASKS: dict[str, tuple[TaskDefinition, ...]] = {
-    "ventrilo": (
-        SAND_LV61_CROSSBOW,
-        SAND_LV36_60_MEAD_FLANK,
-    ),
-    "pingpoko": (
-        SAND_LV35_61_DEATHLY_HORROR,
-    ),
-}
-
-
 # ---------------------------------------------------------------------------
 # Derived plans
 # ---------------------------------------------------------------------------
@@ -194,7 +109,7 @@ def task_definitions_for(account_name: str | None = None) -> tuple[TaskDefinitio
         if isinstance(entry, Attack):
             raise TypeError(
                 f"account {key or '<default>'!r} subscribes to an Attack, not a task. "
-                "Use the task object from this module - attack objects live in bot/attacks.py."
+                "Use a task object; attack objects live in bot/event/<mode>/config.py."
             )
         raise TypeError(
             f"account {key or '<default>'!r} subscribes to a {type(entry).__name__}; "
@@ -329,10 +244,12 @@ __all__ = [
     "DEFAULT_TASKS",
     "KINGDOM_ORDER",
     "KINGDOM_TIMEOUT_SECONDS",
+    "SAND_KUNAI",
     "SAND_LV35_61_DEATHLY_HORROR",
     "SAND_LV36_60_MEAD_FLANK",
     "SAND_LV61_CROSSBOW",
     "SAND_LV61_CROSSBOW_20C",
+    "SUBSCRIPTIONS",
     "TASKS",
     "TASKS_BY_NAME",
     "TASK_DEFINITIONS",

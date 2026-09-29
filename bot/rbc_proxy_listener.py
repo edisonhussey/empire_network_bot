@@ -4,7 +4,6 @@ import asyncio
 import base64
 import importlib
 import json
-import math
 import pprint
 import random
 import subprocess
@@ -28,26 +27,35 @@ REPO_ROOT = find_repo_root(Path(__file__).resolve())
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# Reload the bot modules before importing names from them.
+# Reload mode dependencies before importing names into this mitmdump entrypoint.
 #
 # mitmproxy re-executes this script whenever the file changes. Without this, the
 # re-executed imports would bind whatever the *cached* modules hold, so a change
 # to one of them would silently have no effect - or, when a new name is added,
 # fail the whole reload and leave the addon unloaded. Order matters: packets and
-# game data first, then attacks, then scheduler before tasks (tasks capture the
-# scheduler's classes), then the runner last.
+# game data first, then scheduler before any mode config that constructs task
+# objects. Attack aggregation and account subscriptions follow those configs;
+# controllers reload last. Keeping that order matters because reloading the
+# scheduler creates new TaskDefinition/Task classes.
 for _module_name in (
     "bot.packets",
     "bot.game_data",
     "bot.accounts",
     "bot.account_context",
     "bot.db",
+    "bot.event.berimond_kingdom.config",
+    "bot.event.berimond_kingdom.refill",
     "bot.berimond",
-    "bot.attacks",
     "bot.scheduler",
+    "bot.event.sand.config",
+    "bot.event.storm.config",
+    "bot.attacks",
+    "bot.account_subscription",
+    "bot.subscriptions",
     "bot.tasks",
     "bot.populate_database_rbc",
-    "bot.storm_database",
+    "bot.event.storm.database",
+    "bot.event.storm.controller",
 ):
     try:
         importlib.reload(importlib.import_module(_module_name))
@@ -57,11 +65,20 @@ for _module_name in (
 from bot import account_context
 from bot import accounts
 from bot import db as bot_db
+from bot.event.berimond_kingdom import config as berimond
 from bot import packets as packets_module
+from bot.event.storm import controller as storm_mode
+from bot.proxy_transport import (
+    berimond_attack_config,
+    command_allowed,
+    command_mode,
+    record_sands_adi_timeout_error,
+    sands_adi_timeout_age,
+)
 from bot import populate_database_rbc as rbc_db
 from bot.populate_database_rbc import adi_target_row, gaa_level_from_value, upsert_rbc_rows
 from bot import bot
-from bot.storm_database import (
+from bot.event.storm.database import (
     STORM_KID,
     cleanup_expired_storm_targets,
     ensure_storm_tables,
@@ -111,7 +128,6 @@ NO_TARGET_RETRY_RANGE = (55.0, 145.0)
 #: scans one 13x13 chunk; ``fnt_probe`` is the client's "find target" button.
 PROBE_KINDS = ("gaa_probe", "fnt_probe")
 TARGET_WEBSOCKET = OUTER_WEBSOCKET
-STORM_TARGET_LEVELS_DEFAULT = (60, 70, 80)
 STORM_SCAN_INTERVAL_DEFAULT = (4.0, 6.0)
 STORM_SCAN_RADIUS_DEFAULT = 52
 STORM_TARGET_FRESH_SECONDS_DEFAULT = 120
@@ -162,6 +178,7 @@ CONSOLE_LOG_PREFIXES = (
     "storm_adi_ok",
     "storm_adi_skip",
     "storm_cra_pending",
+    "proxy_adi_timeout",
     "proxy_cra_sent",
     "proxy_cra_ack",
     "proxy_cra_error",
@@ -421,6 +438,7 @@ _ADDON_OWNED_KEYS = frozenset(
         "last_cra",
         "last_gaa_probe",
         "last_kut",
+        "last_msk",
         "last_global_attack_sent_at",
         "attacks_sent",
         "cra_consecutive_errors",
@@ -431,6 +449,7 @@ _ADDON_OWNED_KEYS = frozenset(
         "berimond_stock",
         "berimond_refill",
         "berimond_refill_failed",
+        "berimond_time_skip",
         "berimond_returns",
         "sands_task_cursor",
     }
@@ -742,23 +761,8 @@ def create_fnt_packet(probe: dict) -> str:
     )
 
 
-def chunk_start(value: int) -> int:
-    return max(0, int(value) - (int(value) % MAP_CHUNK_SIZE))
-
-
 def storm_scan_chunks(center_x: int, center_y: int, radius: int) -> list[tuple[int, int]]:
-    offsets: list[tuple[int, int]] = []
-    steps = range(-int(radius), int(radius) + 1, MAP_CHUNK_SIZE)
-    for dx in steps:
-        for dy in steps:
-            if math.hypot(dx, dy) <= int(radius) + MAP_CHUNK_SIZE / 2:
-                offsets.append((dx, dy))
-    random.shuffle(offsets)
-    offsets.sort(key=lambda item: math.hypot(item[0], item[1]) + random.uniform(-22.0, 22.0))
-    return [
-        (chunk_start(center_x + dx - MAP_CHUNK_SIZE // 2), chunk_start(center_y + dy - MAP_CHUNK_SIZE // 2))
-        for dx, dy in offsets
-    ]
+    return storm_mode.scan_chunks(center_x, center_y, radius)
 
 
 def create_cra_packet(target: dict, lid: int) -> str:
@@ -773,28 +777,17 @@ def int_or_none(value) -> int | None:
 
 
 def active_storm_task(state: dict):
-    global task_scheduler
-    task_scheduler = importlib.reload(task_scheduler)
-    task_name = state.get("storm_task") or "storm_custom"
-    for task in task_scheduler.TASKS:
-        if task.name == task_name:
-            if not task.enabled:
-                raise RuntimeError(f"storm task disabled: {task_name}")
-            return task
-    raise RuntimeError(f"storm task not found: {task_name}")
+    task_name = state.get("storm_task") or "storm"
+    # Storm is an explicit mode-local task and intentionally is not part of an
+    # account's ordinary Sands subscription. Searching only scheduler.TASKS
+    # therefore made a successful Storm ADI response raise "task not found"
+    # before it could be converted into CRA. The controller owns the canonical
+    # mode-local fallback and also validates that the task is enabled.
+    return storm_mode.active_task(str(task_name))
 
 
 def storm_target_levels(state: dict, task) -> tuple[int, ...]:
-    raw_levels = state.get("target_levels")
-    if isinstance(raw_levels, list):
-        levels = tuple(sorted({int(value) for value in raw_levels}))
-        if levels:
-            return levels
-    if getattr(task, "target_levels", ()):
-        return tuple(int(level) for level in task.target_levels)
-    if task.target_level is not None:
-        return (int(task.target_level),)
-    return STORM_TARGET_LEVELS_DEFAULT
+    return storm_mode.target_levels(task, state.get("target_levels"))
 
 
 def storm_source(state: dict) -> tuple[int, int, int]:
@@ -903,30 +896,15 @@ def send_storm_gaa_scan(state: dict) -> bool:
 def build_task_attack_payload(target: dict, lid: int, task, state: dict) -> dict:
     sx, sy, hbw = storm_source(state)
     ptt = int(state.get("storm_ptt", 1) or 1)
-    return {
-        "SX": sx,
-        "SY": sy,
-        "TX": int(target["x"]),
-        "TY": int(target["y"]),
-        "KID": int(task.kingdom_id),
-        "LID": int(lid),
-        "WT": 0,
-        "HBW": hbw,
-        "BPC": 0,
-        "ATT": 0,
-        "AV": 0,
-        "LP": 0,
-        "FC": 0,
-        "PTT": ptt,
-        "SD": 0,
-        "ICA": 0,
-        "CD": 99,
-        "A": task.attack_payload(),
-        "BKS": [],
-        "AST": [-1, -1, -1],
-        "RW": [[-1, 0] for _ in range(8)],
-        "ASCT": 0,
-    }
+    return storm_mode.build_attack_payload(
+        target,
+        lid,
+        task,
+        source_x=sx,
+        source_y=sy,
+        hbw=hbw,
+        ptt=ptt,
+    )
 
 
 def troop_count_from_payload(payload: dict) -> int:
@@ -1120,6 +1098,41 @@ def adi_to_cra_text(pending: dict | None) -> str:
     return "adi_to_cra=n/a" if gap is None else f"adi_to_cra={gap:.1f}s"
 
 
+def expire_pending_sands_adi(state: dict, pending: dict, *, age: float) -> None:
+    """Release an unanswered Sands lookup and either continue or stop safely."""
+
+    target = target_from_pending(pending)
+    if target is not None and int(target.get("id", 0) or 0):
+        bot.restore_reserved_target(db(), target)
+    now = bot.now_epoch()
+    consecutive_errors, hourly_errors, should_stop = record_sands_adi_timeout_error(
+        state,
+        now=now,
+        tolerated_errors=MAX_CONSECUTIVE_CRA_ERRORS,
+    )
+    state["pending"] = None
+    bot.clear_proxy_pending_db(db())
+    target_text = f"{target['x']}:{target['y']}" if target is not None else "unknown"
+    task_name = pending.get("task_name") or (target or {}).get("task_name")
+    if should_stop:
+        reason = (
+            f"sands_adi_timeout consecutive={consecutive_errors} "
+            f"errors={len(hourly_errors)} window=3600s"
+        )
+        control_log(
+            f"proxy_adi_timeout target={target_text} task={task_name} age={age:.1f}s "
+            f"consecutive={consecutive_errors}/{MAX_CONSECUTIVE_CRA_ERRORS} action=stop"
+        )
+        stop_control(state, reason)
+        return
+    save_control(state)
+    pause_next_action(bot.REQUEST_INTERVAL_RANGE)
+    control_log(
+        f"proxy_adi_timeout target={target_text} task={task_name} age={age:.1f}s "
+        f"consecutive={consecutive_errors}/{MAX_CONSECUTIVE_CRA_ERRORS} action=continue"
+    )
+
+
 def queue_pending_cra(state: dict, target: dict, lid: int, task=None) -> None:
     due_at = time.time() + random.uniform(*bot.ADI_TO_CRA_DELAY_RANGE)
     # conn is required here: without it the source castle falls back to the
@@ -1182,7 +1195,15 @@ def queue_pending_storm_cra(state: dict, target: dict, lid: int, task) -> None:
 def queue_verified_storm_cra(state: dict, pending: dict, target: dict, lid: int, task) -> None:
     randomizer = task_scheduler.Randomizer()
     due_at = time.time() + max(5.0, float(randomizer.attack_send_waiting_time()))
-    payload = build_task_attack_payload(target, lid, task, state)
+    # The short-lived controller snapshots the current mode config into the ADI
+    # command. Preserve that exact army after verification so a long-running
+    # mitmdump process cannot replace it with an older imported Storm config.
+    queued_payload = pending.get("attack_payload")
+    if isinstance(queued_payload, dict):
+        payload = dict(queued_payload)
+        payload["LID"] = int(lid)
+    else:
+        payload = build_task_attack_payload(target, lid, task, state)
     pending.update(
         {
             "kind": "cra",
@@ -1267,7 +1288,7 @@ def process_pending_storm_adi_payload(payload: dict) -> bool:
         return False
 
     task_state = dict(state)
-    task_state["storm_task"] = pending.get("task_name") or state.get("storm_task") or "storm_custom"
+    task_state["storm_task"] = pending.get("task_name") or state.get("storm_task") or "storm"
     task = active_storm_task(task_state)
     allowed_levels = storm_target_levels(task_state, task)
     if int(target.get("target_level") or -1) not in allowed_levels:
@@ -1368,29 +1389,18 @@ def play_berimond_error_sound(state: dict, reason: str) -> None:
         control_log(f"berimond_alert_sound_failed reason={reason} error={exc!r}")
 
 
-def berimond_target(state: dict) -> dict:
-    target = state.get("berimond_target")
-    if isinstance(target, dict):
-        return {
-            "id": int(target.get("id", 0) or 0),
-            "kingdom_id": bot.BERIMOND_KID,
-            "x": int(target["x"]),
-            "y": int(target["y"]),
-            "target_level": target.get("target_level"),
-            "task_name": target.get("task_name") or "berimond_fixed",
-        }
-    return {
-        "id": 0,
-        "kingdom_id": bot.BERIMOND_KID,
-        "x": bot.BERIMOND_TARGET_X,
-        "y": bot.BERIMOND_TARGET_Y,
-        "target_level": None,
-        "task_name": "berimond_fixed",
-    }
-
-
-def build_berimond_attack_payload(state: dict, target: dict, lid: int) -> dict:
+def build_berimond_attack_payload(
+    state: dict,
+    target: dict,
+    lid: int,
+    command: dict | None = None,
+) -> dict:
     sx, sy, hbw = berimond_source(state)
+    attack = berimond_attack_config(command, state)
+    if attack is None:
+        # Compatibility only for an old control file. New standalone commands
+        # always carry their controller's current Berimond config snapshot.
+        attack = berimond.ATTACK.to_payload()
     return {
         "SX": sx,
         "SY": sy,
@@ -1409,7 +1419,7 @@ def build_berimond_attack_payload(state: dict, target: dict, lid: int) -> dict:
         "SD": 0,
         "ICA": 0,
         "CD": 99,
-        "A": bot.berimond.ATTACK.to_payload(),
+        "A": attack,
         "BKS": [],
         "AST": [-1, -1, -1],
         "RW": [[-1, 0] for _ in range(8)],
@@ -1421,7 +1431,7 @@ def queue_verified_berimond_cra(state: dict, pending: dict, target: dict, lid: i
     randomizer = task_scheduler.Randomizer()
     wait = float(randomizer.berimond_adi_to_cra_waiting_time())
     due_at = max(time.time() + wait, float(pending.get("global_attack_due_at", 0.0) or 0.0))
-    payload = build_berimond_attack_payload(state, target, lid)
+    payload = build_berimond_attack_payload(state, target, lid, pending)
     pending.update(
         {
             "kind": "cra",
@@ -1461,8 +1471,13 @@ def process_pending_berimond_aci_error(status) -> bool:
     state["pending"] = None
     bot.clear_proxy_pending_db(db())
     stop_control(state, f"berimond_aci_status_{status}", clear_awaiting=True)
-    play_berimond_error_sound(state, f"aci_status_{status}")
-    control_log(f"berimond_aci_skip status={status} lid={lid} action=stopped")
+    target_defeated = str(status) == "203"
+    if not target_defeated:
+        play_berimond_error_sound(state, f"aci_status_{status}")
+    control_log(
+        f"berimond_aci_skip status={status} lid={lid} "
+        f"action={'target_defeated' if target_defeated else 'stopped'}"
+    )
     return True
 
 
@@ -1957,53 +1972,6 @@ def handle_storm_mode(state: dict) -> bool:
     return True
 
 
-def next_berimond_global_due(state: dict) -> float:
-    cooldown = float(state.get("berimond_global_attack_cooldown_seconds", bot.BERIMOND_GLOBAL_ATTACK_COOLDOWN_SECONDS) or 0.0)
-    last_sent = float(state.get("last_global_attack_sent_at", 0.0) or 0.0)
-    if cooldown <= 0.0 or last_sent <= 0.0:
-        return time.time()
-    randomizer = task_scheduler.Randomizer()
-    return last_sent + cooldown + float(randomizer.berimond_attack_cooldown_jitter())
-
-
-def handle_berimond_mode(state: dict) -> bool:
-    target = berimond_target(state)
-    allowed_lids = set(berimond_allowed_lids(state))
-    lid = bot.choose_commander(db(), allowed_lids, allowed_lids, allowed_lids)
-    if lid is None:
-        next_wait = next_allowed_commander_wait(allowed_lids, allowed_lids)
-        if next_wait is None:
-            pause_next_action((4.0, 8.0))
-        else:
-            lower = max(1.0, min(float(next_wait) - 3.0, 60.0))
-            upper = max(lower + 1.0, min(float(next_wait), 90.0))
-            pause_next_action((lower, upper))
-        control_log(f"berimond_idle reason=no_available_lid lids={sorted(allowed_lids)} next_wait={next_wait}")
-        return False
-
-    global_due = next_berimond_global_due(state)
-    lead = float(state.get("berimond_attack_interval_target_seconds", 3.0) or 3.0)
-    aci_due = max(time.time(), global_due - max(0.5, lead))
-    pending = {
-        "kind": "aci",
-        "target_kind": "berimond_fixed",
-        "target": target,
-        "task_name": "berimond_fixed",
-        "lid": int(lid),
-        "due_at": aci_due,
-        "sent_at": None,
-        "global_attack_due_at": global_due,
-    }
-    state["pending"] = pending
-    save_control(state)
-    bot.persist_proxy_pending(db(), pending)
-    control_log(
-        f"berimond_aci_queued target={target['x']}:{target['y']} kid={target['kingdom_id']} "
-        f"lid={lid} aci_due_in={aci_due - time.time():.2f}s global_cra_due_in={global_due - time.time():.2f}s"
-    )
-    return True
-
-
 async def proxy_control_loop() -> None:
     global next_proxy_action_epoch
 
@@ -2011,14 +1979,30 @@ async def proxy_control_loop() -> None:
         try:
             state = hydrate_control_awaiting(load_control())
             pending = state.get("pending")
+            if isinstance(pending, dict) and not command_allowed(state, pending):
+                # Pending is a transport command, not a global queue.  A command
+                # left by another mode must never cross the ownership boundary:
+                # this was how a stale kid=1 CRA fired during a Berimond run.
+                rejected_mode = command_mode(pending)
+                state["pending"] = None
+                save_control(state)
+                bot.clear_proxy_pending_db(db())
+                control_log(
+                    f"proxy_command_rejected reason=mode_mismatch active_mode={state.get('mode')!r} "
+                    f"command_mode={rejected_mode!r} kind={pending.get('kind')!r} "
+                    f"target_kind={pending.get('target_kind')!r}"
+                )
+                await asyncio.sleep(CONTROL_POLL_SECONDS)
+                continue
             probe_pending = isinstance(pending, dict) and pending.get("kind") in PROBE_KINDS
             # A refill transfer is a reply to a rejection, not an attack: it must not
             # sit behind the 20-30s pacing pause the rejection just set, or the
             # supervisor times out (25s) on a request the addon simply had not looked
             # at yet.
             transfer_pending = isinstance(pending, dict) and pending.get("kind") == "kut_transfer"
+            time_skip_pending = isinstance(pending, dict) and pending.get("kind") == "msk_skip"
             scan_due = storm_scan_due(state)
-            if not state.get("running") and not probe_pending and not transfer_pending:
+            if not state.get("running") and not probe_pending and not transfer_pending and not time_skip_pending:
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
             if int(state.get("max_attacks", 0) or 0) and int(state.get("attacks_sent", 0) or 0) >= int(state.get("max_attacks", 0) or 0):
@@ -2028,12 +2012,14 @@ async def proxy_control_loop() -> None:
             # Pacing is handled by the request-interval pause, which is proven
             # accepted: 56 of ventrilo's recorded adi->cra handshakes completed
             # 21-30s apart and every one was accepted. Do not "speed it up".
-            if not probe_pending and not transfer_pending and not scan_due and time.time() < next_proxy_action_epoch:
+            if not probe_pending and not transfer_pending and not time_skip_pending and not scan_due and time.time() < next_proxy_action_epoch:
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
             if not is_open_websocket(active_flow):
                 if probe_pending:
                     control_log("gaa_probe_wait reason=no_active_websocket")
+                elif time_skip_pending:
+                    control_log("msk_skip_wait reason=no_active_websocket")
                 else:
                     control_log("proxy_wait reason=no_active_websocket")
                     pause_next_action((15.0, 35.0))
@@ -2063,6 +2049,7 @@ async def proxy_control_loop() -> None:
                 state["pending"] = None
                 state["last_gaa_probe"] = {
                     "kind": probe_kind,
+                    "command_id": pending.get("command_id"),
                     "kid": kid,
                     "ax1": ax1,
                     "ay1": ay1,
@@ -2098,6 +2085,7 @@ async def proxy_control_loop() -> None:
                 state["pending"] = None
                 state["last_kut"] = {
                     "sent_at": sent_at,
+                    "command_id": pending.get("command_id"),
                     "scid": int(pending["scid"]),
                     "skid": int(pending.get("skid", 0)),
                     "tkid": int(pending.get("tkid", bot.BERIMOND_KID)),
@@ -2115,6 +2103,33 @@ async def proxy_control_loop() -> None:
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
 
+            if isinstance(pending, dict) and pending.get("kind") == "msk_skip":
+                if not state.get("running") or state.get("mode") != "berimond":
+                    await asyncio.sleep(CONTROL_POLL_SECONDS)
+                    continue
+                packet = create_msk_packet(pending)
+                inject_packet(packet)
+                sent_at = bot.now_epoch()
+                state["pending"] = None
+                state["last_msk"] = {
+                    "sent_at": sent_at,
+                    "command_id": pending.get("command_id"),
+                    "mst": str(pending.get("mst", "MS5")),
+                    "kid": int(pending.get("kid", bot.BERIMOND_KID)),
+                    "tt": int(pending.get("tt", 1)),
+                    "packet": packet,
+                }
+                save_control(state)
+                bot.clear_proxy_pending_db(db())
+                control_log(
+                    f"msk_sent mst={state['last_msk']['mst']} kid={state['last_msk']['kid']} "
+                    f"tt={state['last_msk']['tt']}"
+                )
+                # The captured client sent its second MS5 0.7s after the first;
+                # do not apply attack pacing to this finite controller sequence.
+                await asyncio.sleep(CONTROL_POLL_SECONDS)
+                continue
+
             if isinstance(pending, dict) and pending.get("kind") == "adi" and pending.get("target_kind") == "storm_target":
                 due_at = float(pending.get("due_at", 0.0) or 0.0)
                 if time.time() < due_at:
@@ -2127,6 +2142,23 @@ async def proxy_control_loop() -> None:
                     save_control(state)
                     bot.clear_proxy_pending_db(db())
                     continue
+                sent_at = float(pending.get("sent_at", 0.0) or 0.0)
+                if sent_at:
+                    # ADI is a request/response handshake. Never transmit the
+                    # same request again while its response is outstanding: a
+                    # handler error used to resend it every pacing interval.
+                    if time.time() - sent_at > bot.PROXY_PENDING_TIMEOUT:
+                        skip_pending_storm_adi(
+                            state,
+                            pending,
+                            target,
+                            lid,
+                            "storm_adi_response_timeout",
+                            status="adi_timeout",
+                            stop=True,
+                        )
+                    await asyncio.sleep(CONTROL_POLL_SECONDS)
+                    continue
                 sx, sy, _ = storm_source(state)
                 inject_packet(create_adi_packet(target, source=(sx, sy), kingdom_id=STORM_KID))
                 pending["sent_at"] = time.time()
@@ -2138,6 +2170,21 @@ async def proxy_control_loop() -> None:
                     f"level={target.get('target_level')} lid={lid}"
                 )
                 pause_next_action(bot.REQUEST_INTERVAL_RANGE)
+                await asyncio.sleep(CONTROL_POLL_SECONDS)
+                continue
+
+            if isinstance(pending, dict) and pending.get("kind") == "adi":
+                # Sands ADI is also a request/response handshake. Previously a
+                # dropped reply left `pending` occupied forever, so no later
+                # target could be selected even though the process and socket
+                # were healthy. Tolerate two consecutive misses and stop on the
+                # third, matching the existing CRA rejection budget.
+                timeout_age = sands_adi_timeout_age(
+                    pending,
+                    timeout_seconds=bot.PROXY_PENDING_TIMEOUT,
+                )
+                if timeout_age is not None:
+                    expire_pending_sands_adi(state, pending, age=timeout_age)
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
 
@@ -2185,8 +2232,16 @@ async def proxy_control_loop() -> None:
                 if state.get("mode") == "berimond":
                     global_due = float(pending.get("global_attack_due_at", 0.0) or 0.0)
                     if global_due <= 0.0:
-                        global_due = next_berimond_global_due(state)
-                        pending["global_attack_due_at"] = global_due
+                        skip_pending_cra(
+                            state,
+                            pending,
+                            target_from_pending(pending),
+                            pending.get("lid"),
+                            "missing_global_due",
+                            "controller command is incomplete",
+                        )
+                        await asyncio.sleep(CONTROL_POLL_SECONDS)
+                        continue
                     due_at = max(due_at, global_due)
                     if due_at != float(pending.get("due_at", 0.0) or 0.0):
                         pending["due_at"] = due_at
@@ -2222,7 +2277,7 @@ async def proxy_control_loop() -> None:
                 attack_payload = pending.get("attack_payload")
                 if not isinstance(attack_payload, dict):
                     if pending.get("target_kind") == "berimond_fixed":
-                        attack_payload = build_berimond_attack_payload(state, target, int(lid))
+                        attack_payload = build_berimond_attack_payload(state, target, int(lid), pending)
                     else:
                         # Never invent an army. A pending that lost its payload
                         # (DB hydration) has to be rebuilt from its own task, or
@@ -2284,7 +2339,7 @@ async def proxy_control_loop() -> None:
                 if violations:
                     # Too many tools per wave for the troops carrying them: the
                     # server answers status 5, "the action could not be
-                    # performed". Fix the attack in bot/attacks.py.
+                    # performed". Fix the attack in the mode's config.py.
                     skip_pending_cra(
                         state,
                         pending,
@@ -2347,11 +2402,6 @@ async def proxy_control_loop() -> None:
 
             if state.get("mode") == "storm":
                 handle_storm_mode(state)
-                await asyncio.sleep(CONTROL_POLL_SECONDS)
-                continue
-
-            if state.get("mode") == "berimond":
-                handle_berimond_mode(state)
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
 
@@ -2590,6 +2640,29 @@ def create_kut_packet(transfer: dict) -> str:
     )
 
 
+def create_msk_packet(command: dict) -> str:
+    """Use one captured kingdom travel time-skip item.
+
+    The manual sequence after KUT is exactly
+    ``{"MST":"MS5","KID":"10","TT":"1"}``: the first MS5 cuts a
+    7200-second reinforcement march to roughly 3600 seconds and the second
+    completes it. Values stay command-driven so the proxy remains transport
+    only.
+    """
+
+    payload = {
+        "MST": str(command.get("mst", "MS5")),
+        "KID": str(int(command.get("kid", bot.BERIMOND_KID))),
+        "TT": str(int(command.get("tt", 1))),
+    }
+    return xt_packet(
+        "msk",
+        payload,
+        request_id=int(command.get("request_id", 1) or 1),
+        server_header=command.get("server_header"),
+    )
+
+
 def process_live_kut_response(decoded: str) -> bool:
     """Record the travel time of a ``kut`` transfer we just asked for.
 
@@ -2611,6 +2684,7 @@ def process_live_kut_response(decoded: str) -> bool:
         last = state.get("last_kut") if isinstance(state.get("last_kut"), dict) else {}
         state["berimond_refill_failed"] = {
             "at": bot.now_epoch(),
+            "command_id": last.get("command_id"),
             "status": str(status),
             "requested": last.get("units"),
             "scid": last.get("scid"),
@@ -2647,7 +2721,12 @@ def process_live_kut_response(decoded: str) -> bool:
         recorded.append({"kingdom_id": kingdom_id, "seconds": seconds, "inventory": inventory})
     if not recorded:
         return False
-    state["berimond_refill"] = {"at": bot.now_epoch(), "jobs": recorded}
+    last = state.get("last_kut") if isinstance(state.get("last_kut"), dict) else {}
+    state["berimond_refill"] = {
+        "at": bot.now_epoch(),
+        "command_id": last.get("command_id"),
+        "jobs": recorded,
+    }
     save_control(state)
     control_log(
         "berimond_refill_queued "
@@ -2656,6 +2735,47 @@ def process_live_kut_response(decoded: str) -> bool:
             + " ".join(f"u{unit_id}={count}" for unit_id, count in sorted(item["inventory"].items()))
             for item in recorded
         )
+    )
+    return True
+
+
+def process_live_msk_response(decoded: str) -> bool:
+    """Record whether one MS5 shortened or completed the KUT march."""
+
+    parsed = parse_xt_packet(decoded.strip())
+    if not parsed or parsed.get("command") != "msk":
+        return False
+    state = load_control()
+    last = state.get("last_msk") if isinstance(state.get("last_msk"), dict) else {}
+    status = parsed.get("status")
+    remaining = 0
+    complete = False
+    if status in (None, "0", 0):
+        payload = parsed.get("payload")
+        kpi = payload.get("kpi") if isinstance(payload, dict) else None
+        jobs = [job for job in ((kpi or {}).get("UT") or []) if isinstance(job, dict)]
+        relevant = []
+        for job in jobs:
+            try:
+                if int(job.get("KID")) == int(last.get("kid", bot.BERIMOND_KID)):
+                    relevant.append(job)
+            except (TypeError, ValueError):
+                continue
+        remaining = max((int(float(job.get("RS", 0) or 0)) for job in relevant), default=0)
+        complete = not relevant or remaining <= 0
+    state["berimond_time_skip"] = {
+        "at": bot.now_epoch(),
+        "command_id": last.get("command_id"),
+        "status": str(status if status is not None else 0),
+        "remaining_seconds": remaining,
+        "complete": complete,
+        "mst": last.get("mst"),
+        "kid": last.get("kid"),
+    }
+    save_control(state)
+    control_log(
+        f"berimond_time_skip status={status} mst={last.get('mst')} "
+        f"remaining={remaining}s complete={complete}"
     )
     return True
 
@@ -2682,10 +2802,20 @@ def record_berimond_stock(payload, *, source: str, state: dict | None = None) ->
     inventory = inventory_from_payload(container if container is not None else {"gui": payload})
     if not inventory:
         return {}
+    gui = container.get("gui") if isinstance(container, dict) else payload
+    transit: dict[int, int] = {}
+    if isinstance(gui, dict):
+        for pair in gui.get("TU") or []:
+            if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                try:
+                    transit[int(pair[0])] = int(pair[1])
+                except (TypeError, ValueError):
+                    continue
     entry = {
         "at": bot.now_epoch(),
         "source": source,
         "inventory": {str(unit_id): count for unit_id, count in inventory.items()},
+        "transit": {str(unit_id): count for unit_id, count in transit.items()},
     }
     if state is not None:
         state["berimond_stock"] = entry
@@ -2695,6 +2825,7 @@ def record_berimond_stock(payload, *, source: str, state: dict | None = None) ->
     control_log(
         f"berimond_stock source={source} "
         + " ".join(f"u{unit_id}={count}" for unit_id, count in sorted(inventory.items()))
+        + (" transit=" + ",".join(f"u{unit_id}:{count}" for unit_id, count in sorted(transit.items())) if transit else "")
     )
     return inventory
 
@@ -2730,6 +2861,8 @@ def process_live_message(decoded: str) -> None:
     if process_live_gui_stock(decoded):
         return
     if process_live_kut_response(decoded):
+        return
+    if process_live_msk_response(decoded):
         return
     parsed = parse_xt_packet(decoded.strip())
     if parsed and parsed.get("command") == "aci" and parsed.get("status") not in {None, "0", 0}:
