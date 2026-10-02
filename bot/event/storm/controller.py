@@ -195,6 +195,15 @@ def resolve_source(args: argparse.Namespace) -> tuple[int, int, str]:
 
 def prepare_transport(args: argparse.Namespace) -> None:
     core = _core()
+    from bot.utility.recruit.config import plan_for_account
+
+    recruit_plan = plan_for_account(core.current_aid())
+    recruit_override = getattr(args, "recruit", None)
+    recruit_enabled = (
+        recruit_override == "true"
+        if recruit_override is not None
+        else bool(recruit_plan and recruit_plan.enabled_by_default)
+    )
     try:
         with connect(read_connection_config()) as conn:
             core.ensure_bot_tables(conn)
@@ -213,6 +222,8 @@ def prepare_transport(args: argparse.Namespace) -> None:
             "control_file": str(core.CONTROL_FILE),
             "pending": None,
             "last_cra": None,
+            "recruit_enabled": recruit_enabled,
+            "recruitment": None,
             # Rejections belong to this Storm run. A previous bad configuration
             # (for example an invalid troop id) must not poison the next start.
             "cra_consecutive_errors": 0,

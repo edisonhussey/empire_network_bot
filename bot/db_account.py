@@ -93,7 +93,17 @@ def _ensure_primary_key(cur: psycopg.Cursor, table: str, name: str, definition: 
 def ensure_account_columns(conn: psycopg.Connection, aid: str = DEFAULT_BACKFILL_AID) -> None:
     aid = str(aid)
     with conn.cursor() as cur:
-        for table in ("attack", "rbc", "storm_target", "commander_state", "bot_runtime_state", "processed_log_file"):
+        for table in (
+            "attack",
+            "rbc",
+            "storm_target",
+            "commander_state",
+            "bot_runtime_state",
+            "account_castle",
+            "account_navigation",
+            "recruit_castle_state",
+            "processed_log_file",
+        ):
             if not _table_exists(cur, table):
                 continue
             _ensure_column(cur, table, "aid", "TEXT")

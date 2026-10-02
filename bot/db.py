@@ -36,6 +36,9 @@ MANAGED_TABLES = (
     "commander_state",
     "bot_runtime_state",
     "storm_target",
+    "account_castle",
+    "account_navigation",
+    "recruit_castle_state",
     "processed_log_file",
 )
 
@@ -150,6 +153,7 @@ def ensure_schema(conn: psycopg.Connection, aid: str | None = None) -> None:
     """
 
     from .storm_database import ensure_storm_tables
+    from .utility.recruit.database import ensure_recruit_tables
 
     account = str(aid or DEFAULT_BACKFILL_AID)
 
@@ -163,6 +167,7 @@ def ensure_schema(conn: psycopg.Connection, aid: str | None = None) -> None:
 
     # storm_target lives with the storm code; keeps its extra indexes together.
     ensure_storm_tables(conn)
+    ensure_recruit_tables(conn)
 
     with conn.cursor() as cur:
         for statement in (*_RBC_EXTRA, *_ATTACK_EXTRA):

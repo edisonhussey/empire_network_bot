@@ -1568,6 +1568,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         log(f"REFUSING TO START account={account.username} reason={mismatch}")
         return 2
 
+    from bot.utility.recruit.config import plan_for_account
+
+    recruit_plan = plan_for_account(account.aid)
+    recruit_enabled = (
+        args.recruit == "true"
+        if args.recruit is not None
+        else bool(recruit_plan and recruit_plan.enabled_by_default)
+    )
+
     # Claim ownership before FNT. The addon survives its former controller and
     # may otherwise still see running=true/mode=sands plus an hours-old ADI.
     # Stop the file first so it cannot hydrate or send that command, clear the
@@ -1736,6 +1745,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             max_attacks=args.max_attacks,
             global_cooldown=args.global_cooldown,
             max_commander_out=args.max_commander_out,
+            recruit_enabled=recruit_enabled,
             reset=reset,
         )
 
@@ -1748,6 +1758,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             or state.get("mode") != "berimond"
             or isinstance(state.get("pending"), dict)
             or isinstance(state.get("last_cra"), dict)
+            or isinstance(state.get("recruitment"), dict)
         ):
             return False
         allowed = set(int(lid) for lid in lids)
@@ -1788,6 +1799,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 and latest.get("mode") == "berimond"
                 and latest.get("pending") is None
                 and latest.get("last_cra") is None
+                and not isinstance(latest.get("recruitment"), dict)
             ):
                 latest["pending"] = command
 
@@ -2539,6 +2551,7 @@ def write_intent(
     max_attacks: int,
     global_cooldown: float,
     max_commander_out: int,
+    recruit_enabled: bool = False,
     reset: bool = False,
 ) -> None:
     """Publish (or refresh) the intent the addon acts on.
@@ -2579,6 +2592,9 @@ def write_intent(
         # the background after this Python process exits.
         state["transport_only"] = True
         state["mode"] = "berimond"
+        state["recruit_enabled"] = bool(recruit_enabled)
+        if reset:
+            state["recruitment"] = None
         state["stop_reason"] = None
         state["stopped_at"] = None
         state["max_attacks"] = int(max_attacks)
@@ -2699,6 +2715,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run.add_argument("--hbw", type=int, default=DEFAULT_HBW)
     run.add_argument("--ptt", type=int, default=berimond.PTT)
     run.add_argument("--global-cooldown", type=float, default=berimond.GLOBAL_ATTACK_COOLDOWN_SECONDS)
+    run.add_argument(
+        "--recruit",
+        choices=("true", "false"),
+        default=None,
+        help="override the account recruitment default for this run",
+    )
     run.add_argument("--max-commander-out", type=int, default=berimond.MAX_COMMANDER_OUT_SECONDS)
     run.add_argument("--find", type=int, default=3, help="find-target presses when hunting for a live target")
     run.add_argument("--probe-every", type=int, default=3, help="attacks between liveness probes")

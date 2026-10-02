@@ -44,6 +44,7 @@ from bot import db as bot_db
 from bot import tasks as task_defs
 from bot.db_account import DEFAULT_BACKFILL_AID, ensure_account_columns
 from bot import attacks, packets
+from bot.pacing import DEFAULT_ATTACK_PACING
 
 #: Castle coordinates, resolved at login by ``connect_sands``. Fall back to the
 #: protocol defaults so payload builders always have a usable value.
@@ -97,7 +98,9 @@ SANDS_KID = 1
 TARGET_LEVEL = 61
 FIRST_13_COMMANDER_LIDS = (0, 2, 3, 6, 7, 8, 9, 10, 11, 16, 17, 18, 20, 21, 22)
 REQUEST_INTERVAL_RANGE = (20.0, 30.0)
-ADI_TO_CRA_DELAY_RANGE = (5.5, 9.0)
+# Successful Sands timing is owned by the shared pacing policy.  Keep this
+# compatibility name for the direct-socket runner and older imports.
+ADI_TO_CRA_DELAY_RANGE = DEFAULT_ATTACK_PACING.sands_adi_to_cra_range
 IDLE_SLEEP_RANGE = (55.0, 145.0)
 TARGET_RESERVE_SECONDS = 12 * 60
 TARGET_NO_LID_RETRY_RANGE = (18 * 60.0, 44 * 60.0)
@@ -1528,16 +1531,27 @@ def build_berimond_attack_payload(target: dict[str, Any], lid: int, args: argpar
 
 def wait_for_proxy_ready(timeout: float = 3.0) -> None:
     deadline = time.time() + timeout
-    while time.time() < deadline:
+    while True:
         ensure_proxy_driver_running()
         state = load_proxy_control()
+        # Recruitment is a scheduler-owned transaction, not a transport jam.
+        # A producer that becomes ready while it is active waits for ownership
+        # to return instead of timing out and publishing an overlapping attack.
+        if isinstance(state.get("recruitment"), dict):
+            time.sleep(0.25)
+            continue
         if state.get("pending") is None:
             return
+        if time.time() >= deadline:
+            break
         time.sleep(0.25)
     ensure_proxy_driver_running()
     state = load_proxy_control()
-    if state.get("pending") is not None:
-        raise RuntimeError(f"proxy_has_pending pending={state.get('pending')!r}")
+    if state.get("pending") is not None or isinstance(state.get("recruitment"), dict):
+        raise RuntimeError(
+            f"proxy_transport_busy pending={state.get('pending')!r} "
+            f"recruitment={state.get('recruitment')!r}"
+        )
 
 
 def prepare_proxy_transport(args: argparse.Namespace) -> None:
@@ -1545,8 +1559,17 @@ def prepare_proxy_transport(args: argparse.Namespace) -> None:
 
 
 def prepare_berimond_proxy_transport(args: argparse.Namespace) -> None:
+    from bot.utility.recruit.config import plan_for_account
+
     target = build_berimond_target(args)
     lids = berimond_commander_lids(args.commander_count)
+    recruit_plan = plan_for_account(current_aid())
+    recruit_override = getattr(args, "recruit", None)
+    recruit_enabled = (
+        recruit_override == "true"
+        if recruit_override is not None
+        else bool(recruit_plan and recruit_plan.enabled_by_default)
+    )
     try:
         with connect(read_connection_config()) as conn:
             ensure_bot_tables(conn)
@@ -1566,6 +1589,8 @@ def prepare_berimond_proxy_transport(args: argparse.Namespace) -> None:
             "control_file": str(CONTROL_FILE),
             "pending": None,
             "last_cra": None,
+            "recruit_enabled": recruit_enabled,
+            "recruitment": None,
             "attacks_sent": 0,
             "max_attacks": int(args.max_attacks),
             "berimond_target": target,
@@ -1728,6 +1753,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--scan-radius", type=int, default=STORM_SCAN_RADIUS)
     parser.add_argument("--target-fresh-seconds", type=int, default=STORM_TARGET_FRESH_SECONDS)
     parser.add_argument("--use-randomizer-gaa-wait", action="store_true")
+    parser.add_argument(
+        "--recruit",
+        choices=("true", "false"),
+        default=None,
+        help="override the account recruitment default for this run",
+    )
     parser.add_argument("--target-x", type=int, default=BERIMOND_TARGET_X)
     parser.add_argument("--target-y", type=int, default=BERIMOND_TARGET_Y)
     parser.add_argument("--commander-count", type=int, default=BERIMOND_COMMANDER_COUNT)

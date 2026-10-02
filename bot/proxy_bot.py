@@ -125,6 +125,7 @@ def build_core_args(args: argparse.Namespace) -> SimpleNamespace:
         scan_radius=int(args.scan_radius),
         target_fresh_seconds=int(args.target_fresh_seconds),
         use_randomizer_gaa_wait=bool(args.use_randomizer_gaa_wait),
+        recruit=args.recruit,
     )
 
 
@@ -177,7 +178,16 @@ def start(args: argparse.Namespace) -> int:
         # addon does the sending, so this must be installed before dispatch.
         core.install_proxy_stop_guards("proxy_cli_exit")
         try:
-            return sands_proxy.main(["--account-name", args.account_name, "--start", "--max-attacks", str(int(args.max_attacks))])
+            sands_args = [
+                "--account-name",
+                args.account_name,
+                "--start",
+                "--max-attacks",
+                str(int(args.max_attacks)),
+            ]
+            if args.recruit is not None:
+                sands_args.extend(["--recruit", args.recruit])
+            return sands_proxy.main(sands_args)
         except KeyboardInterrupt:
             core.stop_proxy_everywhere("keyboard_interrupt")
             print("\nproxy bot stopped from Ctrl+C", flush=True)
@@ -235,6 +245,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--scan-radius", type=int, default=storm.SCAN_RADIUS)
     parser.add_argument("--target-fresh-seconds", type=int, default=storm.TARGET_FRESH_SECONDS)
     parser.add_argument("--use-randomizer-gaa-wait", action="store_true")
+    parser.add_argument(
+        "--recruit",
+        choices=("true", "false"),
+        default=None,
+        help="override the account recruitment default for this run",
+    )
     parser.add_argument("--log-dir", type=Path, default=None)
     args = parser.parse_args(accounts.apply_account_flags(list(sys.argv[1:] if argv is None else argv)))
     if args.scan_max < args.scan_min:

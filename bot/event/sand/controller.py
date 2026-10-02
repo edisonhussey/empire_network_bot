@@ -25,6 +25,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from bot import bot
 from bot.test_psql_connection import connect, read_connection_config
+from bot.utility.recruit.config import plan_for_account
 
 
 CONTROL_FILE = REPO_ROOT / "bot" / "proxy_control.json"
@@ -289,6 +290,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     group.add_argument("--end", action="store_true", help="stop the bot loop while leaving mitmproxy logged in")
     group.add_argument("--status", action="store_true", help="print current proxy control state")
     parser.add_argument("--max-attacks", type=int, default=1, help="stop after this many CRA packets are sent")
+    parser.add_argument(
+        "--recruit",
+        choices=("true", "false"),
+        default=None,
+        help="override the account recruitment default for this run",
+    )
     return parser.parse_args(argv)
 
 
@@ -304,6 +311,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nproxy bot stopped\n{stop_summary(state)}\nmitmproxy session can stay open ({CONTROL_FILE})")
         return 0
 
+    recruit_plan = plan_for_account(context.aid)
+    recruit_enabled = (
+        args.recruit == "true"
+        if args.recruit is not None
+        else bool(recruit_plan and recruit_plan.enabled_by_default)
+    )
     state = {
         "running": True,
         "mode": "sands",
@@ -318,14 +331,23 @@ def main(argv: list[str] | None = None) -> int:
         "started_at": bot.now_epoch(),
         "stopped_at": None,
         "pending": None,
+        "recruit_enabled": recruit_enabled,
+        "recruitment": None,
         "last_cra": None,
+        # Preserve the transport-wide hard CRA governor across stop/start.  A
+        # new run may begin within four seconds of the previous run's last
+        # packet, and resetting counters must not create a pacing loophole.
+        "last_cra_injected_at": state.get("last_cra_injected_at"),
         "cra_consecutive_errors": 0,
         "cra_error_timestamps": [],
         "stop_reason": None,
     }
     save_control(state)
     bot.install_proxy_stop_guards("sands_proxy_exit")
-    print(f"proxy bot started mode=sands max_attacks={state['max_attacks']} control={CONTROL_FILE}")
+    print(
+        f"proxy bot started mode=sands max_attacks={state['max_attacks']} "
+        f"recruit={str(recruit_enabled).lower()} control={CONTROL_FILE}"
+    )
     try:
         monitor_start()
     except KeyboardInterrupt:

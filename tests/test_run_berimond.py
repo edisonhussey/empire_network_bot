@@ -22,6 +22,10 @@ class RunBerimondConfigTests(unittest.TestCase):
         self.assertIn("--no-refill-time-skip", argv)
         self.assertNotIn("--refill-time-skip", argv)
 
+    def test_recruit_override_is_forwarded_to_controller(self):
+        argv = build_argv({"account": "ventrilo", "recruit": "false"})
+        self.assertEqual(argv[argv.index("--recruit") + 1], "false")
+
 
 if __name__ == "__main__":
     unittest.main()

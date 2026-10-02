@@ -18,6 +18,7 @@
 | `bot/populate_database_rbc.py` | Loads RBC targets into the DB from mitmproxy capture logs. |
 | `bot/db_account.py` | Adds/repairs the `aid` column and composite keys. |
 | `bot/game_data/` | Troop/tool/kingdom catalogues and the in-house `Attack`/`side`/`wave` builders. |
+| `bot/utility/recruit/` | Account recruitment events, castle subscriptions, protocol/navigation models, and account/castle queue plus inventory persistence. |
 
 Removed / relocated:
 
@@ -124,8 +125,9 @@ The original working notes in `bot/bot.py` are now implemented:
 | Return time = travel duration + return duration, heuristic 20 min | `estimated_return_seconds`, `HEURISTIC_RETURN_SECONDS`, `RETURN_HEURISTIC_MULTIPLIER` |
 | Cooldown increase `4.4 + 2 ** rand(1, 4.5)` | `cooldown_extra_seconds()` |
 | Base increase 3 hours + landed time | `target_next_epoch()` (`landed_at + 3 * 3600 + cooldown_extra_seconds()`) |
-| Strict 20 s + random 0–10 s between request intervals | `REQUEST_INTERVAL_RANGE`, `wait_for_request_slot()` |
-| ADI before CRA, shuffled | `ADI_TO_CRA_DELAY_RANGE`, `wait_between_adi_and_cra()` |
+| Strict CRA-to-CRA floor with positive jitter | `bot/pacing.py::AttackPacingPolicy`, enforced again immediately before injection |
+| Successful Sands handshake pacing | Short randomized CRA-ack→ADI delay plus a 5.5–9s ADI→CRA command deadline |
+| Failure/request backoff | `REQUEST_INTERVAL_RANGE`; it is not applied to successful Sands ADI/CRA traffic |
 | Level-61 only: 50 crossbowmen on the left flank | `bot/event/sand/config.py::SANDS_LV61` |
 | Persist `last_attacked` and use it to gate re-attacks | `rbc.last_attacked`, `reserve_target_for_task()` |
 | Commanders persist between sessions | `commander_state` table keyed by `(aid, lord_id)` |
@@ -146,6 +148,17 @@ The original working notes in `bot/bot.py` are now implemented:
 3. Browse troop/tool ids with `python -m bot.cli troops`.
 
 ## Toward concurrent workers
+
+Recruitment and attacks share one transaction lane per account. A due
+recruitment event may claim the lane only when both `pending` and `last_cra` are
+empty. It remembers the originating mode, kingdom, and castle; attack producers
+wait while it moves through subscribed castles; and the lane is released only
+after a genuine client map observation restores the originating kingdom. This
+keeps the event scheduler independent of Sands, Storm, or Berimond while
+preserving each mode's navigation assumptions.
+
+The account plan owns the default recruitment flag. All proxy modes can
+override it for one run with `--recruit true` or `--recruit false`.
 
 The current design already keeps the pieces separable for a future concurrent
 message system:

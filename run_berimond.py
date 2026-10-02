@@ -44,6 +44,7 @@ def build_argv(config: dict[str, Any]) -> list[str]:
         "refill_max_wait", "refill_stock_max_age", "skip_tolerance", "radius",
         "refill_time_skip_type", "refill_max_time_skips", "stall_probes",
         "idle_sleep", "startup_timeout", "cache_max_age",
+        "recruit",
     )
     for key in scalar_keys:
         value = config.get(key)

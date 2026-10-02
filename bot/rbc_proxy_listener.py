@@ -42,7 +42,14 @@ for _module_name in (
     "bot.game_data",
     "bot.accounts",
     "bot.account_context",
+    "bot.client_navigation",
+    "bot.utility.recruit.config",
+    "bot.utility.recruit.recruit",
+    "bot.utility.recruit.database",
+    "bot.proxy_inject",
+    "bot.websocket_memory",
     "bot.db",
+    "bot.pacing",
     "bot.event.berimond_kingdom.config",
     "bot.event.berimond_kingdom.refill",
     "bot.berimond",
@@ -64,9 +71,27 @@ for _module_name in (
 
 from bot import account_context
 from bot import accounts
+from bot.client_navigation import MapButtonTarget, request_general_map
 from bot import db as bot_db
 from bot.event.berimond_kingdom import config as berimond
 from bot import packets as packets_module
+from bot.pacing import DEFAULT_ATTACK_PACING, state_last_cra_at
+from bot import proxy_inject
+from bot.websocket_memory import trim_websocket_history
+from bot.utility.recruit import config as recruit_config
+from bot.utility.recruit import database as recruit_db
+from bot.utility.recruit.recruit import (
+    NavigationState,
+    alliance_help_packet,
+    castle_packet,
+    observe_navigation_packet,
+    owned_castles_from_packet,
+    parse_recruit_state,
+    recruit_packet,
+    recruit_page_packets,
+    request_delays,
+    resolve_plan,
+)
 from bot.event.storm import controller as storm_mode
 from bot.proxy_transport import (
     berimond_attack_config,
@@ -127,6 +152,16 @@ NO_TARGET_RETRY_RANGE = (55.0, 145.0)
 #: Pending kinds that only read the map and never spend a commander. ``gaa_probe``
 #: scans one 13x13 chunk; ``fnt_probe`` is the client's "find target" button.
 PROBE_KINDS = ("gaa_probe", "fnt_probe")
+# These commands depend on mutually exclusive client/server contexts. A raw GAA can
+# put the server in map context without changing the browser's local screen;
+# AHR/SPL then fail with status 53 until JCA re-enters an owned castle. Guarding
+# both sides against the genuinely observed UI state prevents that split.
+MAP_CONTEXT_COMMANDS = frozenset({"gbl", "gaa", "fnt"})
+CASTLE_CONTEXT_COMMANDS = frozenset({"gpa", "spl", "gui", "ahr"})
+# Unlike SPL/GUI/AHR, BUP explicitly addresses its destination with SID/AID.
+# Live tests established that it succeeds while the client remains on the map.
+ADDRESSED_CASTLE_COMMANDS = frozenset({"bup"})
+ATTACK_CONTEXT_COMMANDS = frozenset({"adi", "aci", "cra"})
 TARGET_WEBSOCKET = OUTER_WEBSOCKET
 STORM_SCAN_INTERVAL_DEFAULT = (4.0, 6.0)
 STORM_SCAN_RADIUS_DEFAULT = 52
@@ -156,6 +191,10 @@ control_task = None
 next_proxy_action_epoch = 0.0
 #: Last time the "running but no mode" notice was logged (see `_log_orphan_state_once`).
 _orphan_logged_at = 0.0
+#: Rate-limit the expected "waiting for visible map" state while recruitment
+#: temporarily owns the client.
+_navigation_wait_logged_at = 0.0
+_recruit_config_mtime_ns: int | None = None
 last_client_server_header = SAND_SERVER_HEADER
 
 #: How often to check the capture folder against its size cap.
@@ -171,6 +210,7 @@ _detected_login: str | None = None
 _ignored_control_files: set[str] = set()
 
 CONSOLE_LOG_PREFIXES = (
+    "custom_injection_",
     "berimond_",
     "storm_gaa_scan_sent",
     "storm_gaa_scan_new_pass",
@@ -311,6 +351,180 @@ def maybe_update_sources(decoded: str) -> None:
         )
 
 
+def persist_recruit_runtime_state(
+    decoded: str,
+    *,
+    from_client: bool,
+    bot_injected: bool = False,
+) -> None:
+    """Learn castle inventory and UI navigation from authoritative live traffic."""
+
+    if not _detected_login:
+        return
+    parsed = parse_xt_packet(decoded.strip())
+    if not parsed:
+        return
+    command = parsed.get("command")
+    status = parsed.get("status")
+    now = time.time()
+
+    if not from_client and command in {"spl", "bup", "ahr", "ahh"}:
+        payload = parsed.get("payload")
+        response = {
+            "command": command,
+            "status": status,
+            "at": now,
+        }
+        if command == "ahh" and isinstance(payload, dict):
+            response["tid"] = payload.get("TID")
+            response["op"] = payload.get("OP")
+        if command == "bup" and isinstance(payload, dict) and isinstance(payload.get("grc"), dict):
+            response["castle_id"] = payload["grc"].get("AID")
+        try:
+            control = load_control()
+            record_response = True
+            if command == "ahh":
+                transaction = control.get("recruitment")
+                operation = payload.get("OP") if isinstance(payload, dict) else None
+                record_response = not (
+                    not isinstance(transaction, dict)
+                    or not isinstance(operation, dict)
+                    or int(payload.get("TID") or 0) != 6
+                    or int(operation.get("AID") or 0) != int(transaction.get("castle_id") or 0)
+                )
+            elif command == "bup":
+                transaction = control.get("recruitment")
+                response_castle = int(response.get("castle_id") or 0)
+                if (
+                    isinstance(transaction, dict)
+                    and response_castle
+                    and response_castle != int(transaction.get("castle_id") or 0)
+                ):
+                    record_response = False
+            if record_response:
+                control["last_recruit_response"] = response
+                save_control(control)
+        except Exception as exc:
+            control_log(f"recruit_response_state_failed command={command} error={exc!r}")
+
+    if not from_client and status in (None, "0", 0) and command in {"gbd", "gcl", "dcl", "jaa"}:
+        castles = owned_castles_from_packet(parsed)
+        if castles:
+            try:
+                count = recruit_db.upsert_owned_castles(
+                    db(),
+                    bot.current_aid(),
+                    castles,
+                    source_command=str(command),
+                    observed_at=now,
+                    # Login GBD is proven to contain the complete owned-castle
+                    # inventory. Other packets may be partial observations.
+                    authoritative=command == "gbd",
+                )
+            except Exception as exc:
+                control_log(f"castle_inventory_persist_failed command={command} error={exc!r}")
+            else:
+                control_log(
+                    f"castle_inventory_learned command={command} "
+                    f"account={bot.current_aid()} count={count}"
+                )
+
+    if not from_client and status in (None, "0", 0) and command in {"bup", "spl"}:
+        payload = parsed.get("payload")
+        if isinstance(payload, dict):
+            try:
+                receipt = parse_recruit_state(payload)
+                castle_id = None
+                if command == "bup":
+                    grc = payload.get("grc")
+                    if isinstance(grc, dict):
+                        castle_id = int(grc.get("AID") or 0) or None
+                if castle_id is None:
+                    navigation = recruit_db.load_navigation(db(), bot.current_aid())
+                    if navigation is not None and not navigation.state.map_mode:
+                        castle_id = navigation.state.current_castle_id
+                plan = recruit_config.plan_for_account(bot.current_aid())
+                directory = recruit_db.read_castle_directory(db(), bot.current_aid())
+                resolved = resolve_plan(plan, directory) if plan is not None else ()
+                match = next(
+                    (
+                        item
+                        for item in resolved
+                        if item.location.castle_id == castle_id
+                        and item.task.event.troop_id == receipt.troop_id
+                    ),
+                    None,
+                )
+                if match is not None:
+                    clear_at = recruit_db.record_recruitment(
+                        db(),
+                        bot.current_aid(),
+                        match,
+                        receipt,
+                        received_at=now,
+                    )
+                    control_log(
+                        f"recruit_queue_updated command={command} castle={castle_id} "
+                        f"task={match.task_id} active={receipt.active_quantity} "
+                        f"queued={receipt.queued_quantity} help={receipt.help_active} "
+                        f"clear_at={int(clear_at)}"
+                    )
+            except Exception as exc:
+                control_log(f"recruit_queue_persist_failed command={command} error={exc!r}")
+
+    if not from_client and status in (None, "0", 0) and command == "gui":
+        payload = parsed.get("payload")
+        inventory = inventory_from_payload({"gui": payload}) if isinstance(payload, dict) else {}
+        if inventory:
+            try:
+                navigation = recruit_db.load_navigation(db(), bot.current_aid())
+                castle_id = (
+                    navigation.state.current_castle_id
+                    if navigation is not None and not navigation.state.map_mode
+                    else None
+                )
+                if castle_id is not None:
+                    count = recruit_db.replace_castle_inventory(
+                        db(),
+                        bot.current_aid(),
+                        castle_id,
+                        inventory,
+                        observed_at=now,
+                    )
+                    control_log(
+                        f"castle_inventory_updated castle={castle_id} entries={count}"
+                    )
+            except Exception as exc:
+                control_log(f"castle_inventory_update_failed error={exc!r}")
+
+    navigation_command = (from_client and not bot_injected and command == "gaa") or (
+        not from_client and command == "jaa" and status in (None, "0", 0)
+    )
+    if not navigation_command:
+        return
+    try:
+        persisted = recruit_db.load_navigation(db(), bot.current_aid())
+        current = persisted.state if persisted is not None else NavigationState(None, None, map_mode=False)
+        observed = observe_navigation_packet(current, parsed)
+        if persisted is not None and observed == current and command == "gaa":
+            return
+        recruit_db.save_navigation(
+            db(),
+            bot.current_aid(),
+            observed,
+            source_command=str(command),
+            observed_at=now,
+            last_castle_switch_at=now if command == "jaa" else None,
+        )
+    except Exception as exc:
+        control_log(f"navigation_persist_failed command={command} error={exc!r}")
+        return
+    control_log(
+        f"navigation_observed command={command} kid={observed.current_kingdom} "
+        f"castle={observed.current_castle_id} map_mode={observed.map_mode}"
+    )
+
+
 def bind_paths(context) -> None:
     """Point capture/control/log paths at one account's directory."""
 
@@ -440,6 +654,7 @@ _ADDON_OWNED_KEYS = frozenset(
         "last_kut",
         "last_msk",
         "last_global_attack_sent_at",
+        "last_cra_injected_at",
         "attacks_sent",
         "cra_consecutive_errors",
         "cra_error_timestamps",
@@ -452,6 +667,8 @@ _ADDON_OWNED_KEYS = frozenset(
         "berimond_time_skip",
         "berimond_returns",
         "sands_task_cursor",
+        "recruitment",
+        "last_recruit_response",
     }
 )
 
@@ -642,7 +859,100 @@ def is_open_websocket(flow: http.HTTPFlow | None) -> bool:
 def inject_packet(packet: str) -> None:
     if not is_open_websocket(active_flow):
         raise RuntimeError("no active game websocket")
+    parsed = parse_xt_packet(packet)
+    command = parsed.get("command") if parsed else None
+    if command in MAP_CONTEXT_COMMANDS | CASTLE_CONTEXT_COMMANDS | ATTACK_CONTEXT_COMMANDS:
+        navigation = recruit_db.load_navigation(db(), bot.current_aid())
+        if navigation is None:
+            raise RuntimeError(f"{command} blocked: navigation state is unknown")
+        if command in MAP_CONTEXT_COMMANDS | ATTACK_CONTEXT_COMMANDS:
+            navigation.state.require_attack_ready()
+        elif command in CASTLE_CONTEXT_COMMANDS:
+            navigation.state.require_castle_ready()
+    elif command in ADDRESSED_CASTLE_COMMANDS:
+        payload = parsed.get("payload") if parsed else None
+        if not isinstance(payload, dict) or not payload.get("AID") or payload.get("SID") is None:
+            raise RuntimeError("bup blocked: destination SID/AID is missing")
     ctx.master.commands.call("inject.websocket", active_flow, False, packet.encode("utf-8"))
+
+
+def process_custom_injection() -> bool:
+    """Send at most one ad-hoc packet queued by :mod:`bot.proxy_inject`.
+
+    The file bridge lets a separate Python shell talk to the live addon without
+    importing/reloading it. Every packet still goes through ``inject_packet``;
+    therefore attack commands retain the persisted map-view guard. Custom CRA
+    packets additionally share the strict global four-second governor.
+    """
+
+    context = account_context.for_aid(bot.current_aid())
+    claimed = proxy_inject.claim_next(context)
+    if claimed is None:
+        return False
+    claimed_path, request = claimed
+    command = str(request.get("command") or "")
+
+    def reject(reason: str) -> bool:
+        proxy_inject.finish(
+            context,
+            claimed_path,
+            request,
+            status="rejected",
+            error=reason,
+        )
+        control_log(f"custom_injection_rejected command={command or '?'} reason={reason}")
+        return True
+
+    if request.get("invalid"):
+        return reject("invalid request JSON")
+    if str(request.get("account") or "") != bot.current_aid():
+        return reject("request account does not match the live account")
+    try:
+        expires_at = float(request.get("expires_at") or 0.0)
+    except (TypeError, ValueError):
+        expires_at = 0.0
+    if not expires_at or time.time() >= expires_at:
+        return reject("request expired before it could be sent")
+    packet = request.get("packet")
+    parsed = parse_xt_packet(packet) if isinstance(packet, str) else None
+    if parsed is None or parsed.get("command") != command:
+        return reject("request does not contain a matching XT packet")
+
+    if not is_open_websocket(active_flow):
+        proxy_inject.requeue(claimed_path)
+        return False
+
+    state = None
+    if command == "cra":
+        state = hydrate_control_awaiting(load_control(), include_pending=False)
+        # A raw CRA has no task/commander correlation metadata. Mixing it with
+        # an owned automation run would let its response be mistaken for the
+        # controller's packet, so fail closed instead of corrupting that run.
+        if state.get("running"):
+            return reject("custom CRA is disabled while proxy automation is running")
+        due_at = DEFAULT_ATTACK_PACING.hard_cra_due_at(state_last_cra_at(state))
+        if time.time() < due_at:
+            proxy_inject.requeue(claimed_path)
+            return False
+
+    try:
+        inject_packet(packet)
+    except Exception as exc:
+        return reject(str(exc))
+
+    sent_at = time.time()
+    if command == "cra" and state is not None:
+        state["last_cra_injected_at"] = sent_at
+        save_control(state)
+    proxy_inject.finish(
+        context,
+        claimed_path,
+        request,
+        status="sent",
+        sent_at=sent_at,
+    )
+    control_log(f"custom_injection_sent command={command} request={request.get('id')}")
+    return True
 
 
 def xt_packet(
@@ -1014,6 +1324,427 @@ def _log_orphan_state_once(state: dict) -> None:
     )
 
 
+def sands_attack_navigation_ready(state: dict) -> bool:
+    """Pause Sands transport until the real client is visibly on its map."""
+
+    global _navigation_wait_logged_at
+    if not state.get("running") or state.get("mode") != "sands":
+        return True
+    try:
+        navigation = recruit_db.load_navigation(db(), bot.current_aid())
+    except Exception as exc:
+        control_log(f"sands_navigation_lookup_failed error={exc!r}")
+        return False
+    ready = (
+        navigation is not None
+        and navigation.state.map_mode
+        and navigation.state.current_kingdom == bot.SANDS_KID
+    )
+    if ready:
+        _navigation_wait_logged_at = 0.0
+        return True
+    now = time.time()
+    if now - _navigation_wait_logged_at >= 30.0:
+        current = navigation.state if navigation is not None else None
+        control_log(
+            "proxy_wait reason=sands_map_required "
+            f"kid={getattr(current, 'current_kingdom', None)} "
+            f"map_mode={getattr(current, 'map_mode', None)}"
+        )
+        _navigation_wait_logged_at = now
+    return False
+
+
+def _refresh_recruit_config() -> None:
+    """Reload declarative events at the next transaction boundary.
+
+    mitmdump watches this addon file, but not modules imported by it. Without
+    this explicit mtime check, changing ``utility/recruit/config.py`` leaves the
+    long-running addon using its old in-memory task objects until a full addon
+    reload. An active multi-castle transaction deliberately keeps one config
+    revision; the next transaction picks up the change.
+    """
+
+    global recruit_config, _recruit_config_mtime_ns
+
+    config_path = Path(recruit_config.__file__).resolve()
+    try:
+        mtime_ns = config_path.stat().st_mtime_ns
+    except OSError as exc:
+        control_log(f"recruit_config_stat_failed error={exc!r}")
+        return
+    if _recruit_config_mtime_ns == mtime_ns:
+        return
+    importlib.invalidate_caches()
+    recruit_config = importlib.reload(recruit_config)
+    _recruit_config_mtime_ns = mtime_ns
+    control_log(
+        f"recruit_config_reloaded path={config_path.name} mtime_ns={mtime_ns}"
+    )
+
+
+def _recruit_resolved_plan(*, refresh: bool = False):
+    if refresh:
+        _refresh_recruit_config()
+    plan = recruit_config.plan_for_account(bot.current_aid())
+    if plan is None:
+        return ()
+    directory = recruit_db.read_castle_directory(db(), bot.current_aid())
+    return resolve_plan(plan, directory, task_registry=recruit_config.RECRUIT_TASKS)
+
+
+def _recruit_target(tx: dict):
+    castle_id = int(tx["castle_id"])
+    task_id = str(tx["task_id"])
+    for item in _recruit_resolved_plan():
+        if item.location.castle_id == castle_id and item.task_id == task_id:
+            return item
+    raise LookupError(f"recruitment target is no longer subscribed castle={castle_id} task={task_id}")
+
+
+def _set_recruit_phase(state: dict, tx: dict, phase: str, **updates) -> None:
+    tx.update(updates)
+    tx["phase"] = phase
+    tx["updated_at"] = time.time()
+    state["recruitment"] = tx
+    save_control(state)
+
+
+def maybe_start_due_recruitment(state: dict) -> bool:
+    """Atomically claim the next due castle between attack transactions."""
+
+    if (
+        not state.get("running")
+        or not state.get("mode")
+        or not state.get("recruit_enabled")
+        or isinstance(state.get("recruitment"), dict)
+        or isinstance(state.get("pending"), dict)
+        or isinstance(state.get("last_cra"), dict)
+    ):
+        return False
+    try:
+        navigation = recruit_db.load_navigation(db(), bot.current_aid())
+    except Exception as exc:
+        control_log(f"recruit_navigation_lookup_failed error={exc!r}")
+        return False
+    if navigation is None or not navigation.state.map_mode or navigation.state.current_kingdom is None:
+        return False
+    directory = recruit_db.read_castle_directory(db(), bot.current_aid())
+    resume_locations = sorted(
+        (
+            location
+            for location in directory.locations.values()
+            if location.kingdom_id == navigation.state.current_kingdom
+        ),
+        key=lambda location: location.castle_id,
+    )
+    if not resume_locations:
+        return False
+    resume_location = next(
+        (
+            location
+            for location in resume_locations
+            if location.castle_id == navigation.state.current_castle_id
+        ),
+        resume_locations[0],
+    )
+    schedule = recruit_db.recruitment_schedule(
+        db(), bot.current_aid(), _recruit_resolved_plan(refresh=True)
+    )
+    due = next((item for item in schedule if item.ready()), None)
+    if due is None:
+        return False
+    plan = recruit_config.plan_for_account(bot.current_aid())
+    background = bool(plan and plan.background_recruitment)
+    tx = {
+        "phase": "send_slot" if background else "move",
+        "background_recruitment": background,
+        "task_id": due.resolved.task_id,
+        "castle_id": due.resolved.location.castle_id,
+        "kingdom_id": due.resolved.location.kingdom_id,
+        "event_quantity": due.resolved.task.event.quantity,
+        "event_slot_quantity": due.resolved.task.event.slot_quantity,
+        "slots_sent": 0,
+        "slot_delays": list(request_delays(due.resolved.task)),
+        "visited": [],
+        "resume_mode": str(state.get("mode")),
+        "resume_kingdom_id": int(navigation.state.current_kingdom),
+        "resume_castle_id": int(resume_location.castle_id),
+        "started_at": time.time(),
+        "updated_at": time.time(),
+    }
+    state["recruitment"] = tx
+    state["last_recruit_response"] = None
+    save_control(state)
+    control_log(
+        f"recruit_started castle={tx['castle_id']} kid={tx['kingdom_id']} task={tx['task_id']} "
+        f"quantity={tx['event_quantity']} slots={tx['event_slot_quantity']} "
+        f"background={background}"
+    )
+    return True
+
+
+def _next_due_recruitment(tx: dict):
+    visited = {int(value) for value in tx.get("visited") or []}
+    schedule = recruit_db.recruitment_schedule(db(), bot.current_aid(), _recruit_resolved_plan())
+    return next(
+        (
+            item
+            for item in schedule
+            if item.ready() and item.resolved.location.castle_id not in visited
+        ),
+        None,
+    )
+
+
+def process_recruitment_transaction(state: dict) -> bool:
+    """Advance one response-gated recruitment transaction step."""
+
+    tx = state.get("recruitment")
+    if not isinstance(tx, dict):
+        return False
+    if not state.get("running") or state.get("mode") != tx.get("resume_mode"):
+        return True
+    now = time.time()
+    phase = str(tx.get("phase") or "move")
+    # An external mode producer can win the narrow race between our clean-state
+    # read and recruitment claim. Before the first JCA, yield the lane back to
+    # that already-published transport command; the event remains due in DB and
+    # will be claimed again at the next clean boundary.
+    if phase == "move" and isinstance(state.get("pending"), dict) and not tx.get("sent_at"):
+        state["recruitment"] = None
+        state["last_recruit_response"] = None
+        save_control(state)
+        control_log("recruit_deferred reason=attack_won_claim_race")
+        return True
+    target = (
+        _recruit_target(tx)
+        if phase not in {"return_origin", "wait_origin_castle", "await_origin_map"}
+        else None
+    )
+    navigation = recruit_db.load_navigation(db(), bot.current_aid())
+    nav = navigation.state if navigation is not None else NavigationState(None, None, map_mode=False)
+
+    if phase == "move":
+        if (
+            not nav.map_mode
+            and nav.current_kingdom == target.location.kingdom_id
+            and nav.current_castle_id == target.location.castle_id
+        ):
+            _set_recruit_phase(state, tx, "bootstrap", due_at=now)
+            return True
+        due_at = max(
+            float(tx.get("due_at", 0.0) or 0.0),
+            (navigation.last_castle_switch_at + 3.0) if navigation and navigation.last_castle_switch_at else 0.0,
+        )
+        if now < due_at:
+            return True
+        inject_packet(castle_packet(target.location))
+        _set_recruit_phase(state, tx, "wait_castle", sent_at=now)
+        control_log(f"recruit_jca_sent castle={target.location.castle_id} kid={target.location.kingdom_id}")
+        return True
+
+    if phase == "wait_castle":
+        if (
+            not nav.map_mode
+            and nav.current_kingdom == target.location.kingdom_id
+            and nav.current_castle_id == target.location.castle_id
+        ):
+            _set_recruit_phase(state, tx, "bootstrap", due_at=now)
+        elif now - float(tx.get("sent_at", now)) > 30.0:
+            stop_control(state, "recruit_jca_timeout")
+        return True
+
+    if phase == "bootstrap":
+        state["last_recruit_response"] = None
+        _set_recruit_phase(state, tx, "wait_spl", sent_at=now)
+        for packet in recruit_page_packets(lane_id=target.task.event.lane_id):
+            inject_packet(packet)
+        control_log(f"recruit_bootstrap_sent castle={target.location.castle_id}")
+        return True
+
+    response = state.get("last_recruit_response")
+    response_at = float(response.get("at", 0.0) or 0.0) if isinstance(response, dict) else 0.0
+
+    if phase == "wait_spl":
+        if response_at > float(tx.get("sent_at", 0.0)) and response.get("command") == "spl":
+            if response.get("status") not in (None, "0", 0):
+                stop_control(state, f"recruit_spl_status_{response.get('status')}")
+            else:
+                _set_recruit_phase(state, tx, "send_slot", due_at=now)
+        elif now - float(tx.get("sent_at", now)) > 30.0:
+            stop_control(state, "recruit_spl_timeout")
+        return True
+
+    if phase == "send_slot":
+        if now < float(tx.get("due_at", 0.0) or 0.0):
+            return True
+        state["last_recruit_response"] = None
+        _set_recruit_phase(state, tx, "wait_bup", sent_at=now)
+        inject_packet(recruit_packet(target.task, target.location))
+        control_log(
+            f"recruit_bup_sent castle={target.location.castle_id} "
+            f"slot={int(tx.get('slots_sent', 0)) + 1}/{target.task.event.slot_quantity}"
+        )
+        return True
+
+    if phase == "wait_bup":
+        if response_at > float(tx.get("sent_at", 0.0)) and response.get("command") == "bup":
+            if response.get("status") not in (None, "0", 0):
+                stop_control(state, f"recruit_bup_status_{response.get('status')}")
+                return True
+            sent = int(tx.get("slots_sent", 0)) + 1
+            tx["slots_sent"] = sent
+            if sent < target.task.event.slot_quantity:
+                delays = tx.get("slot_delays") or request_delays(target.task)
+                delay = float(delays[sent - 1])
+                _set_recruit_phase(state, tx, "send_slot", due_at=now + delay)
+            elif target.task.event.ask_help and not tx.get("background_recruitment"):
+                _set_recruit_phase(state, tx, "send_help", due_at=now + 0.5)
+            else:
+                if target.task.event.ask_help and tx.get("background_recruitment"):
+                    control_log(
+                        f"recruit_help_skipped castle={target.location.castle_id} "
+                        "reason=background_context"
+                    )
+                _set_recruit_phase(state, tx, "next_castle", due_at=now)
+        elif now - float(tx.get("sent_at", now)) > 30.0:
+            stop_control(state, "recruit_bup_timeout")
+        return True
+
+    if phase == "send_help":
+        if now < float(tx.get("due_at", 0.0) or 0.0):
+            return True
+        state["last_recruit_response"] = None
+        _set_recruit_phase(state, tx, "wait_help", sent_at=now)
+        inject_packet(alliance_help_packet(lane_id=target.task.event.lane_id))
+        control_log(f"recruit_help_sent castle={target.location.castle_id}")
+        return True
+
+    if phase == "wait_help":
+        if response_at > float(tx.get("sent_at", 0.0)):
+            if response.get("command") == "ahr" and response.get("status") not in (None, "0", 0):
+                stop_control(state, f"recruit_ahr_status_{response.get('status')}")
+            elif response.get("command") == "ahh" and int(response.get("tid") or 0) == 6:
+                _set_recruit_phase(state, tx, "next_castle", due_at=now + 1.0)
+        if now - float(tx.get("sent_at", now)) > 30.0 and str(tx.get("phase")) == "wait_help":
+            stop_control(state, "recruit_help_timeout")
+        return True
+
+    if phase == "next_castle":
+        if now < float(tx.get("due_at", 0.0) or 0.0):
+            return True
+        visited = [int(value) for value in tx.get("visited") or []]
+        visited.append(int(tx["castle_id"]))
+        tx["visited"] = sorted(set(visited))
+        next_item = _next_due_recruitment(tx)
+        if next_item is None:
+            if tx.get("background_recruitment"):
+                state["recruitment"] = None
+                state["last_recruit_response"] = None
+                save_control(state)
+                control_log(f"recruit_complete resume={tx['resume_mode']}_attacks background=True")
+            else:
+                _set_recruit_phase(state, tx, "return_origin", due_at=now + 3.0)
+        else:
+            tx.update(
+                task_id=next_item.resolved.task_id,
+                castle_id=next_item.resolved.location.castle_id,
+                kingdom_id=next_item.resolved.location.kingdom_id,
+                slots_sent=0,
+                slot_delays=list(request_delays(next_item.resolved.task)),
+                sent_at=None,
+            )
+            _set_recruit_phase(
+                state,
+                tx,
+                "send_slot" if tx.get("background_recruitment") else "move",
+                due_at=now + 3.0,
+            )
+        return True
+
+    resume_location = recruit_db.read_castle_directory(db(), bot.current_aid()).location(
+        int(tx["resume_castle_id"])
+    )
+    if phase == "return_origin":
+        if now < float(tx.get("due_at", 0.0) or 0.0):
+            return True
+        if not nav.map_mode and nav.current_castle_id == resume_location.castle_id:
+            _set_recruit_phase(
+                state,
+                tx,
+                "await_origin_map",
+                map_ui_attempts=0,
+                map_ui_due_at=now + 0.5,
+            )
+        else:
+            inject_packet(castle_packet(resume_location))
+            _set_recruit_phase(state, tx, "wait_origin_castle", sent_at=now)
+            control_log(
+                f"recruit_return_origin_sent kid={tx['resume_kingdom_id']} "
+                f"castle={tx['resume_castle_id']}"
+            )
+        return True
+
+    if phase == "wait_origin_castle":
+        if not nav.map_mode and nav.current_castle_id == resume_location.castle_id:
+            _set_recruit_phase(
+                state,
+                tx,
+                "await_origin_map",
+                map_ui_attempts=0,
+                map_ui_due_at=now + 0.5,
+            )
+            control_log(f"recruit_map_transition_armed kid={tx['resume_kingdom_id']}")
+        elif now - float(tx.get("sent_at", now)) > 30.0:
+            stop_control(state, "recruit_return_origin_timeout")
+        return True
+
+    if phase == "await_origin_map":
+        if nav.map_mode and nav.current_kingdom == int(tx["resume_kingdom_id"]):
+            state["recruitment"] = None
+            state["last_recruit_response"] = None
+            save_control(state)
+            control_log(f"recruit_complete resume={tx['resume_mode']}_attacks")
+            return True
+        plan = recruit_config.plan_for_account(bot.current_aid())
+        if plan is not None and plan.background_recruitment:
+            # Recover transactions created by the old foreground navigator.
+            # We cannot undo its final JCA without another visible UI change;
+            # release the transaction and let the normal map-readiness guard
+            # wait for one genuine client GAA observation.
+            state["recruitment"] = None
+            state["last_recruit_response"] = None
+            save_control(state)
+            control_log("recruit_complete background_migration=True map_confirmation_pending=True")
+            return True
+        attempts = int(tx.get("map_ui_attempts", 0) or 0)
+        if (
+            plan is not None
+            and plan.auto_return_to_map
+            and attempts < 3
+            and now >= float(tx.get("map_ui_due_at", 0.0) or 0.0)
+        ):
+            target = MapButtonTarget(
+                relative_x=float(plan.map_button_relative[0]),
+                relative_y=float(plan.map_button_relative[1]),
+            )
+            try:
+                detail = request_general_map(target)
+            except Exception as exc:
+                detail = f"error={exc!r}"
+            tx["map_ui_attempts"] = attempts + 1
+            tx["map_ui_due_at"] = now + 5.0
+            _set_recruit_phase(state, tx, "await_origin_map")
+            control_log(
+                f"recruit_map_ui_attempt attempt={attempts + 1}/3 {detail}"
+            )
+        return True
+
+    stop_control(state, f"recruit_unknown_phase_{phase}")
+    return True
+
+
 def stop_control(state: dict, reason: str, *, clear_awaiting: bool = True) -> None:
     state["running"] = False
     state["pending"] = None
@@ -1134,7 +1865,10 @@ def expire_pending_sands_adi(state: dict, pending: dict, *, age: float) -> None:
 
 
 def queue_pending_cra(state: dict, target: dict, lid: int, task=None) -> None:
-    due_at = time.time() + random.uniform(*bot.ADI_TO_CRA_DELAY_RANGE)
+    due_at = DEFAULT_ATTACK_PACING.sands_cra_due_at(
+        now=time.time(),
+        last_cra_at=state_last_cra_at(state),
+    )
     # conn is required here: without it the source castle falls back to the
     # protocol default and the server answers 53 "NOT IN OWNED CASTLE".
     payload = bot.build_attack_payload(target, lid, task, conn=db())
@@ -1839,6 +2573,10 @@ def process_live_cra_response(decoded: str) -> bool:
     ]
     save_control(state)
     bot.clear_proxy_last_cra_db(db())
+    if target_kind == "rbc":
+        # A successful acknowledgement opens the next Sands handshake quickly.
+        # Error paths retain their existing 20-30s (or longer) backoffs.
+        pause_next_action(DEFAULT_ATTACK_PACING.sands_after_cra_ack_range)
     control_log(
         f"proxy_cra_ack target={target['x']}:{target['y']} kid={target['kingdom_id']} "
         f"kind={target_kind} task={task_name} level={target.get('target_level', bot.TARGET_LEVEL)} lid={lid} mid={march_id} "
@@ -1977,6 +2715,11 @@ async def proxy_control_loop() -> None:
 
     while True:
         try:
+            # Independent operator test channel. It is polled even when no mode
+            # driver is running, which is the point of the ad-hoc injector.
+            if process_custom_injection():
+                await asyncio.sleep(0.05)
+                continue
             state = hydrate_control_awaiting(load_control())
             pending = state.get("pending")
             if isinstance(pending, dict) and not command_allowed(state, pending):
@@ -1994,6 +2737,20 @@ async def proxy_control_loop() -> None:
                 )
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
+            if state.get("running") and isinstance(state.get("recruitment"), dict):
+                if not is_open_websocket(active_flow):
+                    control_log("recruit_wait reason=no_active_websocket")
+                    await asyncio.sleep(CONTROL_POLL_SECONDS)
+                    continue
+                process_recruitment_transaction(state)
+                await asyncio.sleep(CONTROL_POLL_SECONDS)
+                continue
+            if not sands_attack_navigation_ready(state):
+                # Recruitment may move the server/client into a castle while a
+                # Sands run remains owned. Keep the run armed but send nothing;
+                # a genuine manual GAA in KID 1 automatically releases this gate.
+                await asyncio.sleep(CONTROL_POLL_SECONDS)
+                continue
             probe_pending = isinstance(pending, dict) and pending.get("kind") in PROBE_KINDS
             # A refill transfer is a reply to a rejection, not an attack: it must not
             # sit behind the 20-30s pacing pause the rejection just set, or the
@@ -2009,9 +2766,10 @@ async def proxy_control_loop() -> None:
                 stop_control(state, "max_attacks_already_reached")
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
-            # Pacing is handled by the request-interval pause, which is proven
-            # accepted: 56 of ventrilo's recorded adi->cra handshakes completed
-            # 21-30s apart and every one was accepted. Do not "speed it up".
+            # This gate is now reserved for explicit backoff and the short
+            # post-ack Sands delay. Successful ADI -> CRA timing lives on the
+            # pending command, and the independent CRA governor is checked
+            # again immediately before packet injection.
             if not probe_pending and not transfer_pending and not time_skip_pending and not scan_due and time.time() < next_proxy_action_epoch:
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
@@ -2023,6 +2781,13 @@ async def proxy_control_loop() -> None:
                 else:
                     control_log("proxy_wait reason=no_active_websocket")
                     pause_next_action((15.0, 35.0))
+                await asyncio.sleep(CONTROL_POLL_SECONDS)
+                continue
+
+            # Claim due account events only at a clean transaction boundary.
+            # Once claimed, the branch above owns every subsequent poll until
+            # it restores the originating map context and releases the lane.
+            if maybe_start_due_recruitment(state):
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
 
@@ -2248,6 +3013,19 @@ async def proxy_control_loop() -> None:
                         state["pending"] = pending
                         save_control(state)
                         bot.persist_proxy_pending(db(), pending)
+                # All modes share one final CRA governor.  A command-specific
+                # delay may be longer, but it can never move the packet inside
+                # the strict four-second window after the previous CRA.
+                strict_due = DEFAULT_ATTACK_PACING.enforce_cra_deadline(
+                    due_at,
+                    state_last_cra_at(state),
+                )
+                if strict_due != due_at:
+                    due_at = strict_due
+                    pending["due_at"] = due_at
+                    state["pending"] = pending
+                    save_control(state)
+                    bot.persist_proxy_pending(db(), pending)
                 if time.time() < due_at:
                     await asyncio.sleep(CONTROL_POLL_SECONDS)
                     continue
@@ -2356,14 +3134,28 @@ async def proxy_control_loop() -> None:
                     continue
                 packet = xt_packet("cra", attack_payload)
                 army_count = troop_count_from_payload(attack_payload)
+                precise_sent_at = time.time()
+                previous_cra_at = state_last_cra_at(state)
+                hard_due = DEFAULT_ATTACK_PACING.hard_cra_due_at(previous_cra_at)
+                if precise_sent_at < hard_due:
+                    # The loop normally waits on ``due_at`` above.  This second
+                    # check makes the invariant robust to clock/timer rounding
+                    # and future callers which modify a pending command.
+                    pending["due_at"] = hard_due
+                    state["pending"] = pending
+                    save_control(state)
+                    bot.persist_proxy_pending(db(), pending)
+                    await asyncio.sleep(CONTROL_POLL_SECONDS)
+                    continue
                 sent_at = bot.now_epoch()
                 commander_next = sent_at + bot.HEURISTIC_RETURN_SECONDS + random.uniform(*bot.COMMANDER_RETURN_HOLD_RANGE)
                 if pending.get("target_kind") == "berimond_fixed":
                     commander_next = cap_berimond_commander_available(state, sent_at)
                 bot.mark_commander_pending(db(), int(lid), int(target["id"]), commander_next)
                 inject_packet(packet)
+                state["last_cra_injected_at"] = precise_sent_at
                 if state.get("mode") == "berimond":
-                    state["last_global_attack_sent_at"] = float(sent_at)
+                    state["last_global_attack_sent_at"] = precise_sent_at
                 state["pending"] = None
                 state["last_cra"] = {
                     "target": target,
@@ -2377,18 +3169,23 @@ async def proxy_control_loop() -> None:
                 }
                 bot.clear_proxy_pending_db(db())
                 bot.persist_proxy_last_cra(db(), state["last_cra"])
+                cra_gap_text = (
+                    f"{precise_sent_at - previous_cra_at:.3f}s"
+                    if previous_cra_at is not None
+                    else "first"
+                )
                 control_log(
                     f"proxy_cra_sent target={target['x']}:{target['y']} kid={target['kingdom_id']} "
                     f"kind={pending.get('target_kind', 'rbc')} task={pending.get('task_name')} "
                     f"level={target.get('target_level', bot.TARGET_LEVEL)} lid={lid} mid=pending "
                     f"army_count={army_count} hbw={attack_payload.get('HBW')} travel_duration=pending "
-                    f"{adi_to_cra_text(state['last_cra'])}"
+                    f"cra_to_cra={cra_gap_text} {adi_to_cra_text(state['last_cra'])}"
                 )
                 increment_attacks_sent(state)
-                if state.get("mode") == "berimond":
-                    next_proxy_action_epoch = 0.0
-                else:
-                    pause_next_action(bot.REQUEST_INTERVAL_RANGE)
+                # Wait for the CRA acknowledgement.  Its success path schedules
+                # the short randomized delay before the next Sands ADI; its
+                # failure path schedules the longer error backoff.
+                next_proxy_action_epoch = 0.0
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
 
@@ -2417,6 +3214,12 @@ async def proxy_control_loop() -> None:
                 await asyncio.sleep(CONTROL_POLL_SECONDS)
                 continue
 
+            # A CRA is a request/response transaction.  Do not start the next
+            # ADI until its acknowledgement has cleared ``last_cra``.
+            if isinstance(state.get("last_cra"), dict):
+                await asyncio.sleep(CONTROL_POLL_SECONDS)
+                continue
+
             task, target = reserve_next_sands_target(state)
             if target is None:
                 control_log("proxy_idle reason=no_sands_task_target")
@@ -2435,7 +3238,8 @@ async def proxy_control_loop() -> None:
                 f"proxy_adi_sent target={target['x']}:{target['y']} kid={target['kingdom_id']} "
                 f"task={state['pending'].get('task_name')} expected_level={target.get('target_level')}"
             )
-            pause_next_action(bot.REQUEST_INTERVAL_RANGE)
+            # The verified response queues a CRA with its own 5.5-9s deadline.
+            # A successful ADI must not inherit the generic 20-30s error pause.
         except Exception as exc:
             control_log(f"proxy_loop_error error={exc!r}")
             pause_next_action((120.0, 300.0))
@@ -2850,6 +3654,17 @@ def process_live_gui_stock(decoded: str) -> bool:
     payload = parsed.get("payload")
     if not isinstance(payload, dict) or not isinstance(payload.get("I"), list):
         return False
+    try:
+        navigation = recruit_db.load_navigation(db(), bot.current_aid())
+    except Exception as exc:
+        control_log(f"berimond_gui_scope_failed error={exc!r}")
+        return False
+    if (
+        navigation is None
+        or navigation.state.map_mode
+        or navigation.state.current_kingdom != bot.BERIMOND_KID
+    ):
+        return False
     return bool(record_berimond_stock(payload, source="gui"))
 
 
@@ -2996,6 +3811,11 @@ def handle_websocket_message(flow: http.HTTPFlow) -> None:
     global active_flow
 
     identifier = remember_websocket(flow)
+    # mitmproxy appends every frame to ``flow.websocket.messages``. A game
+    # socket can live for hours, so leaving that list untouched retains the
+    # full decoded session in RAM. We consume only the newest frame and keep a
+    # tiny diagnostic tail.
+    trim_websocket_history(flow.websocket)
     if not is_target_websocket(flow):
         return
 
@@ -3016,6 +3836,11 @@ def handle_websocket_message(flow: http.HTTPFlow) -> None:
 
     detect_login_account(decoded)
     maybe_update_sources(decoded)
+    persist_recruit_runtime_state(
+        decoded,
+        from_client=msg.from_client,
+        bot_injected=bool(getattr(msg, "injected", False)),
+    )
 
     if msg.from_client:
         remember_client_header(decoded)
@@ -3052,14 +3877,18 @@ def handle_websocket_end(flow: http.HTTPFlow) -> None:
 
 class RbcProxyListener:
     def load(self, loader) -> None:
-        global control_task
+        global control_task, _detected_login
         # Bind to the recorded session immediately, so captures never land in the
         # shared legacy bot/logs folder while we wait for the next login packet.
+        # Mark it detected as well: addon hot reloads happen within the same game
+        # session, and navigation/castle learning must remain live without asking
+        # the user to log out and back in merely to produce another LLI packet.
         session_account = accounts.session_account()
         if session_account is not None:
             bind_paths(session_account.context)
             bot.configure_account(session_account.username or None, session_account.aid)
             rbc_db.set_account_aid(session_account.aid)
+            _detected_login = session_account.name.strip().lower()
             control_log(f"startup_bound_to_session account={session_account.name}")
         CAPTURE_FOLDER.mkdir(parents=True, exist_ok=True)
         if control_task is None or control_task.done():
