@@ -12,6 +12,7 @@ use crate::{
 
 mod config;
 mod ledger;
+mod modes;
 mod schema;
 mod state;
 mod storage;
@@ -21,9 +22,11 @@ mod tests;
 
 pub use config::{AttackProfile, SubscriptionRecord, TaskRecord};
 pub use ledger::{
-    COMMANDER_AVAILABLE, COMMANDER_OUTBOUND, CommanderState, HEARTBEAT_FRESH_MILLIS,
-    HUNT_HEARTBEAT_KEY, HuntSummary, HuntTaskSummary, MARCH_RETURNING, MARCH_SENT, MarchRecord,
+    COMMANDER_AVAILABLE, COMMANDER_OUTBOUND, CommanderState, DashboardPoint, DashboardSummary,
+    HEARTBEAT_FRESH_MILLIS, HUNT_HEARTBEAT_KEY, HuntSummary, HuntTaskSummary, MARCH_RETURNING,
+    MARCH_SENT, MarchRecord, ScanActivity,
 };
+pub use modes::{AccountModeRecord, ActiveModeTask, ImportModeError, ModeRecord, TaskRuntime};
 pub use schema::SCHEMA_VERSION;
 pub use state::{CastleUnit, NavigationState, RecruitCastleState};
 pub use storage::{PruneOutcome, StorageReport, TableFootprint};
@@ -70,12 +73,46 @@ pub struct AccountSummary {
     pub castle_count: i64,
     pub commander_count: i64,
     pub rbc_count: i64,
+    pub kingdom_health: Vec<KingdomHealth>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KingdomHealth {
+    pub castle_id: i64,
+    pub castle_name: String,
+    pub kingdom_id: i64,
+    pub x: i64,
+    pub y: i64,
+    pub target_count: i64,
+    pub scan_window_count: i64,
+    pub last_scanned_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReservedTarget {
+    pub kingdom_id: i64,
+    pub x: i64,
+    pub y: i64,
+    pub level: Option<i64>,
 }
 
 #[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
     path: Option<PathBuf>,
+}
+
+pub const SCAN_REFRESH_BASE_MS: i64 = 12 * 60 * 60 * 1_000;
+
+/// A stable per-window offset prevents every stored map window becoming due at
+/// once after a restart while keeping tests and scheduling reproducible.
+pub fn scan_refresh_after_ms(kingdom_id: i64, ax1: i64, ay1: i64) -> i64 {
+    let mixed = kingdom_id
+        .wrapping_mul(73_856_093)
+        .wrapping_add(ax1.wrapping_mul(19_349_663))
+        .wrapping_add(ay1.wrapping_mul(83_492_791));
+    let jitter = mixed.rem_euclid(60 * 60 * 1_000) - 30 * 60 * 1_000;
+    SCAN_REFRESH_BASE_MS + jitter
 }
 
 impl Store {
@@ -222,20 +259,184 @@ impl Store {
         Ok(())
     }
 
+    pub async fn record_scan_window(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+        bounds: (i64, i64, i64, i64),
+        now_ms: i64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO map_scan_window (
+                account_id, kingdom_id, ax1, ay1, ax2, ay2, scanned_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(account_id, kingdom_id, ax1, ay1) DO UPDATE SET
+                ax2 = excluded.ax2,
+                ay2 = excluded.ay2,
+                scanned_at_ms = excluded.scanned_at_ms",
+        )
+        .bind(account_id)
+        .bind(kingdom_id)
+        .bind(bounds.0)
+        .bind(bounds.1)
+        .bind(bounds.2)
+        .bind(bounds.3)
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn scan_window_is_fresh(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+        ax1: i64,
+        ay1: i64,
+        now_ms: i64,
+    ) -> Result<bool, sqlx::Error> {
+        let scanned_at: Option<i64> = sqlx::query_scalar(
+            "SELECT scanned_at_ms FROM map_scan_window
+             WHERE account_id = ? AND kingdom_id = ? AND ax1 = ? AND ay1 = ?",
+        )
+        .bind(account_id)
+        .bind(kingdom_id)
+        .bind(ax1)
+        .bind(ay1)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(scanned_at.is_some_and(|timestamp| {
+            now_ms.saturating_sub(timestamp) < scan_refresh_after_ms(kingdom_id, ax1, ay1)
+        }))
+    }
+
+    pub async fn account_has_targets(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+    ) -> Result<bool, sqlx::Error> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM rbc_target
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ?",
+        )
+        .bind(account_id)
+        .bind(kingdom_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count > 0)
+    }
+
+    /// Claim one eligible target before its handshake starts. The reservation
+    /// survives a runner restart and prevents two tasks choosing the same tower.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn reserve_rbc_target(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+        level_min: Option<i64>,
+        level_max: Option<i64>,
+        source: (i64, i64),
+        algorithm: &str,
+        now_ms: i64,
+        reserved_until_ms: i64,
+    ) -> Result<Option<ReservedTarget>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT kingdom_id, x, y, level, last_attacked_ms
+             FROM rbc_target
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ?
+               AND reserved_until_ms <= ?
+               AND (? IS NULL OR level >= ?)
+               AND (? IS NULL OR level <= ?)",
+        )
+        .bind(account_id)
+        .bind(kingdom_id)
+        .bind(now_ms)
+        .bind(level_min)
+        .bind(level_min)
+        .bind(level_max)
+        .bind(level_max)
+        .fetch_all(&self.pool)
+        .await?;
+        let chosen = match algorithm {
+            "random" => rows.get((now_ms.unsigned_abs() as usize) % rows.len().max(1)),
+            "closest" => rows.iter().min_by_key(|row| {
+                (row.get::<i64, _>("x") - source.0).abs()
+                    + (row.get::<i64, _>("y") - source.1).abs()
+            }),
+            _ => rows.iter().min_by_key(|row| {
+                (
+                    row.get::<i64, _>("last_attacked_ms"),
+                    (row.get::<i64, _>("x") - source.0).abs()
+                        + (row.get::<i64, _>("y") - source.1).abs(),
+                )
+            }),
+        };
+        let Some(row) = chosen else { return Ok(None) };
+        let target = ReservedTarget {
+            kingdom_id: row.get("kingdom_id"),
+            x: row.get("x"),
+            y: row.get("y"),
+            level: row.get("level"),
+        };
+        let updated = sqlx::query(
+            "UPDATE rbc_target SET reserved_until_ms = ?
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND x = ? AND y = ?
+               AND reserved_until_ms <= ?",
+        )
+        .bind(reserved_until_ms)
+        .bind(account_id)
+        .bind(target.kingdom_id)
+        .bind(target.x)
+        .bind(target.y)
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        // Pre-canonical databases may contain the same logical account under
+        // different username casing. Reserve every matching copy together and
+        // treat any update as one successful logical target claim.
+        Ok((updated.rows_affected() > 0).then_some(target))
+    }
+
+    pub async fn mark_target_attacked(
+        &self,
+        account_id: &str,
+        target: &ReservedTarget,
+        now_ms: i64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE rbc_target SET last_attacked_ms = ?
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND x = ? AND y = ?",
+        )
+        .bind(now_ms)
+        .bind(account_id)
+        .bind(target.kingdom_id)
+        .bind(target.x)
+        .bind(target.y)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn account_summaries(&self) -> Result<Vec<AccountSummary>, sqlx::Error> {
         let rows = sqlx::query(
-            "SELECT p.account_id, p.player_name, p.endpoint, p.server_header,
-                    p.initialized_at_ms,
-                    (SELECT COUNT(*) FROM owned_castle c WHERE c.account_id = p.account_id) castle_count,
-                    (SELECT COUNT(*) FROM account_commander m WHERE m.account_id = p.account_id) commander_count,
-                    (SELECT COUNT(*) FROM rbc_target r WHERE r.account_id = p.account_id) rbc_count
+            "SELECT lower(p.account_id) account_id,
+                    upper(substr(MAX(p.player_name), 1, 1)) || substr(MAX(p.player_name), 2) player_name,
+                    MAX(p.endpoint) endpoint, MAX(p.server_header) server_header,
+                    MAX(p.initialized_at_ms) initialized_at_ms,
+                    (SELECT COUNT(DISTINCT printf('%d:%d', c.kingdom_id, c.castle_id))
+                     FROM owned_castle c WHERE lower(c.account_id) = lower(p.account_id)) castle_count,
+                    (SELECT COUNT(DISTINCT m.lord_id)
+                     FROM account_commander m WHERE lower(m.account_id) = lower(p.account_id)) commander_count,
+                    (SELECT COUNT(DISTINCT printf('%d:%d:%d', r.kingdom_id, r.x, r.y))
+                     FROM rbc_target r WHERE lower(r.account_id) = lower(p.account_id)) rbc_count
              FROM account_profile p
              WHERE p.initialized_at_ms IS NOT NULL
+             GROUP BY lower(p.account_id)
              ORDER BY p.player_name COLLATE NOCASE",
         )
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows
+        let mut accounts: Vec<AccountSummary> = rows
             .into_iter()
             .map(|row| AccountSummary {
                 account_id: row.get("account_id"),
@@ -246,8 +447,44 @@ impl Store {
                 castle_count: row.get("castle_count"),
                 commander_count: row.get("commander_count"),
                 rbc_count: row.get("rbc_count"),
+                kingdom_health: Vec::new(),
             })
-            .collect())
+            .collect();
+        for account in &mut accounts {
+            let rows = sqlx::query(
+                "SELECT MAX(c.castle_id) castle_id, MAX(c.name) name, c.kingdom_id,
+                        MAX(c.x) x, MAX(c.y) y,
+                        (SELECT COUNT(DISTINCT printf('%d:%d', r.x, r.y)) FROM rbc_target r
+                         WHERE lower(r.account_id) = lower(c.account_id) AND r.kingdom_id = c.kingdom_id) target_count,
+                        (SELECT COUNT(DISTINCT printf('%d:%d:%d:%d', s.ax1, s.ay1, s.ax2, s.ay2)) FROM map_scan_window s
+                         WHERE lower(s.account_id) = lower(c.account_id) AND s.kingdom_id = c.kingdom_id) scan_window_count,
+                        (SELECT MAX(scanned_at_ms) FROM map_scan_window s
+                         WHERE lower(s.account_id) = lower(c.account_id) AND s.kingdom_id = c.kingdom_id) last_scanned_at_ms
+                 FROM owned_castle c
+                 WHERE lower(c.account_id) = lower(?)
+                   AND ((c.kingdom_id = 0 AND c.area_type = 1)
+                     OR (c.kingdom_id != 0 AND c.area_type = 12))
+                 GROUP BY c.kingdom_id
+                 ORDER BY c.kingdom_id",
+            )
+            .bind(&account.account_id)
+            .fetch_all(&self.pool)
+            .await?;
+            account.kingdom_health = rows
+                .into_iter()
+                .map(|row| KingdomHealth {
+                    castle_id: row.get("castle_id"),
+                    castle_name: row.get("name"),
+                    kingdom_id: row.get("kingdom_id"),
+                    x: row.get("x"),
+                    y: row.get("y"),
+                    target_count: row.get("target_count"),
+                    scan_window_count: row.get("scan_window_count"),
+                    last_scanned_at_ms: row.get("last_scanned_at_ms"),
+                })
+                .collect();
+        }
+        Ok(accounts)
     }
 
     pub async fn licence(&self) -> Result<Option<StoredLicence>, sqlx::Error> {

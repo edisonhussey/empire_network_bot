@@ -26,6 +26,9 @@ pub struct SessionSettings {
     pub connection_time: i64,
     pub round_trip_time: i64,
     pub map: MapViewport,
+    /// Map-coordinate distance from the main castle to cover in every direction.
+    #[serde(default)]
+    pub map_scan_radius: u16,
 }
 
 impl Default for SessionSettings {
@@ -38,6 +41,7 @@ impl Default for SessionSettings {
             connection_time: 676,
             round_trip_time: 118,
             map: MapViewport::sands_default(),
+            map_scan_radius: 0,
         }
     }
 }
@@ -125,6 +129,14 @@ impl SessionMachine {
         self.phase
     }
 
+    /// A durable recent map scan is sufficient evidence for network-only map
+    /// readiness; it avoids repeating the full viewport on every login.
+    pub fn accept_cached_map(&mut self) {
+        if self.phase == SessionPhase::LoadingSands {
+            self.phase = SessionPhase::SandsReady;
+        }
+    }
+
     pub fn on_connected(&mut self) -> Vec<String> {
         self.phase = SessionPhase::SocketHandshake;
         vec!["<msg t='sys'><body action='verChk' r='0'><ver v='166' /></body></msg>".to_owned()]
@@ -169,7 +181,16 @@ impl SessionMachine {
                 Ok(Vec::new())
             }
             "gbd" if !self.bootstrap_sent => {
-                if let Some(map) = sands_viewport_from_bootstrap(&packet.payload) {
+                let map = if self.settings.map_scan_radius == 0 {
+                    sands_viewport_from_bootstrap(&packet.payload)
+                } else {
+                    radius_viewport_from_bootstrap(
+                        &packet.payload,
+                        1,
+                        self.settings.map_scan_radius,
+                    )
+                };
+                if let Some(map) = map {
                     self.settings.map = map;
                 }
                 self.bootstrap_sent = true;
@@ -302,8 +323,38 @@ fn sands_viewport_from_bootstrap(payload: &Value) -> Option<MapViewport> {
 
 /// Viewport origin for any kingdom, derived from its main castle in `gbd`.
 fn viewport_from_bootstrap(payload: &Value, kingdom_id: i64) -> Option<MapViewport> {
-    let area_types = main_castle_area_types(kingdom_id);
     let (dx, dy) = viewport_offset(kingdom_id);
+    let (x, y) = main_castle_coordinate(payload, kingdom_id)?;
+    Some(MapViewport {
+        kingdom_id,
+        left: x.saturating_sub(dx),
+        top: y.saturating_sub(dy),
+        columns: 3,
+        rows: 2,
+    })
+}
+
+/// A square grid covering `radius` map coordinates around the main castle.
+/// Radius 6 is exactly one 13×13 `gaa`; radius 50 is an 8×8 grid.
+fn radius_viewport_from_bootstrap(
+    payload: &Value,
+    kingdom_id: i64,
+    radius: u16,
+) -> Option<MapViewport> {
+    let (x, y) = main_castle_coordinate(payload, kingdom_id)?;
+    let diameter = u32::from(radius).saturating_mul(2).saturating_add(1);
+    let side = u8::try_from(diameter.div_ceil(13)).ok()?;
+    Some(MapViewport {
+        kingdom_id,
+        left: x.saturating_sub(i64::from(radius)),
+        top: y.saturating_sub(i64::from(radius)),
+        columns: side,
+        rows: side,
+    })
+}
+
+fn main_castle_coordinate(payload: &Value, kingdom_id: i64) -> Option<(i64, i64)> {
+    let area_types = main_castle_area_types(kingdom_id);
     let kingdoms = payload.pointer("/gcl/C")?.as_array()?;
     for kingdom in kingdoms {
         if kingdom.get("KID").and_then(Value::as_i64) != Some(kingdom_id) {
@@ -319,13 +370,7 @@ fn viewport_from_bootstrap(payload: &Value, kingdom_id: i64) -> Option<MapViewpo
             }
             let x = row.get(1)?.as_i64()?;
             let y = row.get(2)?.as_i64()?;
-            return Some(MapViewport {
-                kingdom_id,
-                left: x.saturating_sub(dx),
-                top: y.saturating_sub(dy),
-                columns: 3,
-                rows: 2,
-            });
+            return Some((x, y));
         }
     }
     None
@@ -392,6 +437,23 @@ mod tests {
         assert_eq!((viewport.left, viewport.top), (572, 598));
     }
 
+    #[test]
+    fn scan_radius_is_measured_in_map_coordinates() {
+        let payload = json!({
+            "gcl": {"C": [{"KID": 1, "AI": [{"AI": [12, 593, 613, 16366514]}]}]}
+        });
+        let one = radius_viewport_from_bootstrap(&payload, 1, 6).unwrap();
+        assert_eq!((one.left, one.top, one.columns, one.rows), (587, 607, 1, 1));
+        assert_eq!(one.requests(DEFAULT_SERVER_HEADER).unwrap().len(), 1);
+
+        let fifty = radius_viewport_from_bootstrap(&payload, 1, 50).unwrap();
+        assert_eq!(
+            (fifty.left, fifty.top, fifty.columns, fifty.rows),
+            (543, 563, 8, 8)
+        );
+        assert_eq!(fifty.requests(DEFAULT_SERVER_HEADER).unwrap().len(), 64);
+    }
+
     /// The green origin is not a guess: the same live capture that reported the
     /// castle at 507,403 shows the client requesting tiles from 494,390, so the
     /// offset there is 13 on both axes rather than the 21/15 Sands uses.
@@ -412,5 +474,13 @@ mod tests {
         let payload = json!({"gcl": {"C": [{"KID": 0, "AI": []}]}});
         assert!(viewport_from_bootstrap(&payload, 0).is_none());
         assert!(viewport_from_bootstrap(&payload, 3).is_none());
+    }
+
+    #[test]
+    fn recent_persisted_map_coverage_can_complete_setup_without_rescanning() {
+        let mut session = machine();
+        session.phase = SessionPhase::LoadingSands;
+        session.accept_cached_map();
+        assert_eq!(session.phase(), SessionPhase::SandsReady);
     }
 }

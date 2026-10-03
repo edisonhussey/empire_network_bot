@@ -239,7 +239,11 @@ impl Store {
         Ok(rows.into_iter().map(row_to_march).collect())
     }
 
-    pub async fn set_commander_state(&self, state: &CommanderState, now_ms: i64) -> Result<(), sqlx::Error> {
+    pub async fn set_commander_state(
+        &self,
+        state: &CommanderState,
+        now_ms: i64,
+    ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO commander_state (
                 account_id, lord_id, status, available_after_ms, march_id, target_key, updated_at_ms
@@ -263,7 +267,10 @@ impl Store {
         Ok(())
     }
 
-    pub async fn commander_states(&self, account_id: &str) -> Result<Vec<CommanderState>, sqlx::Error> {
+    pub async fn commander_states(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<CommanderState>, sqlx::Error> {
         let rows = sqlx::query(
             "SELECT account_id, lord_id, status, available_after_ms, march_id, target_key
              FROM commander_state WHERE account_id = ? ORDER BY lord_id",
@@ -290,7 +297,8 @@ impl Store {
     /// account; here it is simply a query.
     pub async fn commander_lids(&self, account_id: &str) -> Result<Vec<i64>, sqlx::Error> {
         let rows = sqlx::query(
-            "SELECT lord_id FROM account_commander WHERE account_id = ? ORDER BY ordinal",
+            "SELECT lord_id FROM account_commander WHERE lower(account_id) = lower(?)
+             GROUP BY lord_id ORDER BY MIN(ordinal)",
         )
         .bind(account_id)
         .fetch_all(&self.pool)
@@ -371,7 +379,121 @@ pub struct HuntSummary {
     pub recent: Vec<MarchRecord>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DashboardPoint {
+    pub at_ms: i64,
+    pub value: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScanActivity {
+    pub at_ms: i64,
+    pub kingdom_id: i64,
+    pub windows: i64,
+}
+
+/// Minute-cached dashboard aggregates. These queries are intentionally separate
+/// from the live connection status so UI polling cannot make ledger work hot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DashboardSummary {
+    pub generated_at_ms: i64,
+    pub attacks_last_hour: i64,
+    pub returns_last_hour: i64,
+    pub rubies_last_hour: i64,
+    pub coins_last_hour: i64,
+    pub ruby_series: Vec<DashboardPoint>,
+    pub scan_activity: Vec<ScanActivity>,
+}
+
 impl Store {
+    pub async fn dashboard_summary(&self) -> Result<DashboardSummary, sqlx::Error> {
+        const HOUR_MS: i64 = 60 * 60 * 1_000;
+        const DAY_MS: i64 = 24 * HOUR_MS;
+        const BUCKET_MS: i64 = 15 * 60 * 1_000;
+        let now = now_ms();
+        let hour_ago = now - HOUR_MS;
+        let day_start = (now - DAY_MS).div_euclid(BUCKET_MS) * BUCKET_MS;
+
+        let hourly = sqlx::query(
+            "SELECT
+                COALESCE(SUM(sent_at_ms >= ?), 0) attacks,
+                COALESCE(SUM(result_at_ms >= ?), 0) returns,
+                COALESCE(SUM(CASE WHEN result_at_ms >= ? THEN ruby_loot ELSE 0 END), 0) rubies,
+                COALESCE(SUM(CASE WHEN result_at_ms >= ? THEN coin_loot ELSE 0 END), 0) coins
+             FROM attack_ledger",
+        )
+        .bind(hour_ago)
+        .bind(hour_ago)
+        .bind(hour_ago)
+        .bind(hour_ago)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let base: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(ruby_loot), 0) FROM attack_ledger
+             WHERE COALESCE(result_at_ms, sent_at_ms) < ?",
+        )
+        .bind(day_start)
+        .fetch_one(&self.pool)
+        .await?;
+        let ruby_rows = sqlx::query(
+            "SELECT (COALESCE(result_at_ms, sent_at_ms) / ?) * ? bucket,
+                    COALESCE(SUM(ruby_loot), 0) rubies
+             FROM attack_ledger
+             WHERE COALESCE(result_at_ms, sent_at_ms) >= ?
+             GROUP BY bucket ORDER BY bucket",
+        )
+        .bind(BUCKET_MS)
+        .bind(BUCKET_MS)
+        .bind(day_start)
+        .fetch_all(&self.pool)
+        .await?;
+        let bucket_values = ruby_rows
+            .into_iter()
+            .map(|row| (row.get::<i64, _>("bucket"), row.get::<i64, _>("rubies")))
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut cumulative = base;
+        let mut ruby_series = Vec::with_capacity(97);
+        let mut bucket = day_start;
+        while bucket <= now {
+            cumulative += bucket_values.get(&bucket).copied().unwrap_or(0);
+            ruby_series.push(DashboardPoint {
+                at_ms: bucket,
+                value: cumulative,
+            });
+            bucket += BUCKET_MS;
+        }
+
+        let scan_activity = sqlx::query(
+            "SELECT (scanned_at_ms / 60000) * 60000 bucket, kingdom_id,
+                    COUNT(DISTINCT printf('%d:%d:%d:%d', ax1, ay1, ax2, ay2)) windows
+             FROM map_scan_window
+             WHERE scanned_at_ms >= ?
+             GROUP BY bucket, kingdom_id
+             ORDER BY bucket DESC LIMIT 30",
+        )
+        .bind(day_start)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(|row| ScanActivity {
+            at_ms: row.get("bucket"),
+            kingdom_id: row.get("kingdom_id"),
+            windows: row.get("windows"),
+        })
+        .collect();
+
+        Ok(DashboardSummary {
+            generated_at_ms: now,
+            attacks_last_hour: hourly.get("attacks"),
+            returns_last_hour: hourly.get("returns"),
+            rubies_last_hour: hourly.get("rubies"),
+            coins_last_hour: hourly.get("coins"),
+            ruby_series,
+            scan_activity,
+        })
+    }
+
     /// Aggregate the ledger into something a UI can render directly.
     ///
     /// Kept in the store rather than the daemon so the query and the shape it
@@ -431,16 +553,14 @@ impl Store {
             coins: totals.get("coins"),
             rubies: totals.get("rubies"),
             active,
-            tasks: merge_plan_with_ledger(
-                self.app_state("hunt.plan").await?,
-                task_rows,
-            ),
+            tasks: merge_plan_with_ledger(self.app_state("hunt.plan").await?, task_rows),
             recent: self.recent_marches_all(recent_limit).await?,
         })
     }
 
     /// The most recent marches across every account.
-    pub async fn recent_marches_all(&self, limit: i64) -> Result<Vec<MarchRecord>, sqlx::Error> {        let rows = sqlx::query(
+    pub async fn recent_marches_all(&self, limit: i64) -> Result<Vec<MarchRecord>, sqlx::Error> {
+        let rows = sqlx::query(
             "SELECT account_id, march_id, kingdom_id, x, y, task_id, profile_id, level,
                     lord_id, commander_number, troop_count, duration_s, coin_loot,
                     ruby_loot, status, result_flag, error_message, sent_at_ms,

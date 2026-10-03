@@ -12,6 +12,7 @@ application = [
     "dep:sqlx",
     "dep:tokio",
     "dep:uuid",
+    "dep:empire-game",
 ]
 
 [dependencies]
@@ -23,3 +24,4 @@ sqlx = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
+empire-game = { path = "../empire-game", optional = true }

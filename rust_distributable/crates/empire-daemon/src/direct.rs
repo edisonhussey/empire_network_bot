@@ -3,10 +3,15 @@ use std::{sync::Arc, time::Duration};
 use empire_core::{
     account::{commander_lids, owned_castles, rbc_targets},
     event::Direction,
+    hunt::{self, MapTarget},
     injection::{InjectionRequest, channel},
+    pacing::{PacingPolicy, Rng, Waits},
     protocol::parse_xt_packet,
     session::{LoginCredentials, SessionMachine, SessionPhase, SessionSettings},
-    store::Store,
+    store::{
+        ActiveModeTask, COMMANDER_OUTBOUND, CommanderState, HUNT_HEARTBEAT_KEY, MARCH_SENT,
+        MarchRecord, ReservedTarget, Store,
+    },
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -34,22 +39,39 @@ pub struct InitializeAccountRequest {
     pub server: GameServer,
     pub username: String,
     pub password: String,
+    #[serde(default = "default_scan_radius")]
+    pub scan_radius: u16,
+    /// Reuse learned targets without refreshing map windows. Normal logins set
+    /// this; first-time setup and the explicit "scan more" action do not.
+    #[serde(default)]
+    pub reuse_existing_map: bool,
+}
+
+const fn default_scan_radius() -> u16 {
+    50
 }
 
 impl InitializeAccountRequest {
     pub fn into_direct(self) -> DirectConnectRequest {
         match self.server {
-            GameServer::Us1 => DirectConnectRequest {
-                endpoint: US1_ENDPOINT.to_owned(),
-                credentials: LoginCredentials {
-                    player_name: self.username.trim().to_owned(),
-                    portal_account_id: US1_PORTAL_ACCOUNT_ID.to_owned(),
-                    password: Some(self.password),
-                    login_token: None,
-                    registration_token: None,
-                },
-                settings: SessionSettings::default(),
-            },
+            GameServer::Us1 => {
+                let settings = SessionSettings {
+                    map_scan_radius: self.scan_radius,
+                    ..SessionSettings::default()
+                };
+                DirectConnectRequest {
+                    endpoint: US1_ENDPOINT.to_owned(),
+                    credentials: LoginCredentials {
+                        player_name: self.username.trim().to_owned(),
+                        portal_account_id: US1_PORTAL_ACCOUNT_ID.to_owned(),
+                        password: Some(self.password),
+                        login_token: None,
+                        registration_token: None,
+                    },
+                    settings,
+                    reuse_existing_map: self.reuse_existing_map,
+                }
+            }
         }
     }
 }
@@ -60,6 +82,8 @@ pub struct DirectConnectRequest {
     pub credentials: LoginCredentials,
     #[serde(default)]
     pub settings: SessionSettings,
+    #[serde(default)]
+    pub reuse_existing_map: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,7 +91,13 @@ pub struct DirectStatus {
     pub connected: bool,
     pub phase: SessionPhase,
     pub endpoint: Option<String>,
+    pub account_id: Option<String>,
     pub error: Option<String>,
+    pub scan_total: u64,
+    pub scan_sent: u64,
+    pub scan_cached: u64,
+    pub bot_state: String,
+    pub bot_detail: Option<String>,
 }
 
 impl Default for DirectStatus {
@@ -76,7 +106,13 @@ impl Default for DirectStatus {
             connected: false,
             phase: SessionPhase::Disconnected,
             endpoint: None,
+            account_id: None,
             error: None,
+            scan_total: 0,
+            scan_sent: 0,
+            scan_cached: 0,
+            bot_state: "stopped".to_owned(),
+            bot_detail: None,
         }
     }
 }
@@ -89,8 +125,10 @@ pub async fn run(
     licence: LicenceGate,
 ) {
     let endpoint = request.endpoint.clone();
+    let account_id = request.credentials.player_name.trim().to_ascii_lowercase();
     status.write().await.endpoint = Some(endpoint.clone());
     let result = run_inner(request, &store, &active_transport, &status, &licence).await;
+    let _ = store.stop_account_mode(&account_id, now_ms()).await;
     *active_transport.write().await = None;
     let mut current = status.write().await;
     current.connected = false;
@@ -109,7 +147,9 @@ async fn run_inner(
     licence: &LicenceGate,
 ) -> anyhow::Result<()> {
     licence.require("game_network").await?;
-    let account_id = request.credentials.player_name.trim().to_owned();
+    let account_id = request.credentials.player_name.trim().to_ascii_lowercase();
+    let reuse_existing_map =
+        request.reuse_existing_map && store.account_has_targets(&account_id, 1).await?;
     store
         .upsert_account_profile(
             &account_id,
@@ -136,12 +176,20 @@ async fn run_inner(
         connected: true,
         phase: machine.phase(),
         endpoint: Some(request.endpoint.clone()),
+        account_id: Some(account_id.clone()),
         error: None,
+        scan_total: 0,
+        scan_sent: 0,
+        scan_cached: 0,
+        bot_state: "stopped".to_owned(),
+        bot_detail: None,
     };
     info!(endpoint = %request.endpoint, "direct game session connected");
 
     let mut heartbeat = tokio::time::interval(Duration::from_secs(60));
     let mut entitlement_check = tokio::time::interval(Duration::from_secs(5));
+    let mut automation_tick = tokio::time::interval(Duration::from_millis(250));
+    let mut automation = Automation::new();
     heartbeat.tick().await;
     entitlement_check.tick().await;
     loop {
@@ -157,11 +205,59 @@ async fn run_inner(
                 if let Some(text) = text {
                     observe_account_packet(store, &account_id, &text).await;
                     record_text(store, Direction::ServerToClient, &text).await;
+                    automation.observe(store, &account_id, &text).await;
                     let frames = machine.on_server_text(&text)?;
                     status.write().await.phase = machine.phase();
+                    let map_request_count = frames
+                        .iter()
+                        .filter(|frame| map_request(frame).is_some())
+                        .count() as u64;
+                    if map_request_count > 0 {
+                        let mut current = status.write().await;
+                        current.scan_total = map_request_count;
+                        current.scan_sent = 0;
+                        current.scan_cached = 0;
+                    }
+                    let mut saw_map_request = false;
+                    let mut sent_map_requests = 0_u64;
                     for frame in frames {
-                        record_safe_outbound(store, &frame).await;
+                        if let Some((kingdom_id, ax1, ay1, _, _)) = map_request(&frame) {
+                            saw_map_request = true;
+                            if reuse_existing_map
+                                || store
+                                    .scan_window_is_fresh(
+                                        &account_id,
+                                        kingdom_id,
+                                        ax1,
+                                        ay1,
+                                        now_ms(),
+                                    )
+                                    .await?
+                            {
+                                status.write().await.scan_cached += 1;
+                                continue;
+                            }
+                            if sent_map_requests > 0 {
+                                tokio::time::sleep(Duration::from_millis(scan_delay_ms(
+                                    kingdom_id, ax1, ay1,
+                                )))
+                                .await;
+                            }
+                            sent_map_requests += 1;
+                            status.write().await.scan_sent = sent_map_requests;
+                            if sent_map_requests.is_multiple_of(40) {
+                                sink.send(Message::Text(
+                                    heartbeat_packet(&request.settings.server_header).into(),
+                                ))
+                                .await?;
+                            }
+                        }
+                        record_safe_outbound(store, &account_id, &frame).await;
                         sink.send(Message::Text(frame.into())).await?;
+                    }
+                    if saw_map_request && sent_map_requests == 0 {
+                        machine.accept_cached_map();
+                        status.write().await.phase = machine.phase();
                     }
                 }
             }
@@ -174,18 +270,394 @@ async fn run_inner(
                 sink.send(Message::Text(request.packet.into())).await?;
             }
             _ = heartbeat.tick() => {
-                let packet = format!(
-                    "%xt%{}%pin%1%<RoundHouseKick>%",
-                    request.settings.server_header
-                );
+                let packet = heartbeat_packet(&request.settings.server_header);
                 sink.send(Message::Text(packet.into())).await?;
             }
             _ = entitlement_check.tick() => {
                 licence.require("game_network").await?;
             }
+            _ = automation_tick.tick() => {
+                if machine.phase() == SessionPhase::SandsReady {
+                    if let Some(packet) = automation
+                            .next_packet(store, &account_id, &request.settings.server_header)
+                            .await?
+                    {
+                        record_safe_outbound(store, &account_id, &packet).await;
+                        sink.send(Message::Text(packet.into())).await?;
+                    }
+                    let (bot_state, bot_detail) = automation.status();
+                    let mut current = status.write().await;
+                    current.bot_state = bot_state.to_owned();
+                    current.bot_detail = Some(bot_detail);
+                }
+            }
         }
     }
     Ok(())
+}
+
+const REQUEST_TIMEOUT_MS: i64 = 40_000;
+const TARGET_LEASE_MS: i64 = 12 * 60 * 1_000;
+const COMMANDER_REJECT_HOLD_MS: i64 = 10 * 60 * 1_000;
+
+#[derive(Debug)]
+enum AutomationPhase {
+    Idle {
+        due_ms: i64,
+    },
+    AwaitAdi {
+        task: ActiveModeTask,
+        target: ReservedTarget,
+        deadline_ms: i64,
+    },
+    ReadyCra {
+        task: ActiveModeTask,
+        target: ReservedTarget,
+        lord_id: i64,
+        due_ms: i64,
+    },
+    AwaitCra {
+        task: ActiveModeTask,
+        target: ReservedTarget,
+        lord_id: i64,
+        deadline_ms: i64,
+    },
+}
+
+struct Automation {
+    phase: AutomationPhase,
+    cursor: usize,
+    last_cra_ms: Option<i64>,
+    last_heartbeat_ms: i64,
+    rng: Rng,
+    detail: String,
+}
+
+impl Automation {
+    fn new() -> Self {
+        Self {
+            phase: AutomationPhase::Idle { due_ms: 0 },
+            cursor: 0,
+            last_cra_ms: None,
+            last_heartbeat_ms: 0,
+            rng: Rng::from_entropy(),
+            detail: "Mode is stopped".to_owned(),
+        }
+    }
+
+    fn status(&self) -> (&'static str, String) {
+        let state = match self.phase {
+            AutomationPhase::Idle { .. } => "waiting",
+            AutomationPhase::AwaitAdi { .. } => "inspecting_target",
+            AutomationPhase::ReadyCra { .. } => "pacing_attack",
+            AutomationPhase::AwaitCra { .. } => "awaiting_attack_ack",
+        };
+        (state, self.detail.clone())
+    }
+
+    async fn next_packet(
+        &mut self,
+        store: &Store,
+        account_id: &str,
+        server_header: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let now = now_ms();
+        if now.saturating_sub(self.last_heartbeat_ms) >= 5_000 {
+            if store.account_mode_running(account_id).await? {
+                store
+                    .set_app_state(HUNT_HEARTBEAT_KEY, &json!(now), now)
+                    .await?;
+            }
+            self.last_heartbeat_ms = now;
+        }
+
+        match &self.phase {
+            AutomationPhase::AwaitAdi { deadline_ms, .. }
+            | AutomationPhase::AwaitCra { deadline_ms, .. }
+                if now >= *deadline_ms =>
+            {
+                self.phase = AutomationPhase::Idle {
+                    due_ms: now + 10_000,
+                };
+                return Ok(None);
+            }
+            _ => {}
+        }
+
+        if let AutomationPhase::ReadyCra {
+            task,
+            target,
+            lord_id,
+            due_ms,
+        } = &self.phase
+        {
+            if now < *due_ms {
+                return Ok(None);
+            }
+            // Stop is authoritative even in the middle of a handshake.
+            if store.active_mode_tasks(account_id).await?.is_empty() {
+                self.detail = "Mode stopped before attack commit".to_owned();
+                self.phase = AutomationPhase::Idle {
+                    due_ms: now + 2_000,
+                };
+                return Ok(None);
+            }
+            let hard_due = self.last_cra_ms.map_or(0, |last| last + 4_000);
+            if now < hard_due {
+                return Ok(None);
+            }
+            let packet = hunt::attack_packet(
+                server_header,
+                (task.source_x, task.source_y),
+                &as_map_target(target),
+                *lord_id,
+                &task.payload,
+                task.hbw,
+                hunt::MAP_PTT,
+            )?;
+            self.last_cra_ms = Some(now);
+            self.detail = format!(
+                "Attack sent with commander {lord_id} to {}:{}:{}",
+                target.kingdom_id, target.x, target.y
+            );
+            self.phase = AutomationPhase::AwaitCra {
+                task: task.clone(),
+                target: target.clone(),
+                lord_id: *lord_id,
+                deadline_ms: now + REQUEST_TIMEOUT_MS,
+            };
+            return Ok(Some(packet));
+        }
+
+        let AutomationPhase::Idle { due_ms } = self.phase else {
+            return Ok(None);
+        };
+        if now < due_ms {
+            return Ok(None);
+        }
+        let tasks = store.active_mode_tasks(account_id).await?;
+        if tasks.is_empty() {
+            self.detail = "No running attack tasks for this account".to_owned();
+            self.phase = AutomationPhase::Idle {
+                due_ms: now + 2_000,
+            };
+            return Ok(None);
+        }
+        let states = store.commander_states(account_id).await?;
+        for offset in 0..tasks.len() {
+            let index = (self.cursor + offset) % tasks.len();
+            let task = &tasks[index];
+            if task.commander_lids.iter().all(|lid| {
+                states
+                    .iter()
+                    .any(|state| state.lord_id == *lid && state.available_after_ms > now)
+            }) {
+                continue;
+            }
+            if let Some(target) = store
+                .reserve_rbc_target(
+                    account_id,
+                    task.kingdom_id,
+                    task.level_min,
+                    task.level_max,
+                    (task.source_x, task.source_y),
+                    &task.algorithm,
+                    now,
+                    now + TARGET_LEASE_MS,
+                )
+                .await?
+            {
+                self.cursor = (index + 1) % tasks.len();
+                let packet = hunt::adi_packet(
+                    server_header,
+                    (task.source_x, task.source_y),
+                    &as_map_target(&target),
+                )?;
+                self.detail = format!(
+                    "Inspecting {}:{}:{} for task {}",
+                    target.kingdom_id, target.x, target.y, task.name
+                );
+                self.phase = AutomationPhase::AwaitAdi {
+                    task: task.clone(),
+                    target,
+                    deadline_ms: now + REQUEST_TIMEOUT_MS,
+                };
+                return Ok(Some(packet));
+            }
+        }
+        self.phase = AutomationPhase::Idle {
+            due_ms: now + 15_000,
+        };
+        self.detail = "No eligible unleased target or free task commander; retrying".to_owned();
+        Ok(None)
+    }
+
+    async fn observe(&mut self, store: &Store, account_id: &str, raw: &str) {
+        let Ok(packet) = parse_xt_packet(raw) else {
+            return;
+        };
+        let now = now_ms();
+        if packet.status.as_deref().is_some_and(|status| status != "0") {
+            if let AutomationPhase::AwaitCra { lord_id, .. } = &self.phase {
+                let state = CommanderState {
+                    account_id: account_id.to_owned(),
+                    lord_id: *lord_id,
+                    status: COMMANDER_OUTBOUND.to_owned(),
+                    available_after_ms: now + COMMANDER_REJECT_HOLD_MS,
+                    march_id: None,
+                    target_key: None,
+                };
+                let _ = store.set_commander_state(&state, now).await;
+            }
+            if matches!(
+                self.phase,
+                AutomationPhase::AwaitAdi { .. } | AutomationPhase::AwaitCra { .. }
+            ) {
+                self.phase = AutomationPhase::Idle {
+                    due_ms: now + 15_000,
+                };
+            }
+            return;
+        }
+
+        match packet.command.as_str() {
+            "adi" => {
+                let AutomationPhase::AwaitAdi { task, target, .. } = std::mem::replace(
+                    &mut self.phase,
+                    AutomationPhase::Idle {
+                        due_ms: now + 10_000,
+                    },
+                ) else {
+                    return;
+                };
+                let offered = hunt::available_commanders(&packet.payload);
+                let states = store.commander_states(account_id).await.unwrap_or_default();
+                let busy = states
+                    .iter()
+                    .filter(|state| state.available_after_ms > now)
+                    .map(|state| state.lord_id)
+                    .collect::<Vec<_>>();
+                let Some(lord_id) = task
+                    .commander_lids
+                    .iter()
+                    .copied()
+                    .filter(|lid| offered.is_empty() || offered.contains(lid))
+                    .find(|lid| !busy.contains(lid))
+                else {
+                    return;
+                };
+                let policy = PacingPolicy::default();
+                let due_seconds = policy.cra_due_at(
+                    now as f64 / 1_000.0,
+                    self.last_cra_ms.map(|value| value as f64 / 1_000.0),
+                    &mut self.rng,
+                );
+                self.phase = AutomationPhase::ReadyCra {
+                    task,
+                    target,
+                    lord_id,
+                    due_ms: (due_seconds * 1_000.0) as i64,
+                };
+                self.detail = format!("Commander {lord_id} selected; waiting above CRA floor");
+            }
+            "cra" => {
+                let AutomationPhase::AwaitCra {
+                    task,
+                    target,
+                    lord_id,
+                    ..
+                } = std::mem::replace(
+                    &mut self.phase,
+                    AutomationPhase::Idle {
+                        due_ms: now + 10_000,
+                    },
+                )
+                else {
+                    return;
+                };
+                let march_id = hunt::march_id_from_ack(&packet.payload).unwrap_or(now);
+                let travel = hunt::travel_seconds_from_ack(&packet.payload);
+                let available_after_ms = now + travel.unwrap_or(300).saturating_mul(2_000) + 45_000;
+                let march = MarchRecord {
+                    account_id: account_id.to_owned(),
+                    march_id,
+                    kingdom_id: target.kingdom_id,
+                    x: target.x,
+                    y: target.y,
+                    task_id: Some(task.task_id.clone()),
+                    profile_id: Some(task.profile_id.clone()),
+                    level: target.level,
+                    lord_id: Some(lord_id),
+                    commander_number: None,
+                    troop_count: None,
+                    duration_s: travel,
+                    coin_loot: None,
+                    ruby_loot: None,
+                    status: MARCH_SENT.to_owned(),
+                    result_flag: None,
+                    error_message: None,
+                    sent_at_ms: now,
+                    landed_at_ms: None,
+                    result_at_ms: None,
+                };
+                let state = CommanderState {
+                    account_id: account_id.to_owned(),
+                    lord_id,
+                    status: COMMANDER_OUTBOUND.to_owned(),
+                    available_after_ms,
+                    march_id: Some(march_id),
+                    target_key: Some(format!("{}:{}:{}", target.kingdom_id, target.x, target.y)),
+                };
+                let _ = store.record_march(&march).await;
+                let _ = store.set_commander_state(&state, now).await;
+                let _ = store.mark_target_attacked(account_id, &target, now).await;
+                let pause = PacingPolicy::default().after_cra_ack(&mut self.rng)
+                    + Waits::attack_send(&mut self.rng);
+                self.phase = AutomationPhase::Idle {
+                    due_ms: now + (pause * 1_000.0) as i64,
+                };
+                self.detail = format!("Attack {march_id} acknowledged; scheduling next target");
+            }
+            "cat" => {
+                let (Some((kingdom_id, x, y)), Some(lord_id)) = (
+                    hunt::return_target(&packet.payload),
+                    hunt::returned_lord_id(&packet.payload),
+                ) else {
+                    return;
+                };
+                let loot = hunt::loot_from_return(&packet.payload);
+                let return_seconds = hunt::return_seconds_from_return(&packet.payload);
+                let _ = store
+                    .finish_march_by_target(
+                        account_id,
+                        kingdom_id,
+                        x,
+                        y,
+                        lord_id,
+                        return_seconds,
+                        loot.map(|value| value.0),
+                        loot.map(|value| value.1),
+                        hunt::result_flag_from_return(&packet.payload),
+                        now,
+                    )
+                    .await;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn as_map_target(target: &ReservedTarget) -> MapTarget {
+    MapTarget {
+        kingdom_id: target.kingdom_id,
+        x: target.x,
+        y: target.y,
+        level: target.level,
+    }
+}
+
+fn heartbeat_packet(server_header: &str) -> String {
+    format!("%xt%{server_header}%pin%1%<RoundHouseKick>%")
 }
 
 async fn observe_account_packet(store: &Store, account_id: &str, raw: &str) {
@@ -222,11 +694,51 @@ async fn observe_account_packet(store: &Store, account_id: &str, raw: &str) {
     }
 }
 
-async fn record_safe_outbound(store: &Store, raw: &str) {
-    if parse_xt_packet(raw).is_ok_and(|packet| packet.command == "lli") {
-        return;
+async fn record_safe_outbound(store: &Store, account_id: &str, raw: &str) {
+    if let Ok(packet) = parse_xt_packet(raw) {
+        if packet.command == "lli" {
+            return;
+        }
+        if packet.command == "gaa" {
+            let values = ["AX1", "AY1", "AX2", "AY2"]
+                .map(|key| packet.payload.get(key).and_then(serde_json::Value::as_i64));
+            if let (Some(kingdom_id), [Some(ax1), Some(ay1), Some(ax2), Some(ay2)]) = (
+                packet
+                    .payload
+                    .get("KID")
+                    .and_then(serde_json::Value::as_i64),
+                values,
+            ) && let Err(error) = store
+                .record_scan_window(account_id, kingdom_id, (ax1, ay1, ax2, ay2), now_ms())
+                .await
+            {
+                warn!(%error, %account_id, "map scan coverage persistence failed");
+            }
+        }
     }
     record_text(store, Direction::ClientToServer, raw).await;
+}
+
+fn map_request(raw: &str) -> Option<(i64, i64, i64, i64, i64)> {
+    let packet = parse_xt_packet(raw).ok()?;
+    if packet.command != "gaa" {
+        return None;
+    }
+    Some((
+        packet.payload.get("KID")?.as_i64()?,
+        packet.payload.get("AX1")?.as_i64()?,
+        packet.payload.get("AY1")?.as_i64()?,
+        packet.payload.get("AX2")?.as_i64()?,
+        packet.payload.get("AY2")?.as_i64()?,
+    ))
+}
+
+fn scan_delay_ms(kingdom_id: i64, ax1: i64, ay1: i64) -> u64 {
+    let mixed = kingdom_id
+        .wrapping_mul(31)
+        .wrapping_add(ax1.wrapping_mul(17))
+        .wrapping_add(ay1.wrapping_mul(13));
+    700 + u64::try_from(mixed.rem_euclid(601)).unwrap_or(0)
 }
 
 async fn record_text(store: &Store, direction: Direction, raw: &str) {

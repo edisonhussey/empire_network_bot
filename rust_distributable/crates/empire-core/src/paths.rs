@@ -48,10 +48,7 @@ pub fn database_path(data_dir: &Path) -> PathBuf {
 
 /// A `sqlx` URL for the database inside a data directory.
 pub fn database_url(data_dir: &Path) -> String {
-    format!(
-        "sqlite://{}?mode=rwc",
-        database_path(data_dir).display()
-    )
+    format!("sqlite://{}?mode=rwc", database_path(data_dir).display())
 }
 
 /// Convenience wrapper for the resolved data directory.

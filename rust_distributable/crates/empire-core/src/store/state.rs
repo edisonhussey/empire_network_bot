@@ -80,7 +80,10 @@ impl RecruitCastleState {
 }
 
 impl Store {
-    pub async fn navigation(&self, account_id: &str) -> Result<Option<NavigationState>, sqlx::Error> {
+    pub async fn navigation(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<NavigationState>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT account_id, current_kingdom_id, current_castle_id, map_mode,
                     recruit_page, last_castle_switch_at_ms

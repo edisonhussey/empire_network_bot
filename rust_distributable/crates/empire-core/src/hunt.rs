@@ -98,15 +98,10 @@ pub fn scan_tiles(centre: (i64, i64), radius: i64) -> Vec<(i64, i64)> {
     let mut tiles = Vec::new();
     for row in -radius..=radius {
         for column in -radius..=radius {
-            tiles.push((
-                centre.0 + column * TILE_SPAN,
-                centre.1 + row * TILE_SPAN,
-            ));
+            tiles.push((centre.0 + column * TILE_SPAN, centre.1 + row * TILE_SPAN));
         }
     }
-    tiles.sort_by_key(|(x, y)| {
-        (x - centre.0).abs() + (y - centre.1).abs()
-    });
+    tiles.sort_by_key(|(x, y)| (x - centre.0).abs() + (y - centre.1).abs());
     tiles
 }
 
@@ -262,9 +257,7 @@ pub fn pick_target<'a>(
         .filter(|target| accepts_level(target.level, min, max))
         .filter(|target| !attempted.contains(&target.key()))
         .collect();
-    candidates.sort_by_key(|target| {
-        (target.x - source.0).abs() + (target.y - source.1).abs()
-    });
+    candidates.sort_by_key(|target| (target.x - source.0).abs() + (target.y - source.1).abs());
     candidates.first().copied()
 }
 
@@ -327,9 +320,7 @@ pub fn result_flag_from_return(cat_payload: &Value) -> Option<i64> {
 
 /// March id from a return packet (`cat`), i.e. `A.M.MID`.
 pub fn returned_march_id(cat_payload: &Value) -> Option<i64> {
-    cat_payload
-        .pointer("/A/M/MID")
-        .and_then(Value::as_i64)
+    cat_payload.pointer("/A/M/MID").and_then(Value::as_i64)
 }
 
 /// Where a returning RBC march went, from a return packet: `(kingdom, x, y)`.
@@ -351,11 +342,7 @@ pub fn return_target(cat_payload: &Value) -> Option<(i64, i64, i64)> {
         .pointer("/A/M/KID")
         .and_then(Value::as_i64)
         .unwrap_or(1);
-    Some((
-        kingdom_id,
-        row.get(1)?.as_i64()?,
-        row.get(2)?.as_i64()?,
-    ))
+    Some((kingdom_id, row.get(1)?.as_i64()?, row.get(2)?.as_i64()?))
 }
 
 /// Return-trip duration from a return packet (`cat`), i.e. `A.M.TT`.
@@ -463,11 +450,7 @@ pub fn task_for_level(plan: &[PlannedTask], kingdom_id: i64, level: i64) -> Opti
 ///
 /// `offered` is the roster the server listed in the `adi` reply. A commander the
 /// server did not offer, or that is already out, is skipped.
-pub fn choose_task_commander(
-    task: &PlannedTask,
-    offered: &[i64],
-    busy: &[i64],
-) -> Option<i64> {
+pub fn choose_task_commander(task: &PlannedTask, offered: &[i64], busy: &[i64]) -> Option<i64> {
     task.commander_lids
         .iter()
         .copied()
@@ -540,7 +523,11 @@ mod tests {
         // four corners follow at two spans.
         let distance = |(x, y): &(i64, i64)| (x - 593).abs() + (y - 613).abs();
         assert!(tiles[1..5].iter().all(|tile| distance(tile) == TILE_SPAN));
-        assert!(tiles[5..].iter().all(|tile| distance(tile) == 2 * TILE_SPAN));
+        assert!(
+            tiles[5..]
+                .iter()
+                .all(|tile| distance(tile) == 2 * TILE_SPAN)
+        );
         assert!(tiles.contains(&(593 - 13, 613)));
         assert!(tiles.contains(&(593 + 13, 613 + 13)));
     }
@@ -584,8 +571,16 @@ mod tests {
             level: Some(61),
         };
         let payload = json!([{"L": {"T": [[-1, 0], [-1, 0]], "U": [[607, 50], [-1, 0]]}}]);
-        let packet = attack_packet("EmpireEx_21", (593, 613), &target, 17, &payload, DEFAULT_HBW, MAP_PTT)
-            .unwrap();
+        let packet = attack_packet(
+            "EmpireEx_21",
+            (593, 613),
+            &target,
+            17,
+            &payload,
+            DEFAULT_HBW,
+            MAP_PTT,
+        )
+        .unwrap();
         assert!(packet.contains("%cra%"));
         for field in [
             "\"LID\":17",
@@ -660,7 +655,10 @@ mod tests {
             *USABLE_COMMANDER_LIDS.last().unwrap()
         );
         // 17 + 18 covers the whole pool exactly.
-        assert_eq!(plan[0].commander_lids.len() + plan[1].commander_lids.len(), 35);
+        assert_eq!(
+            plan[0].commander_lids.len() + plan[1].commander_lids.len(),
+            35
+        );
     }
 
     #[test]
@@ -687,7 +685,10 @@ mod tests {
         let offered = USABLE_COMMANDER_LIDS;
         let first = plan[0].commander_lids[0];
         let second = plan[0].commander_lids[1];
-        assert_eq!(choose_task_commander(&plan[0], offered, &[first]), Some(second));
+        assert_eq!(
+            choose_task_commander(&plan[0], offered, &[first]),
+            Some(second)
+        );
         // Whole allocation out: this task has to wait, it cannot borrow.
         assert_eq!(
             choose_task_commander(&plan[0], offered, &plan[0].commander_lids),
@@ -721,9 +722,24 @@ mod tests {
     fn target_picking_respects_the_task_band() {
         let plan = allocate_tasks(&[crossbow_61(17), kunai_35_60(18)]).unwrap();
         let targets = vec![
-            MapTarget { kingdom_id: 1, x: 600, y: 610, level: Some(61) },
-            MapTarget { kingdom_id: 1, x: 601, y: 611, level: Some(45) },
-            MapTarget { kingdom_id: 1, x: 602, y: 612, level: None },
+            MapTarget {
+                kingdom_id: 1,
+                x: 600,
+                y: 610,
+                level: Some(61),
+            },
+            MapTarget {
+                kingdom_id: 1,
+                x: 601,
+                y: 611,
+                level: Some(45),
+            },
+            MapTarget {
+                kingdom_id: 1,
+                x: 602,
+                y: 612,
+                level: None,
+            },
         ];
         let crossbow = pick_target_for_task(&targets, &plan[0], (593, 613), &[]).unwrap();
         assert_eq!(crossbow.level, Some(61));
@@ -738,7 +754,9 @@ mod tests {
     #[test]
     fn allocation_refuses_to_overrun_the_pool() {
         assert_eq!(
-            allocate_tasks(&[crossbow_61(17), kunai_35_60(18)]).unwrap().len(),
+            allocate_tasks(&[crossbow_61(17), kunai_35_60(18)])
+                .unwrap()
+                .len(),
             2
         );
         assert_eq!(
@@ -828,10 +846,30 @@ mod tests {
     #[test]
     fn target_picking_is_nearest_first_and_skips_attempts() {
         let targets = vec![
-            MapTarget { kingdom_id: 1, x: 900, y: 900, level: Some(61) },
-            MapTarget { kingdom_id: 1, x: 600, y: 610, level: Some(61) },
-            MapTarget { kingdom_id: 1, x: 601, y: 611, level: Some(45) },
-            MapTarget { kingdom_id: 0, x: 593, y: 613, level: Some(61) },
+            MapTarget {
+                kingdom_id: 1,
+                x: 900,
+                y: 900,
+                level: Some(61),
+            },
+            MapTarget {
+                kingdom_id: 1,
+                x: 600,
+                y: 610,
+                level: Some(61),
+            },
+            MapTarget {
+                kingdom_id: 1,
+                x: 601,
+                y: 611,
+                level: Some(45),
+            },
+            MapTarget {
+                kingdom_id: 0,
+                x: 593,
+                y: 613,
+                level: Some(61),
+            },
         ];
         let picked = pick_target(&targets, 1, Some(61), Some(61), (593, 613), &[]).unwrap();
         assert_eq!((picked.x, picked.y), (600, 610), "nearest level 61 wins");

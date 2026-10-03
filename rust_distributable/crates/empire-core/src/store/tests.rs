@@ -30,7 +30,10 @@ impl TempDb {
             .unwrap()
             .as_nanos();
         let mut path = std::env::temp_dir();
-        path.push(format!("openauto-{tag}-{}-{nanos}.sqlite3", std::process::id()));
+        path.push(format!(
+            "openauto-{tag}-{}-{nanos}.sqlite3",
+            std::process::id()
+        ));
         Self::clean(&path);
         let url = format!("sqlite://{}?mode=rwc", path.display());
         Self { path, url }
@@ -68,7 +71,7 @@ async fn seed_account(store: &Store, account_id: &str) {
             &[OwnedCastle {
                 kingdom_id: 1,
                 castle_id: 100,
-                area_type: 1,
+                area_type: 12,
                 x: 572,
                 y: 598,
                 name: "main".to_owned(),
@@ -93,6 +96,53 @@ async fn seed_account(store: &Store, account_id: &str) {
         .unwrap();
 }
 
+#[tokio::test]
+async fn map_scan_coverage_is_durable_and_refreshes_on_a_staggered_interval() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "scan-account").await;
+    store
+        .record_scan_window("scan-account", 1, (572, 598, 584, 610), NOW)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .scan_window_is_fresh("scan-account", 1, 572, 598, NOW + 60_000)
+            .await
+            .unwrap()
+    );
+    let due = scan_refresh_after_ms(1, 572, 598);
+    assert!((SCAN_REFRESH_BASE_MS - 1_800_000..=SCAN_REFRESH_BASE_MS + 1_800_000).contains(&due));
+    assert!(
+        !store
+            .scan_window_is_fresh("scan-account", 1, 572, 598, NOW + due + 1)
+            .await
+            .unwrap()
+    );
+    let account = store.account_summaries().await.unwrap().remove(0);
+    assert_eq!(account.kingdom_health[0].scan_window_count, 1);
+    assert_eq!(account.kingdom_health[0].target_count, 1);
+    assert_eq!(
+        (account.kingdom_health[0].x, account.kingdom_health[0].y),
+        (572, 598)
+    );
+}
+
+#[tokio::test]
+async fn account_summaries_merge_username_case_without_double_counting() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "Ventrilo").await;
+    seed_account(&store, "ventrilo").await;
+
+    let accounts = store.account_summaries().await.unwrap();
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0].account_id, "ventrilo");
+    assert_eq!(accounts[0].player_name, "Ventrilo");
+    assert_eq!(accounts[0].castle_count, 1);
+    assert_eq!(accounts[0].commander_count, 2);
+    assert_eq!(accounts[0].rbc_count, 1);
+    assert_eq!(accounts[0].kingdom_health.len(), 1);
+}
+
 // ---------------------------------------------------------------------------
 // message retention
 // ---------------------------------------------------------------------------
@@ -102,7 +152,12 @@ async fn retention_is_bounded_to_recent_messages() {
     let store = Store::open("sqlite::memory:").await.unwrap();
     for index in 0..205 {
         store
-            .record_message(index, Direction::Injected, Some("gbl"), &json!({"i": index}))
+            .record_message(
+                index,
+                Direction::Injected,
+                Some("gbl"),
+                &json!({"i": index}),
+            )
             .await
             .unwrap();
     }
@@ -343,12 +398,24 @@ async fn an_open_march_survives_a_restart() {
 
     let reopened = db.open().await;
     let open = reopened.open_marches().await.unwrap();
-    assert_eq!(open.len(), 1, "the resumed run must see the in-flight march");
+    assert_eq!(
+        open.len(),
+        1,
+        "the resumed run must see the in-flight march"
+    );
     assert_eq!(open[0].march_id, 9001);
     assert_eq!(open[0].lord_id, Some(11));
 
     reopened
-        .finish_march("ventrilo", 9001, MARCH_RETURNING, Some(0), Some(120), Some(3), NOW + 60_000)
+        .finish_march(
+            "ventrilo",
+            9001,
+            MARCH_RETURNING,
+            Some(0),
+            Some(120),
+            Some(3),
+            NOW + 60_000,
+        )
         .await
         .unwrap();
     let after = reopened.open_marches().await.unwrap();
@@ -361,7 +428,10 @@ async fn an_open_march_survives_a_restart() {
 async fn commander_lids_follow_roster_order() {
     let store = Store::open("sqlite::memory:").await.unwrap();
     seed_account(&store, "ventrilo").await;
-    assert_eq!(store.commander_lids("ventrilo").await.unwrap(), vec![11, 22]);
+    assert_eq!(
+        store.commander_lids("ventrilo").await.unwrap(),
+        vec![11, 22]
+    );
 }
 
 #[tokio::test]
@@ -657,15 +727,25 @@ async fn a_declared_task_appears_before_it_has_any_marches() {
         )
         .await
         .unwrap();
-    store.set_app_state("hunt.label", &json!("sand-crossbow-kunai"), NOW).await.unwrap();
-    store.record_march(&march(Some("sand_kunai"), 1, 25)).await.unwrap();
+    store
+        .set_app_state("hunt.label", &json!("sand-crossbow-kunai"), NOW)
+        .await
+        .unwrap();
+    store
+        .record_march(&march(Some("sand_kunai"), 1, 25))
+        .await
+        .unwrap();
     store.record_march(&march(None, 2, 0)).await.unwrap();
 
     let summary = store.hunt_summary(5).await.unwrap();
     assert_eq!(summary.label.as_deref(), Some("sand-crossbow-kunai"));
     assert_eq!(summary.marches, 2);
 
-    let names: Vec<&str> = summary.tasks.iter().map(|task| task.task_id.as_str()).collect();
+    let names: Vec<&str> = summary
+        .tasks
+        .iter()
+        .map(|task| task.task_id.as_str())
+        .collect();
     assert_eq!(
         names,
         vec!["sand_rbc_level_61_crossbow", "sand_kunai", "(earlier runs)"],
@@ -684,7 +764,10 @@ async fn a_declared_task_appears_before_it_has_any_marches() {
     assert_eq!(kunai.level_max, Some(60));
 
     let history = &summary.tasks[2];
-    assert!(!history.planned, "unlabelled rows are history, not a planned task");
+    assert!(
+        !history.planned,
+        "unlabelled rows are history, not a planned task"
+    );
     assert_eq!(history.marches, 1);
 }
 
@@ -692,7 +775,10 @@ async fn a_declared_task_appears_before_it_has_any_marches() {
 async fn a_returned_march_is_counted_against_its_task() {
     let store = Store::open("sqlite::memory:").await.unwrap();
     seed_account(&store, "ventrilo").await;
-    store.record_march(&march(Some("sand_kunai"), 77, 25)).await.unwrap();
+    store
+        .record_march(&march(Some("sand_kunai"), 77, 25))
+        .await
+        .unwrap();
 
     let attributed = store
         .finish_march_by_target(
@@ -719,6 +805,43 @@ async fn a_returned_march_is_counted_against_its_task() {
     assert_eq!(summary.tasks[0].task_id, "sand_kunai");
     assert_eq!(summary.tasks[0].returned, 1);
     assert_eq!(summary.recent[0].status, MARCH_RETURNING);
+}
+
+#[tokio::test]
+async fn dashboard_rates_series_and_scan_activity_come_from_the_database() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    let real_now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let mut recent = march(Some("sand_kunai"), 88, 25);
+    recent.sent_at_ms = real_now - 30_000;
+    store.record_march(&recent).await.unwrap();
+    store
+        .finish_march(
+            "ventrilo",
+            88,
+            MARCH_RETURNING,
+            Some(0),
+            Some(500),
+            Some(7),
+            real_now,
+        )
+        .await
+        .unwrap();
+    store
+        .record_scan_window("ventrilo", 1, (500, 500, 512, 512), real_now)
+        .await
+        .unwrap();
+
+    let dashboard = store.dashboard_summary().await.unwrap();
+    assert_eq!(dashboard.attacks_last_hour, 1);
+    assert_eq!(dashboard.returns_last_hour, 1);
+    assert_eq!(dashboard.rubies_last_hour, 7);
+    assert_eq!(dashboard.coins_last_hour, 500);
+    assert_eq!(dashboard.ruby_series.last().unwrap().value, 7);
+    assert_eq!(dashboard.scan_activity[0].windows, 1);
 }
 
 #[tokio::test]
@@ -768,4 +891,158 @@ async fn a_march_that_never_comes_back_stops_counting_as_in_flight() {
     assert!(!stopped.active, "a stale heartbeat means no run is alive");
     assert_eq!(stopped.in_flight, 0);
     assert_eq!(stopped.marches, 2, "history is still reported when stopped");
+}
+
+#[tokio::test]
+async fn complete_mode_import_generates_ids_and_is_capacity_checked() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    let mode_id = store
+        .import_mode_bundle(&crate::planning::ventrilo_sands_bundle(), NOW)
+        .await
+        .unwrap();
+
+    assert_eq!(store.attack_profiles().await.unwrap().len(), 2);
+    assert_eq!(store.tasks().await.unwrap().len(), 2);
+    let modes = store.modes().await.unwrap();
+    assert_eq!(modes[0].mode_id, mode_id);
+    assert_eq!(modes[0].task_ids.len(), 2);
+    assert_eq!(modes[0].allocations[0].commander_count, 17);
+    assert_eq!(modes[0].allocations[1].commander_count, 18);
+    assert_eq!(modes[0].commander_count, 35);
+
+    let error = store
+        .subscribe_account_mode("ventrilo", mode_id, true, NOW)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("needs 35 commanders"));
+
+    let small_mode = store
+        .create_mode(
+            "Two commanders",
+            &[crate::planning::ModeTaskDraft {
+                task_id: modes[0].task_ids[0].clone(),
+                commander_count: 2,
+            }],
+            NOW,
+        )
+        .await
+        .unwrap();
+    store
+        .subscribe_account_mode("ventrilo", small_mode, true, NOW)
+        .await
+        .unwrap();
+    let account_modes = store.account_modes().await.unwrap();
+    assert_eq!(account_modes.len(), 1);
+    assert_eq!(account_modes[0].mode_id, small_mode);
+    assert!(account_modes[0].running);
+}
+
+#[tokio::test]
+async fn a_running_mode_compiles_tasks_and_reserves_each_target_once() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    store
+        .replace_account_bootstrap(
+            "ventrilo",
+            &[OwnedCastle {
+                kingdom_id: 1,
+                castle_id: 100,
+                area_type: 12,
+                x: 593,
+                y: 613,
+                name: "Sands".to_owned(),
+            }],
+            &[0, 2],
+            NOW,
+        )
+        .await
+        .unwrap();
+    let imported = store
+        .import_mode_bundle(&crate::planning::ventrilo_sands_bundle(), NOW)
+        .await
+        .unwrap();
+    let imported_mode = store
+        .modes()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|mode| mode.mode_id == imported)
+        .unwrap();
+    let mode_id = store
+        .create_mode(
+            "Executable",
+            &[crate::planning::ModeTaskDraft {
+                task_id: imported_mode.task_ids[0].clone(),
+                commander_count: 2,
+            }],
+            NOW,
+        )
+        .await
+        .unwrap();
+    store
+        .subscribe_account_mode("VENTRILO", mode_id, true, NOW)
+        .await
+        .unwrap();
+
+    assert!(store.account_mode_running("ventrilo").await.unwrap());
+    let tasks = store.active_mode_tasks("ventrilo").await.unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].commander_lids, vec![0, 2]);
+    assert!(tasks[0].payload.is_array());
+
+    // Older releases could persist a second physical row for username casing.
+    // It is still one logical target and reserving both copies must succeed.
+    store
+        .upsert_account_profile("Ventrilo", "Ventrilo", "wss://example/", "EmpireEx_21", NOW)
+        .await
+        .unwrap();
+    store
+        .upsert_rbc_targets(
+            "Ventrilo",
+            &[RbcTarget {
+                kingdom_id: 1,
+                x: 600,
+                y: 610,
+                level: Some(61),
+            }],
+            NOW,
+        )
+        .await
+        .unwrap();
+
+    let first = store
+        .reserve_rbc_target(
+            "ventrilo",
+            1,
+            Some(61),
+            Some(61),
+            (593, 613),
+            "advanced",
+            NOW,
+            NOW + 720_000,
+        )
+        .await
+        .unwrap();
+    assert!(first.is_some());
+    let second = store
+        .reserve_rbc_target(
+            "ventrilo",
+            1,
+            Some(61),
+            Some(61),
+            (593, 613),
+            "advanced",
+            NOW,
+            NOW + 720_000,
+        )
+        .await
+        .unwrap();
+    assert!(
+        second.is_none(),
+        "a leased target must not be selected twice"
+    );
+    assert!(store.account_has_targets("VENTRILO", 1).await.unwrap());
+    store.stop_account_mode("Ventrilo", NOW + 1).await.unwrap();
+    assert!(!store.account_mode_running("ventrilo").await.unwrap());
 }

@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -204,7 +204,79 @@ const V2: Migration = &[
     )",
 ];
 
-pub const MIGRATIONS: &[Migration] = &[V1, V2];
+/// User-facing plan composition. Attack payloads and task definitions remain
+/// in V2; this migration adds concrete route data and ordered reusable modes.
+const V3: Migration = &[
+    "CREATE UNIQUE INDEX IF NOT EXISTS attack_profile_name_idx
+        ON attack_profile (name COLLATE NOCASE)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS task_definition_name_idx
+        ON task_definition (name COLLATE NOCASE)",
+    "CREATE TABLE IF NOT EXISTS task_runtime (
+        task_id TEXT PRIMARY KEY,
+        source_kingdom_id INTEGER NOT NULL,
+        source_x INTEGER NOT NULL,
+        source_y INTEGER NOT NULL,
+        target_kingdom_id INTEGER NOT NULL,
+        target_x INTEGER NOT NULL,
+        target_y INTEGER NOT NULL,
+        travel_mode TEXT NOT NULL DEFAULT 'coin',
+        hbw INTEGER NOT NULL DEFAULT 1007,
+        FOREIGN KEY (task_id) REFERENCES task_definition(task_id) ON DELETE CASCADE
+    )",
+    "CREATE TABLE IF NOT EXISTS automation_mode (
+        mode_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS automation_mode_task (
+        mode_id INTEGER NOT NULL,
+        task_id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        PRIMARY KEY (mode_id, position),
+        UNIQUE (mode_id, task_id),
+        FOREIGN KEY (mode_id) REFERENCES automation_mode(mode_id) ON DELETE CASCADE,
+        FOREIGN KEY (task_id) REFERENCES task_definition(task_id) ON DELETE RESTRICT
+    )",
+    "CREATE TABLE IF NOT EXISTS account_mode (
+        account_id TEXT PRIMARY KEY,
+        mode_id INTEGER NOT NULL,
+        running INTEGER NOT NULL DEFAULT 0,
+        updated_at_ms INTEGER NOT NULL,
+        FOREIGN KEY (account_id) REFERENCES account_profile(account_id) ON DELETE CASCADE,
+        FOREIGN KEY (mode_id) REFERENCES automation_mode(mode_id) ON DELETE CASCADE
+    )",
+];
+
+/// Dynamic farming sources and durable map-discovery coverage.
+const V4: Migration = &[
+    "ALTER TABLE task_runtime ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'coordinate'",
+    "CREATE TABLE IF NOT EXISTS map_scan_window (
+        account_id TEXT NOT NULL,
+        kingdom_id INTEGER NOT NULL,
+        ax1 INTEGER NOT NULL,
+        ay1 INTEGER NOT NULL,
+        ax2 INTEGER NOT NULL,
+        ay2 INTEGER NOT NULL,
+        scanned_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (account_id, kingdom_id, ax1, ay1),
+        FOREIGN KEY (account_id) REFERENCES account_profile(account_id) ON DELETE CASCADE
+    )",
+    "CREATE INDEX IF NOT EXISTS map_scan_window_health_idx
+        ON map_scan_window (account_id, kingdom_id, scanned_at_ms)",
+];
+
+/// Commander capacity belongs to a mode allocation, not to the reusable task.
+const V5: Migration = &[
+    "ALTER TABLE automation_mode_task ADD COLUMN commander_count INTEGER NOT NULL DEFAULT 1",
+    "UPDATE automation_mode_task
+     SET commander_count = COALESCE(
+        (SELECT commander_count FROM task_definition t
+         WHERE t.task_id = automation_mode_task.task_id), 1
+     )",
+];
+
+pub const MIGRATIONS: &[Migration] = &[V1, V2, V3, V4, V5];
 
 /// Every table that holds user data, for the storage report and full wipe.
 /// Order matters for deletion: children before parents.
@@ -215,11 +287,16 @@ pub const DATA_TABLES: &[&str] = &[
     "attack_ledger",
     "commander_state",
     "task_subscription",
+    "account_mode",
+    "automation_mode_task",
+    "automation_mode",
+    "task_runtime",
     "task_definition",
     "attack_profile",
     "account_castle_unit",
     "recruit_castle_state",
     "account_navigation",
+    "map_scan_window",
     "rbc_target",
     "account_commander",
     "owned_castle",

@@ -14,6 +14,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -60,7 +62,20 @@ fn open_window() {
 /// never disturbs a signed-in session.
 async fn ensure_service() {
     if empire_daemon::service_is_running(DEFAULT_BIND).await {
-        return;
+        if service_is_compatible() {
+            return;
+        }
+        eprintln!("replacing an incompatible OpenAuto background service");
+        if !stop_legacy_service() {
+            eprintln!("could not identify the incompatible OpenAuto service");
+            return;
+        }
+        for _ in 0..40 {
+            if !empire_daemon::service_is_running(DEFAULT_BIND).await {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
     if let Err(error) = spawn_service() {
         eprintln!("could not start the OpenAuto service: {error}");
@@ -73,6 +88,65 @@ async fn ensure_service() {
         std::thread::sleep(Duration::from_millis(250));
     }
     eprintln!("the OpenAuto service did not come up in time");
+}
+
+/// Probe the versioned health contract rather than accepting anything on our
+/// port. Desktop and service ship together, so an older API must be replaced.
+fn service_is_compatible() -> bool {
+    let Ok(address) = DEFAULT_BIND.parse::<SocketAddr>() else {
+        return false;
+    };
+    let Ok(mut socket) = TcpStream::connect_timeout(&address, Duration::from_millis(400)) else {
+        return false;
+    };
+    let _ = socket.set_read_timeout(Some(Duration::from_millis(600)));
+    let _ = socket.set_write_timeout(Some(Duration::from_millis(600)));
+    if socket
+        .write_all(b"GET /v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    let mut response = Vec::with_capacity(1024);
+    let Ok(_) = socket.read_to_end(&mut response) else {
+        return false;
+    };
+    let response = String::from_utf8_lossy(&response);
+    response.starts_with("HTTP/1.1 200") && response.contains("\"api_version\":12")
+}
+
+/// Stop only a process conclusively identified as our legacy macOS service.
+/// The current service predates versioned health responses, so one guarded
+/// process lookup is needed to make the first upgrade self-healing.
+#[cfg(target_os = "macos")]
+fn stop_legacy_service() -> bool {
+    let Ok(output) = Command::new("lsof")
+        .args(["-nP", "-iTCP:47821", "-sTCP:LISTEN", "-t"])
+        .output()
+    else {
+        return false;
+    };
+    for pid in String::from_utf8_lossy(&output.stdout).lines() {
+        let Ok(command) = Command::new("ps")
+            .args(["-p", pid, "-o", "command="])
+            .output()
+        else {
+            continue;
+        };
+        let command = String::from_utf8_lossy(&command.stdout);
+        if command.contains("empire-desktop") && command.contains(SERVICE_FLAG) {
+            return Command::new("kill")
+                .args(["-TERM", pid])
+                .status()
+                .is_ok_and(|status| status.success());
+        }
+    }
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+fn stop_legacy_service() -> bool {
+    false
 }
 
 /// Launch ourselves in service mode, detached from this window's lifetime.

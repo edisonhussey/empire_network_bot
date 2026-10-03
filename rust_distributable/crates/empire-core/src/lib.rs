@@ -11,6 +11,8 @@ pub mod injection;
 pub mod licence;
 pub mod pacing;
 pub mod paths;
+#[cfg(feature = "application")]
+pub mod planning;
 pub mod protocol;
 #[cfg(feature = "application")]
 pub mod scheduler;

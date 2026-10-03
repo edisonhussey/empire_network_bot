@@ -1,5 +1,6 @@
 mod direct;
 mod licence;
+mod plans;
 mod relay;
 
 use std::{
@@ -16,7 +17,7 @@ use axum::{
     extract::{Query, State, ws::WebSocketUpgrade},
     http::{HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use empire_core::{
     injection::InjectionRequest,
@@ -44,6 +45,8 @@ struct AppState {
 #[derive(Debug, Serialize)]
 struct Health {
     status: &'static str,
+    api_version: u16,
+    service_pid: u32,
     licence_active: bool,
     transport_connected: bool,
     recent_message_limit: i64,
@@ -148,12 +151,20 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
         .route("/v1/health", get(health))
         .route("/v1/licence", get(licence_status).post(activate_licence))
         .route("/v1/messages", get(messages))
-        .route(
-            "/v1/accounts",
-            get(accounts).post(initialize_account),
-        )
+        .route("/v1/accounts", get(accounts).post(initialize_account))
         .route("/v1/hunt", get(hunt))
+        .route("/v1/dashboard", get(dashboard))
         .route("/v1/injections", post(inject))
+        .route("/v1/plans", get(plans::library))
+        .route("/v1/plans/example", get(plans::example))
+        .route("/v1/plans/attacks", post(plans::create_attack))
+        .route("/v1/plans/attacks/{id}", delete(plans::delete_attack))
+        .route("/v1/plans/tasks", post(plans::create_task))
+        .route("/v1/plans/tasks/{id}", delete(plans::delete_task))
+        .route("/v1/plans/modes", post(plans::create_mode))
+        .route("/v1/plans/modes/{id}", delete(plans::delete_mode))
+        .route("/v1/plans/import", post(plans::import_mode))
+        .route("/v1/plans/subscribe", post(plans::subscribe_mode))
         .route(
             "/v1/direct",
             get(direct_status)
@@ -185,6 +196,11 @@ async fn direct_connect(
         .map_err(ApiError::forbidden)?;
     if !request.endpoint.starts_with("wss://") {
         return Err(ApiError::bad_request("direct endpoint must use wss://"));
+    }
+    if request.settings.map_scan_radius > 500 {
+        return Err(ApiError::bad_request(
+            "scan radius must be between 0 and 500",
+        ));
     }
     if request.credentials.player_name.is_empty()
         || request.credentials.portal_account_id.is_empty()
@@ -228,10 +244,18 @@ async fn initialize_account(
     if request.username.trim().is_empty() || request.password.is_empty() {
         return Err(ApiError::bad_request("username and password are required"));
     }
+    if request.scan_radius > 500 {
+        return Err(ApiError::bad_request(
+            "scan radius must be between 0 and 500",
+        ));
+    }
     direct_connect(State(state), Json(request.into_direct())).await
 }
 
 async fn direct_disconnect(State(state): State<AppState>) -> StatusCode {
+    if let Some(account_id) = state.direct_status.read().await.account_id.clone() {
+        let _ = state.store.stop_account_mode(&account_id, now_ms()).await;
+    }
     if let Some(task) = state.direct_task.lock().await.take() {
         task.abort();
     }
@@ -244,6 +268,8 @@ async fn health(State(state): State<AppState>) -> Json<Health> {
     let licence_active = state.licence.status().await.active;
     Json(Health {
         status: "ok",
+        api_version: 12,
+        service_pid: std::process::id(),
         licence_active,
         transport_connected: state.active_transport.read().await.is_some(),
         recent_message_limit: empire_core::RECENT_MESSAGE_LIMIT,
@@ -279,6 +305,17 @@ async fn hunt(
     Ok(Json(state.store.hunt_summary(20).await?))
 }
 
+async fn dashboard(
+    State(state): State<AppState>,
+) -> Result<Json<empire_core::store::DashboardSummary>, ApiError> {
+    state
+        .licence
+        .require("account_initialize")
+        .await
+        .map_err(ApiError::forbidden)?;
+    Ok(Json(state.store.dashboard_summary().await?))
+}
+
 async fn accounts(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<empire_core::store::AccountSummary>>, ApiError> {
@@ -286,7 +323,8 @@ async fn accounts(
         .licence
         .require("account_initialize")
         .await
-        .map_err(ApiError::forbidden)?;    Ok(Json(state.store.account_summaries().await?))
+        .map_err(ApiError::forbidden)?;
+    Ok(Json(state.store.account_summaries().await?))
 }
 
 async fn inject(
@@ -381,10 +419,10 @@ struct ApiError {
 }
 
 impl ApiError {
-    fn bad_request(message: impl Into<String>) -> Self {
+    fn bad_request(message: impl std::fmt::Display) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
-            message: message.into(),
+            message: message.to_string(),
         }
     }
 
@@ -398,6 +436,13 @@ impl ApiError {
     fn forbidden(message: impl std::fmt::Display) -> Self {
         Self {
             status: StatusCode::FORBIDDEN,
+            message: message.to_string(),
+        }
+    }
+
+    fn internal(message: impl std::fmt::Display) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
             message: message.to_string(),
         }
     }

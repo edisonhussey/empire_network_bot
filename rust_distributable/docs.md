@@ -82,5 +82,19 @@ webview has visually changed.
 - No claim is made that every account resolves `CID=-1` to the desired castle.
   Explicit castle selection can be added once the castle inventory parser is
   promoted into the direct-session planner.
-- Attack timing and the four-second `cra` separation belong to the scheduler,
-  not to login or map reads. The direct session does not yet send attacks.
+- A running account mode is executed by the direct session after Sands is
+  ready. The runner leases a database target, sends `adi`, selects an available
+  commander from that task's allocation, waits the configured jitter, then
+  sends `cra`. It does not depend on the visible client screen.
+- The four-second `cra` separation is a hard transport-level floor. Normal
+  waits add variance above it. An acknowledged march is written immediately;
+  commander availability and the target's last-attack time are durable.
+- Stopping an account mode prevents a pending `cra` from being committed. A
+  disconnected socket cannot execute a mode even if its database flag is on.
+- Account discovery and map targets persist locally. A normal login for an
+  initialized account reuses that data and skips map refresh packets; an
+  explicit additional scan reconnects with a chosen radius and requests only
+  windows that are not still fresh.
+- Network logs can continue to show stored history while disconnected, but
+  they are live only while the direct game socket is connected. Closing or
+  losing that socket stops the account's running mode.

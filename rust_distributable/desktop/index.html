@@ -27,10 +27,12 @@
       <aside>
         <div class="brand"><div class="app-icon small" aria-hidden="true"><span></span></div><div>OpenAuto<small>Automation, simplified.</small></div></div>
         <nav aria-label="Primary navigation">
-          <button class="active"><span class="nav-icon">⌂</span>Overview</button>
-          <button disabled><span class="nav-icon">⌁</span>Attack plans</button>
-          <button disabled><span class="nav-icon">＋</span>Recruitment</button>
-          <button disabled><span class="nav-icon">◷</span>Schedules</button>
+          <button class="active" data-view="dashboard"><span class="nav-icon">▤</span>Dashboard</button>
+          <button data-view="attacks"><span class="nav-icon">⌁</span>Create attack</button>
+          <button data-view="tasks"><span class="nav-icon">◇</span>Create task</button>
+          <button data-view="modes"><span class="nav-icon">▦</span>Create mode</button>
+          <button data-view="accounts"><span class="nav-icon">●</span>Accounts</button>
+          <button data-view="logs"><span class="nav-icon">≡</span>Logs</button>
         </nav>
         <div class="side-footer">
           <button id="add-credits" class="licence-button"><span>OpenAuto plan</span><b id="licence-expiry">Checking…</b></button>
@@ -40,78 +42,95 @@
 
       <main>
         <header>
-          <div><p class="eyebrow">Overview</p><h1>Good evening</h1></div>
+          <div><p id="page-eyebrow" class="eyebrow">Overview</p><h1 id="page-title">Dashboard</h1></div>
           <span id="status" class="status">Getting ready</span>
         </header>
 
-        <section class="welcome-card">
-          <div class="welcome-copy">
-            <p class="eyebrow">Account setup</p>
-            <h2>Connect your kingdom</h2>
-            <p>Choose your server and sign in. OpenAuto will discover your castles and prepare everything automatically.</p>
-          </div>
-          <div class="readiness">
-            <span>Setup status</span>
-            <strong id="phase">Ready to connect</strong>
-          </div>
+        <section id="view-dashboard" class="view active-view">
+          <section class="dashboard-status-card">
+            <div><span id="dashboard-dot" class="live-dot"></span><p class="eyebrow">Automation status</p><h2 id="dashboard-state">Checking…</h2><p id="dashboard-subtitle">Reading the background service</p></div>
+            <button id="dashboard-refresh" class="secondary-action" type="button">Refresh</button>
+          </section>
+          <section class="dashboard-metrics">
+            <article class="metric-card"><span class="metric-icon blue">↗</span><div><p>Attacks sent</p><strong id="metric-attacks">—</strong><small id="metric-returned">— returned</small></div></article>
+            <article class="metric-card"><span class="metric-icon green">✓</span><div><p>In flight</p><strong id="metric-flight">—</strong><small>Currently recorded</small></div></article>
+            <article class="metric-card"><span class="metric-icon gold">●</span><div><p>Coins collected</p><strong id="metric-coins">—</strong><small>Recorded attack returns</small></div></article>
+            <article class="metric-card"><span class="metric-icon red">◆</span><div><p>Rubies collected</p><strong id="metric-rubies">—</strong><small>Recorded attack returns</small></div></article>
+          </section>
+          <section class="dashboard-grid">
+            <article class="card dashboard-panel"><div class="card-title"><div><p class="eyebrow">Account health</p><h2>Discovered state</h2></div></div><div id="dashboard-health" class="health-stat-grid"></div></article>
+            <article class="card dashboard-panel"><div class="card-title"><div><p class="eyebrow">Current setup</p><h2>Automation assignment</h2></div></div><div id="dashboard-assignment" class="assignment-summary"></div></article>
+            <article class="card dashboard-panel dashboard-wide ruby-chart-panel"><div class="card-title"><div><p class="eyebrow">Database history</p><h2>Recorded ruby returns · last 24 hours</h2></div><span id="chart-updated" class="chart-updated">Updating…</span></div><div class="hourly-rates"><div><b id="rate-attacks">—</b><span>Attacks / hour</span></div><div><b id="rate-returns">—</b><span>Returns / hour</span></div><div><b id="rate-rubies">—</b><span>Rubies / hour</span></div><div><b id="rate-coins">—</b><span>Coins / hour</span></div></div><div id="ruby-chart" class="ruby-chart" role="img" aria-label="Cumulative recorded rubies over the last 24 hours"></div></article>
+            <article class="card dashboard-panel dashboard-wide"><div class="card-title"><div><p class="eyebrow">Recent activity</p><h2>Human-readable database events</h2></div><span class="chart-updated">Scrollable</span></div><div id="dashboard-activity" class="activity-list"></div></article>
+          </section>
         </section>
 
-        <div class="content-grid">
-          <section class="card connect-card">
-            <div class="card-title">
-              <div><p class="eyebrow">New account</p><h2>Sign in</h2></div>
-              <span class="secure-badge">Private connection</span>
-            </div>
-            <form id="direct-form" class="account-form" autocomplete="off">
-              <label for="server">Server</label>
-              <div class="select-wrap"><select id="server" required><option value="US1">US1 — United States</option></select></div>
-              <label for="player-name">Username</label>
-              <input id="player-name" placeholder="Your username" autocomplete="username" autocapitalize="none" spellcheck="false" required />
-              <label for="password">Password</label>
-              <div class="password-wrap">
-                <input id="password" type="password" autocomplete="current-password" required />
-                <button id="toggle-password" class="reveal" type="button" aria-label="Show password">Show</button>
-              </div>
-              <button id="initialize" class="primary-action" type="submit">Connect account</button>
-              <output id="direct-result" role="status"></output>
-            </form>
+        <section id="view-attacks" class="view" hidden>
+          <section class="welcome-card compact-welcome">
+            <div class="welcome-copy"><p class="eyebrow">Army template</p><h2>Build one reusable attack</h2><p>Choose troops and tools by name. OpenAuto handles game IDs and the packet structure.</p></div>
+            <div class="welcome-actions"><button id="clear-attack" class="secondary-action danger-outline" type="button">Reset attack</button><button id="copy-attack" class="secondary-action" type="button">Copy JSON</button></div>
           </section>
-
-          <section class="card progress-card">
-            <p class="eyebrow">Automatic setup</p>
-            <h2>OpenAuto handles the rest</h2>
-            <div class="progress-list">
-              <div><i>1</i><span><b>Sign in securely</b><small>Connect to your selected server</small></span></div>
-              <div><i>2</i><span><b>Discover your account</b><small>Find castles and available commanders</small></span></div>
-              <div><i>3</i><span><b>Prepare your map</b><small>Open Burning Sands and learn nearby targets</small></span></div>
-            </div>
-          </section>
-        </div>
-
-        <section class="card run-card">
-          <div class="card-title">
-            <div><p class="eyebrow">Live run</p><h2 id="run-label">No run yet</h2></div>
-            <span id="run-state" class="status">Idle</span>
-          </div>
-          <div class="run-grid">
-            <div><b id="run-marches">0</b><span>Marches</span></div>
-            <div><b id="run-inflight">0</b><span>In flight</span></div>
-            <div><b id="run-coins">0</b><span>Coins</span></div>
-            <div><b id="run-rubies">0</b><span>Rubies</span></div>
-          </div>
-          <ul id="run-tasks" class="run-tasks"></ul>
-          <div id="run-recent" class="run-recent"></div>
+          <form id="attack-form" class="card builder-card">
+            <div class="builder-name"><label for="attack-name">Attack name</label><input id="attack-name" placeholder="e.g. Kunai flank clear" required /></div>
+            <div id="wave-tabs" class="segmented"><button type="button" class="selected" data-wave="0">Wave 1</button><button type="button" data-wave="1">Wave 2</button><button type="button" data-wave="2">Wave 3</button><button type="button" data-wave="3">Wave 4</button></div>
+            <div id="wave-builder" class="wave-builder"></div>
+            <div class="form-actions"><output id="attack-result"></output><button class="primary-action" type="submit">Save attack</button></div>
+          </form>
+          <section class="card library-card"><div class="card-title"><div><p class="eyebrow">Attack library</p><h2>Saved attacks</h2></div></div><div id="attack-library" class="library-list"></div></section>
         </section>
 
-        <section class="card accounts-card">
-          <div class="card-title">
-            <div><p class="eyebrow">Your workspace</p><h2>Connected accounts</h2></div>
-            <button id="refresh-accounts" class="icon-button" type="button" aria-label="Refresh accounts">↻</button>
+        <section id="view-tasks" class="view" hidden>
+          <section class="welcome-card compact-welcome"><div class="welcome-copy"><p class="eyebrow">Repeatable job</p><h2>Turn an attack into a task</h2><p>Describe a reusable farming job. Commander capacity is assigned later in the scheduler.</p></div></section>
+          <form id="task-form" class="card task-form">
+            <div class="field wide"><label for="task-name">Task name</label><input id="task-name" placeholder="e.g. Sands level 61" required /></div>
+            <div class="field wide"><label for="task-attack">Attack</label><div class="select-wrap"><select id="task-attack" required></select></div></div>
+            <fieldset class="wide"><legend>Farm from</legend><div class="farm-source"><label>Kingdom<div class="select-wrap"><select id="source-kid" required></select></div></label><label class="source-default"><input id="use-main-castle" type="checkbox" checked /><span>Use main castle automatically</span></label><div class="source-coordinates"><label>X<input id="source-x" type="number" value="0" disabled required /></label><label>Y<input id="source-y" type="number" value="0" disabled required /></label></div></div><p class="field-hint">Uncheck the automatic castle to use exact coordinates. Farming attacks stay inside their kingdom.</p></fieldset>
+            <fieldset class="wide"><legend>Dynamic target</legend><div class="target-grid"><label>Target type<div class="select-wrap"><select id="target-kind"><option value="rbc">Robber Baron</option><option value="fortress">Fortress</option></select></div></label><label>Algorithm<div class="select-wrap"><select id="target-algorithm"><option value="advanced">Advanced</option><option value="closest">Closest</option><option value="random">Random</option></select></div></label><div id="target-level-fields" class="level-fields"><label>Minimum level<input id="target-level-min" type="number" min="1" value="35" required /></label><label>Maximum level<input id="target-level-max" type="number" min="1" value="60" required /></label></div></div><p id="target-hint" class="field-hint">OpenAuto chooses a learned target in this level range; no destination coordinate is required.</p></fieldset>
+            <div class="field"><label for="travel">Travel</label><div class="select-wrap"><select id="travel"><option value="coin">Coin</option></select></div></div>
+            <div class="field wide priority-field"><label>Priority</label><div id="priority-buttons" class="segmented priority-buttons"><button type="button" data-priority="extra_high">Extra high</button><button type="button" data-priority="high">High</button><button type="button" class="selected" data-priority="medium">Medium</button><button type="button" data-priority="low">Low</button></div></div>
+            <div class="form-actions wide"><output id="task-result"></output><button class="primary-action" type="submit">Save task</button></div>
+          </form>
+          <section class="card library-card"><div class="card-title"><div><p class="eyebrow">Task library</p><h2>Saved tasks</h2></div></div><div id="task-library" class="library-list"></div></section>
+        </section>
+
+        <section id="view-modes" class="view" hidden>
+          <section class="welcome-card compact-welcome"><div class="welcome-copy"><p class="eyebrow">Scheduler</p><h2>Allocate tasks to commanders</h2><p>Add reusable tasks, choose their capacity, and arrange the run order from left to right.</p></div><button id="copy-mode" class="secondary-action" type="button">Copy JSON</button></section>
+          <form id="mode-form" class="card mode-builder">
+            <div class="builder-name"><label for="mode-name">Mode name</label><input id="mode-name" placeholder="e.g. Ventrilo Sands" required /></div>
+            <div><p class="list-label">Available reusable tasks — drag or press Add</p><div id="available-tasks" class="drag-list available-task-list"></div></div><div class="scheduler-section"><p class="list-label">Schedule order — left to right, commanders numbered from 1</p><div id="mode-tasks" class="mode-drop scheduler-track"><div class="drop-hint">Add a task to begin the schedule</div></div></div>
+            <div id="commander-warning" class="capacity-note">0 commanders allocated</div>
+            <div class="form-actions"><output id="mode-result"></output><button class="primary-action" type="submit">Save mode</button></div>
+          </form>
+          <section class="card import-card"><div><p class="eyebrow">Mode JSON</p><h2>Import a complete mode</h2><p>Attacks and tasks inside the JSON receive new internal IDs automatically.</p></div><textarea id="mode-json" placeholder="Paste mode JSON" spellcheck="false"></textarea><div class="form-actions"><button id="load-example" class="secondary-action" type="button">Load Ventrilo example</button><button id="import-mode" class="primary-action" type="button">Import mode</button></div><output id="import-result"></output></section>
+          <section class="card library-card"><div class="card-title"><div><p class="eyebrow">Mode library</p><h2>Saved modes</h2></div></div><div id="mode-library" class="library-list"></div></section>
+        </section>
+
+        <section id="view-accounts" class="view" hidden>
+          <div id="account-onboarding">
+          <section class="welcome-card"><div class="welcome-copy"><p class="eyebrow">Account setup</p><h2>Connect your kingdom</h2><p>Choose your server and sign in. OpenAuto discovers your castles and prepares everything automatically.</p></div><div class="readiness"><span>Setup status</span><strong id="phase">Ready to connect</strong></div></section>
+          <div class="content-grid">
+            <section class="card connect-card"><div class="card-title"><div><p class="eyebrow">New account</p><h2>Initial setup</h2></div><span class="secure-badge">Private connection</span></div><form id="direct-form" class="account-form" autocomplete="off"><label for="server">Server</label><div class="select-wrap"><select id="server" required><option value="US1">US1 — United States</option></select></div><label for="player-name">Username</label><input id="player-name" value="Ventrilo" autocomplete="username" autocapitalize="none" spellcheck="false" required /><label for="password">Password</label><div class="password-wrap"><input id="password" type="password" autocomplete="current-password" required /><button id="toggle-password" class="reveal" type="button" aria-label="Show password">Show</button></div><label for="scan-radius">Initial Sands map radius <span class="optional-label">Map distance</span></label><input id="scan-radius" type="number" min="0" max="500" value="50" /><p id="scan-estimate" class="form-hint">Radius 50 covers an 8×8 grid: 64 paced map requests. Recent areas are reused.</p><button id="initialize" class="primary-action" type="submit">Initialize account</button><output id="direct-result" role="status"></output></form></section>
+            <section class="card progress-card"><p class="eyebrow">Automatic setup</p><h2>OpenAuto handles the rest</h2><div class="progress-list"><div><i>1</i><span><b>Sign in securely</b><small>Connect to your selected server</small></span></div><div><i>2</i><span><b>Discover your account</b><small>Find castles and available commanders</small></span></div><div><i>3</i><span><b>Prepare your map</b><small>Open Burning Sands and learn nearby targets</small></span></div></div></section>
           </div>
-          <div id="accounts" class="account-grid"><div class="empty-state"><i>＋</i><p>Your connected accounts will appear here.</p></div></div>
+          </div>
+          <section class="card accounts-card"><div class="card-title"><div><p class="eyebrow">Your workspace</p><h2>Saved accounts</h2></div><button id="refresh-accounts" class="icon-button" type="button" aria-label="Refresh accounts">↻</button></div><div id="accounts" class="account-grid"><div class="empty-state"><i>＋</i><p>Your saved accounts will appear here.</p></div></div></section>
+        </section>
+
+        <section id="view-logs" class="view" hidden>
+          <section class="card log-card"><div class="card-title"><div><p class="eyebrow">Support console</p><h2>Connection logs</h2></div><div class="row-actions"><span id="log-live" class="log-live offline"><i></i><span id="log-live-label">Offline</span></span><button id="refresh-logs" class="secondary-action" type="button">Refresh now</button><button id="copy-logs" class="secondary-action" type="button">Copy logs</button></div></div><p class="log-note">Updates automatically only while a game socket is connected. Passwords and session tokens are removed.</p><pre id="account-logs" class="log-console">No active connection. Stored events remain available below.</pre><output id="log-result"></output></section>
         </section>
       </main>
     </div>
+
+    <dialog id="item-picker">
+      <div class="picker-head"><div><p class="eyebrow">Choose item</p><h2 id="picker-title">Add troop</h2></div><button id="close-picker" class="icon-button" type="button">×</button></div>
+      <label for="item-search">Search or scroll</label>
+      <input id="item-search" type="search" placeholder="Start typing a troop or tool name" autocomplete="off" />
+      <div id="item-results" class="picker-results"></div>
+      <div class="picker-selection"><span>Selected</span><strong id="picker-selection">Choose an option above</strong></div>
+      <label for="item-amount">Quantity</label><input id="item-amount" type="number" min="1" value="1" />
+      <div class="picker-actions"><button id="clear-item" class="secondary-action" type="button">Clear slot</button><button id="confirm-item" class="primary-action" type="button" disabled>Add to attack</button></div>
+    </dialog>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

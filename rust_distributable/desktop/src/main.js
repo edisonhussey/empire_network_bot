@@ -1,58 +1,49 @@
 const API = "http://127.0.0.1:47821/v1";
-
-// Matches the store's `STALE_MARCH_MILLIS`: a march sent longer ago than this
-// without a return is treated as lost rather than still in flight.
-const STALE_MARCH_MILLIS = 60 * 60 * 1000;
-const activation = document.querySelector("#activation");
-const appShell = document.querySelector("#app-shell");
-const licenceResult = document.querySelector("#licence-result");
-const closeActivation = document.querySelector("#close-activation");
-const status = document.querySelector("#status");
-const gateway = document.querySelector("#gateway-label");
-const phase = document.querySelector("#phase");
-const accounts = document.querySelector("#accounts");
-const directResult = document.querySelector("#direct-result");
-const initializeButton = document.querySelector("#initialize");
-const usernameInput = document.querySelector("#player-name");
-const runLabel = document.querySelector("#run-label");
-const runState = document.querySelector("#run-state");
-const runTasks = document.querySelector("#run-tasks");
-const runRecent = document.querySelector("#run-recent");
+const $ = (selector) => document.querySelector(selector);
+const activation = $("#activation");
+const appShell = $("#app-shell");
 let currentLicence = null;
-
-const USERNAME_STORAGE_KEY = "openauto.username";
-
-function rememberedUsername() {
-  try {
-    return localStorage.getItem(USERNAME_STORAGE_KEY) || "";
-  } catch {
-    return "";
-  }
-}
-
-function rememberUsername(username) {
-  try {
-    localStorage.setItem(USERNAME_STORAGE_KEY, username);
-  } catch {
-    return;
-  }
-}
-
-usernameInput.value = rememberedUsername();
+let library = { catalog: [], kingdoms: [], attacks: [], tasks: [], task_runtimes: [], subscriptions: [], modes: [], account_modes: [] };
+let connectedAccounts = [];
+let activeWave = 0;
+let priority = "medium";
+let selectedModeTasks = [];
+let pickerTarget = null;
+let pickerSelection = null;
+let accountLogText = "";
+let logsLoading = false;
+let latestDirect = { connected: false, phase: "disconnected", account_id: null };
+let renderedConnectionKey = "";
+let cachedHunt = null;
+let huntFetchedAt = 0;
+let cachedDashboard = null;
+let dashboardFetchedAt = 0;
+const fallbackKingdoms = [
+  { id: 0, name: "green_kingdom" }, { id: 1, name: "sand_kingdom" },
+  { id: 2, name: "ice_kingdom" }, { id: 3, name: "fire_kingdom" },
+  { id: 4, name: "storm_kingdom" }, { id: 10, name: "berimond_kingdom" },
+];
+const blankSide = () => ({ troops: [], tools: [] });
+const blankWave = () => ({ left: blankSide(), middle: blankSide(), right: blankSide() });
+let attackWaves = Array.from({ length: 4 }, blankWave);
 
 const phaseCopy = {
-  disconnected: "Ready to connect",
-  socket_handshake: "Opening a secure connection…",
-  awaiting_room: "Contacting US1…",
-  awaiting_version: "Preparing your session…",
-  authenticating: "Signing in…",
-  authenticated: "Sign-in complete",
-  loading_account: "Discovering your account…",
-  loading_castle: "Finding your castles…",
-  loading_sands: "Preparing Burning Sands…",
-  sands_ready: "Setup complete",
-  failed: "Needs attention",
+  disconnected: "Ready to connect", socket_handshake: "Opening a secure connection…",
+  awaiting_room: "Contacting US1…", awaiting_version: "Preparing your session…",
+  authenticating: "Signing in…", authenticated: "Sign-in complete",
+  loading_account: "Discovering your account…", loading_castle: "Finding your castles…",
+  loading_sands: "Preparing Burning Sands…", sands_ready: "Setup complete", failed: "Needs attention",
 };
+
+async function responseJson(response) {
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  return body;
+}
+
+async function api(path, options) {
+  return responseJson(await fetch(`${API}${path}`, options));
+}
 
 function expiryLabel(epoch) {
   if (!epoch) return "Token required";
@@ -64,24 +55,18 @@ function expiryLabel(epoch) {
 
 function showActivation(canClose = false) {
   activation.hidden = false;
-  closeActivation.hidden = !canClose;
+  $("#close-activation").hidden = !canClose;
 }
 
 function showApplication(licence) {
   currentLicence = licence;
   activation.hidden = true;
   appShell.hidden = false;
-  document.querySelector("#licence-expiry").textContent = expiryLabel(licence.expires_at);
-}
-
-async function responseJson(response) {
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
-  return body;
+  $("#licence-expiry").textContent = expiryLabel(licence.expires_at);
 }
 
 async function refreshLicence() {
-  const licence = await responseJson(await fetch(`${API}/licence`));
+  const licence = await api("/licence");
   currentLicence = licence;
   if (licence.active) {
     showApplication(licence);
@@ -89,254 +74,692 @@ async function refreshLicence() {
   }
   appShell.hidden = true;
   showActivation(false);
-  licenceResult.textContent = licence.reason || "A valid access token is required.";
+  $("#licence-result").textContent = licence.reason || "A valid access token is required.";
   return false;
 }
 
-function emptyAccounts() {
-  const empty = document.createElement("div");
-  empty.className = "empty-state";
-  const icon = document.createElement("i");
-  icon.textContent = "+";
-  const copy = document.createElement("p");
-  copy.textContent = "Your connected accounts will appear here.";
-  empty.append(icon, copy);
-  accounts.replaceChildren(empty);
+function switchView(name) {
+  document.querySelectorAll(".view").forEach((view) => { view.hidden = view.id !== `view-${name}`; });
+  document.querySelectorAll("nav [data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === name));
+  const titles = { dashboard: ["Overview", "Dashboard"], attacks: ["Plan builder", "Create attack"], tasks: ["Plan builder", "Create task"], modes: ["Plan builder", "Create mode"], accounts: ["Workspace", "Accounts"], logs: ["Diagnostics", "Logs"] };
+  [$("#page-eyebrow").textContent, $("#page-title").textContent] = titles[name];
 }
 
-async function refreshAccounts() {
-  const list = await responseJson(await fetch(`${API}/accounts`));
-  renderAccounts(list, await currentDirectStatus());
+function compactNumber(value) {
+  return new Intl.NumberFormat(undefined, { notation: Math.abs(value || 0) >= 10000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value || 0);
 }
 
-/// Everything we learned about an account is kept, so it can be shown on a later
-/// visit even when nothing is signed in. An empty screen is never the more
-/// honest answer than the state we already hold.
-function renderAccounts(list, direct) {
-  if (!list.length) {
-    emptyAccounts();
-    return;
+function element(tag, className, text) {
+  const value = document.createElement(tag);
+  if (className) value.className = className;
+  if (text !== undefined) value.textContent = text;
+  return value;
+}
+
+function humanize(value) {
+  return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function itemName(id) {
+  const name = library.catalog.find((item) => item.id === id)?.name;
+  return name ? humanize(name) : `Item ${id}`;
+}
+
+function kingdomName(name) {
+  const names = {
+    green_kingdom: "Green",
+    sand_kingdom: "Burning Sands",
+    ice_kingdom: "Everwinter Ice",
+    fire_kingdom: "Fire Peaks",
+    storm_kingdom: "Storm Islands",
+    berimond_kingdom: "Berimond",
+  };
+  return names[name] || humanize(name);
+}
+
+function renderKingdoms() {
+  const kingdoms = library.kingdoms?.length ? library.kingdoms : fallbackKingdoms;
+  for (const selector of ["#source-kid"]) {
+    const select = $(selector);
+    const previous = select.value || "1";
+    select.replaceChildren(...kingdoms.map((kingdom) => {
+      const option = element("option", "", kingdomName(kingdom.name));
+      option.value = kingdom.id;
+      return option;
+    }));
+    select.value = kingdoms.some((kingdom) => String(kingdom.id) === previous) ? previous : "1";
   }
-  const connected = Boolean(direct?.connected);
-  accounts.replaceChildren(...list.map((account) => {
-    const card = document.createElement("article");
-    card.className = "account-item";
-    const avatar = document.createElement("div");
-    avatar.className = "account-avatar";
-    avatar.textContent = account.player_name.slice(0, 1).toUpperCase();
-    const identity = document.createElement("div");
-    const title = document.createElement("strong");
-    title.textContent = account.player_name;
-    const server = document.createElement("span");
-    server.textContent = connected
-      ? "US1 · Connected"
-      : `US1 · Last seen ${relativeTime(account.initialized_at_ms)}`;
-    identity.append(title, server);
-    const facts = document.createElement("dl");
-    for (const [name, value] of [["Castles", account.castle_count], ["Commanders", account.commander_count], ["Targets", account.rbc_count]]) {
-      const group = document.createElement("div");
-      const detail = document.createElement("dd"); detail.textContent = value;
-      const term = document.createElement("dt"); term.textContent = name;
-      group.append(detail, term);
-      facts.append(group);
-    }
-    card.append(avatar, identity, facts);
-    return card;
-  }));
+  updateTargetKinds();
 }
 
-/// Human-readable age, used for "last seen" rather than a raw timestamp.
-function relativeTime(ms) {
-  if (!ms) return "unknown";
-  const seconds = Math.max(0, (Date.now() - ms) / 1000);
-  if (seconds < 90) return "just now";
-  const minutes = seconds / 60;
-  if (minutes < 90) return `${Math.round(minutes)}m ago`;
-  const hours = minutes / 60;
-  if (hours < 36) return `${Math.round(hours)}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
+function updateTargetKinds() {
+  const kingdomId = Number($("#source-kid").value);
+  const fortress = $("#target-kind option[value='fortress']");
+  const supported = [1, 2, 3].includes(kingdomId);
+  fortress.hidden = !supported;
+  fortress.disabled = !supported;
+  if (!supported && $("#target-kind").value === "fortress") $("#target-kind").value = "rbc";
+  const isFortress = $("#target-kind").value === "fortress";
+  $("#target-level-fields").hidden = isFortress;
+  $("#target-level-min").required = !isFortress;
+  $("#target-level-max").required = !isFortress;
+  $("#target-hint").textContent = $("#target-kind").value === "fortress"
+    ? "This kingdom has one fortress target type, so no level range is needed."
+    : "OpenAuto chooses a learned Robber Baron in this level range; no destination coordinate is required.";
+  updateSourceCoordinates();
 }
 
-async function currentDirectStatus() {
-  try {
-    return await responseJson(await fetch(`${API}/direct`));
-  } catch {
-    return null;
+function updateSourceCoordinates() {
+  const automatic = $("#use-main-castle").checked;
+  const kingdomId = Number($("#source-kid").value);
+  const health = connectedAccounts.flatMap((account) => account.kingdom_health || []).find((value) => value.kingdom_id === kingdomId);
+  for (const input of [$("#source-x"), $("#source-y")]) input.disabled = automatic;
+  if (automatic && health) {
+    $("#source-x").value = health.x;
+    $("#source-y").value = health.y;
   }
 }
 
-const RUN_FIELDS = {
-  "#run-marches": "marches",
-  "#run-inflight": "in_flight",
-  "#run-coins": "coins",
-  "#run-rubies": "rubies",
-};
+function slotButton(sideName, kind) {
+  const values = attackWaves[activeWave][sideName][kind];
+  const slot = values[0];
+  const button = element("button", `slot ${kind === "troops" ? "troop-slot" : "tool-slot"}`);
+  button.type = "button";
+  button.append(element("small", "", kind === "troops" ? "Troops" : "Tools"));
+  button.append(element("b", "", slot ? itemName(slot.item_id) : "Empty"));
+  if (slot) button.append(element("span", "", `× ${slot.amount}`));
+  button.addEventListener("click", () => openPicker(sideName, kind));
+  return button;
+}
 
-function renderRun(summary) {
-  runLabel.textContent = summary.label || "No run yet";
-  const active = Boolean(summary.active);
-  runState.textContent = summary.marches ? (active ? "Running" : "Stopped") : "No data";
-  runState.className = active ? "status connected" : "status";
-  for (const [selector, key] of Object.entries(RUN_FIELDS)) {
-    document.querySelector(selector).textContent = Number(summary[key] || 0).toLocaleString();
+function renderWave() {
+  const builder = $("#wave-builder");
+  builder.replaceChildren();
+  for (const [key, name] of [["left", "Left flank"], ["middle", "Center"], ["right", "Right flank"]]) {
+    const side = element("section", "side-builder");
+    side.append(element("h3", "", name));
+    const slots = element("div", "slot-grid");
+    slots.append(slotButton(key, "troops"), slotButton(key, "tools"));
+    side.append(slots);
+    builder.append(side);
   }
-  runTasks.replaceChildren(...(summary.tasks || []).map((task) => {
-    const item = document.createElement("li");
-    const name = document.createElement("b");
-    name.textContent = task.task_id;
-    const band = document.createElement("span");
-    const levels =
-      task.level_min == null
-        ? ""
-        : task.level_min === task.level_max
-          ? `level ${task.level_min}`
-          : `levels ${task.level_min}–${task.level_max}`;
-    const commanders = (task.commanders || []).length;
-    band.className = "run-task-band";
-    band.textContent = [levels, commanders ? `${commanders} commanders` : ""]
-      .filter(Boolean)
-      .join(" · ");
-    const detail = document.createElement("span");
-    detail.className = "run-task-totals";
-    detail.textContent = `${task.marches} sent · ${task.returned} back · ${Number(task.coins).toLocaleString()} coins`;
-    item.append(name, band, detail);
-    return item;
-  }));
-  runRecent.replaceChildren(...(summary.recent || []).slice(0, 6).map((march) => {
-    const row = document.createElement("div");
-    const where = document.createElement("span");
-    where.textContent = `${march.kingdom_id} \u00b7 ${march.x}:${march.y}`;
-    const outcome = document.createElement("span");
-    if (march.status === "returning") {
-      outcome.textContent = `${Number(march.coin_loot || 0).toLocaleString()} coins`;
-    } else if (!summary.active || Date.now() - march.sent_at_ms > STALE_MARCH_MILLIS) {
-      // Either no run is alive to receive it, or it was sent long ago.
-      outcome.textContent = "no return";
-      outcome.className = "run-stale";
-    } else {
-      outcome.textContent = "in flight";
-    }
-    row.append(where, outcome);
+}
+
+function openPicker(side, kind) {
+  pickerTarget = { side, kind };
+  const current = attackWaves[activeWave][side][kind][0];
+  pickerSelection = current ? library.catalog.find((item) => item.id === current.item_id) || null : null;
+  $("#picker-title").textContent = kind === "troops" ? "Choose troops" : "Choose tools";
+  $("#item-search").value = "";
+  $("#item-amount").value = current?.amount || 1;
+  renderPicker();
+  $("#item-picker").showModal();
+  $("#item-search").focus();
+}
+
+function renderPicker() {
+  const kind = pickerTarget?.kind === "troops" ? "troop" : "tool";
+  const query = $("#item-search").value.trim().toLowerCase();
+  const results = $("#item-results");
+  results.replaceChildren();
+  const matches = library.catalog.filter((item) => item.kind === kind && humanize(item.name).toLowerCase().includes(query)).sort((a, b) => a.name.localeCompare(b.name));
+  matches.forEach((item) => {
+    const button = element("button", `picker-item${pickerSelection?.id === item.id ? " selected" : ""}`);
+    button.type = "button";
+    button.dataset.itemId = item.id;
+    button.append(element("b", "", humanize(item.name)), element("small", "", kind === "troop" ? "Troop" : "Tool"));
+    button.addEventListener("click", () => choosePickerItem(item));
+    button.addEventListener("dblclick", () => { choosePickerItem(item); confirmPickerItem(); });
+    results.append(button);
+  });
+  if (!matches.length) results.append(element("p", "picker-empty", library.catalog.length ? "No matching options." : "The item catalog is unavailable. Restart OpenAuto to refresh its background service."));
+  $("#picker-selection").textContent = pickerSelection ? humanize(pickerSelection.name) : "Choose an option above";
+  $("#confirm-item").disabled = !pickerSelection;
+}
+
+function choosePickerItem(item) {
+  pickerSelection = item;
+  document.querySelectorAll("#item-results .picker-item").forEach((button) => {
+    button.classList.toggle("selected", button.dataset.itemId === String(item.id));
+  });
+  $("#picker-selection").textContent = humanize(item.name);
+  $("#confirm-item").disabled = false;
+}
+
+function confirmPickerItem() {
+  if (!pickerTarget || !pickerSelection) return;
+  const amount = Math.max(1, Number($("#item-amount").value) || 1);
+  attackWaves[activeWave][pickerTarget.side][pickerTarget.kind] = [{ item_id: pickerSelection.id, amount }];
+  $("#item-picker").close();
+  renderWave();
+}
+
+function clearPickerItem() {
+  if (!pickerTarget) return;
+  attackWaves[activeWave][pickerTarget.side][pickerTarget.kind] = [];
+  $("#item-picker").close();
+  renderWave();
+}
+
+function attackDraft() {
+  return { name: $("#attack-name").value.trim(), waves: attackWaves };
+}
+
+function profileToDraft(profile) {
+  const side = (value) => ({
+    troops: (value?.U || []).filter(([id, amount]) => id >= 0 && amount > 0).map(([item_id, amount]) => ({ item_id, amount })),
+    tools: (value?.T || []).filter(([id, amount]) => id >= 0 && amount > 0).map(([item_id, amount]) => ({ item_id, amount })),
+  });
+  return {
+    name: profile.name,
+    waves: profile.payload.map((wave) => ({ left: side(wave.L), middle: side(wave.M), right: side(wave.R) })),
+  };
+}
+
+function priorityName(value) {
+  return value <= 10 ? "extra_high" : value <= 20 ? "high" : value <= 30 ? "medium" : "low";
+}
+
+function taskToDraft(task) {
+  const runtime = library.task_runtimes.find((value) => value.task_id === task.task_id);
+  const subscription = library.subscriptions.find((value) => value.task_id === task.task_id);
+  if (!runtime) return null;
+  const targetKind = subscription?.target_kind || "rbc";
+  return {
+    name: task.name,
+    attack_profile_id: task.profile_id,
+    source: { kingdom_id: runtime.source_kingdom_id, x: runtime.source_x, y: runtime.source_y },
+    source_kind: runtime.source_kind || "coordinate",
+    destination: targetKind === "fortress" ? {
+      kind: "fortress", kingdom_id: task.kingdom_id,
+    } : task.target_level_min !== null ? {
+      kind: targetKind === "fortress" ? "fortress_level_range" : "rbc_level_range", kingdom_id: task.kingdom_id,
+      minimum: task.target_level_min, maximum: task.target_level_max,
+    } : {
+      kind: "coordinate", kingdom_id: runtime.target_kingdom_id, x: runtime.target_x, y: runtime.target_y,
+    },
+    algorithm: subscription?.filter?.algorithm || "advanced",
+    travel: "coin", priority: priorityName(task.priority), commander_count: 1,
+  };
+}
+
+function bundleForMode(name, allocations) {
+  return {
+    schema: 1,
+    name,
+    tasks: allocations.map((allocation) => {
+      const task = library.tasks.find((value) => value.task_id === allocation.task_id);
+      const draft = taskToDraft(task);
+      const profile = library.attacks.find((value) => value.profile_id === task.profile_id);
+      return { name: draft.name, attack: profileToDraft(profile), source: draft.source, source_kind: draft.source_kind, destination: draft.destination, algorithm: draft.algorithm, travel: draft.travel, priority: draft.priority, commander_count: allocation.commander_count };
+    }),
+  };
+}
+
+async function copyJson(value, output) {
+  await navigator.clipboard.writeText(JSON.stringify(value, null, 2));
+  if (output) output.textContent = "Copied to clipboard.";
+}
+
+function actionButton(label, action, danger = false) {
+  const button = element("button", danger ? "mini-action danger" : "mini-action", label);
+  button.type = "button";
+  button.addEventListener("click", action);
+  return button;
+}
+
+function renderLibrary() {
+  const attackList = $("#attack-library");
+  attackList.replaceChildren(...library.attacks.map((attack) => {
+    const row = element("article", "library-row");
+    const copy = actionButton("Copy JSON", () => copyJson(profileToDraft(attack), $("#attack-result")));
+    const remove = actionButton("Delete", async () => { await fetch(`${API}/plans/attacks/${attack.profile_id}`, { method: "DELETE" }); await loadLibrary(); }, true);
+    row.append(element("div", "", attack.name), element("span", "row-actions"));
+    row.lastChild.append(copy, remove);
     return row;
   }));
+  if (!library.attacks.length) attackList.append(element("p", "empty-copy", "No attacks saved yet."));
+
+  const attackSelect = $("#task-attack");
+  attackSelect.replaceChildren(...library.attacks.map((attack) => {
+    const option = element("option", "", attack.name); option.value = attack.profile_id; return option;
+  }));
+
+  const taskList = $("#task-library");
+  taskList.replaceChildren(...library.tasks.map((task) => {
+    const row = element("article", "library-row");
+    const copy = actionButton("Copy JSON", () => copyJson(taskToDraft(task), $("#task-result")));
+    const remove = actionButton("Delete", async () => { await fetch(`${API}/plans/tasks/${task.task_id}`, { method: "DELETE" }); await loadLibrary(); }, true);
+    const subscription = library.subscriptions.find((value) => value.task_id === task.task_id);
+    const targetLabel = subscription?.target_kind === "fortress" ? "Fortress placeholder" : "Robber Baron";
+    const levelLabel = subscription?.target_kind === "fortress" ? "" : task.target_level_min === null ? "fixed target" : `levels ${task.target_level_min}–${task.target_level_max}`;
+    const algorithm = subscription?.filter?.algorithm || "advanced";
+    const identity = element("div"); identity.append(element("b", "", task.name), element("small", "", `${kingdomName((library.kingdoms.find((value) => value.id === task.kingdom_id) || fallbackKingdoms.find((value) => value.id === task.kingdom_id))?.name || `Kingdom ${task.kingdom_id}`)} · ${targetLabel} ${levelLabel} · ${humanize(algorithm)} · ${priorityName(task.priority).replace("_", " ")}`));
+    const actions = element("span", "row-actions"); actions.append(copy, remove); row.append(identity, actions); return row;
+  }));
+  if (!library.tasks.length) taskList.append(element("p", "empty-copy", "Create an attack first, then add a task."));
+  renderAvailableTasks();
+  renderModes();
 }
 
-function updateProgress(currentPhase, remembered) {
+function renderAvailableTasks() {
+  const container = $("#available-tasks");
+  container.replaceChildren(...library.tasks.map((task) => draggableTask(task, false)));
+  renderSelectedTasks();
+}
+
+function draggableTask(task, selected) {
+  const row = element("div", "drag-task");
+  row.draggable = true;
+  row.dataset.taskId = task.task_id;
+  row.addEventListener("dragstart", (event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", task.task_id); event.dataTransfer.setData("text", task.task_id); });
+  row.append(element("i", "drag-handle", "⠿"));
+  const copy = element("span"); copy.append(element("b", "", task.name), element("small", "", "Reusable task")); row.append(copy);
+  if (selected) {
+    const controls = element("span", "task-order-actions");
+    controls.append(
+      actionButton("↑", () => moveModeTask(task.task_id, -1)),
+      actionButton("↓", () => moveModeTask(task.task_id, 1)),
+      actionButton("Remove", () => { selectedModeTasks = selectedModeTasks.filter((entry) => entry.task_id !== task.task_id); renderAvailableTasks(); }),
+    );
+    row.append(controls);
+  } else {
+    row.append(actionButton("Add", () => addModeTask(task.task_id)));
+  }
+  return row;
+}
+
+function moveModeTask(taskId, delta) {
+  const from = selectedModeTasks.findIndex((entry) => entry.task_id === taskId);
+  const to = Math.max(0, Math.min(selectedModeTasks.length - 1, from + delta));
+  if (from < 0 || from === to) return;
+  selectedModeTasks.splice(to, 0, selectedModeTasks.splice(from, 1)[0]);
+  renderAvailableTasks();
+}
+
+function addModeTask(taskId) {
+  const existing = selectedModeTasks.find((entry) => entry.task_id === taskId);
+  if (existing) existing.commander_count += 1;
+  else selectedModeTasks.push({ task_id: taskId, commander_count: 1 });
+  renderAvailableTasks();
+}
+
+function setAllocation(taskId, count) {
+  const allocation = selectedModeTasks.find((entry) => entry.task_id === taskId);
+  if (!allocation) return;
+  allocation.commander_count = Math.max(1, Math.floor(Number(count) || 1));
+  renderSelectedTasks();
+}
+
+function renderSelectedTasks() {
+  const container = $("#mode-tasks");
+  container.replaceChildren();
+  let first = 1;
+  selectedModeTasks.forEach((allocation) => {
+    const task = library.tasks.find((value) => value.task_id === allocation.task_id);
+    if (!task) return;
+    const row = element("article", "allocation-card");
+    row.draggable = true;
+    row.dataset.taskId = task.task_id;
+    row.addEventListener("dragstart", (event) => event.dataTransfer.setData("text/plain", task.task_id));
+    const head = element("div", "allocation-head");
+    const title = element("span"); title.append(element("b", "", task.name), element("small", "", "Assigned task"));
+    const count = document.createElement("input"); count.type = "number"; count.min = "1"; count.value = allocation.commander_count; count.setAttribute("aria-label", `${task.name} commander count`); count.addEventListener("change", () => setAllocation(task.task_id, count.value));
+    const controls = element("span", "allocation-actions");
+    controls.append(actionButton("−", () => setAllocation(task.task_id, allocation.commander_count - 1)), count, actionButton("+", () => setAllocation(task.task_id, allocation.commander_count + 1)), actionButton("←", () => moveModeTask(task.task_id, -1)), actionButton("→", () => moveModeTask(task.task_id, 1)), actionButton("Remove", () => { selectedModeTasks = selectedModeTasks.filter((entry) => entry.task_id !== task.task_id); renderAvailableTasks(); }));
+    head.append(title, controls);
+    const last = first + allocation.commander_count - 1;
+    const track = element("div", "commander-track");
+    for (let commander = first; commander <= last; commander += 1) track.append(element("span", "", commander));
+    row.append(head, track, element("em", "commander-range", `Commanders ${first}–${last}`));
+    first = last + 1;
+    container.append(row);
+  });
+  if (!selectedModeTasks.length) container.append(element("div", "drop-hint", "Drag tasks here"));
+  const total = first - 1;
+  $("#commander-warning").textContent = `${total} commanders allocated${total ? ` · numbered 1–${total}` : ""}`;
+}
+
+function renderModes() {
+  const container = $("#mode-library");
+  container.replaceChildren(...library.modes.map((mode) => {
+    const row = element("article", "library-row mode-row");
+    const allocations = mode.allocations?.length ? mode.allocations : mode.task_ids.map((task_id) => ({ task_id, commander_count: 1 }));
+    const identity = element("div"); identity.append(element("b", "", mode.name), element("small", "", `${allocations.length} tasks · ${mode.commander_count} commanders`));
+    const actions = element("span", "row-actions");
+    actions.append(actionButton("Copy JSON", () => copyJson(bundleForMode(mode.name, allocations), $("#mode-result"))));
+    actions.append(actionButton("Delete", async () => { await fetch(`${API}/plans/modes/${mode.mode_id}`, { method: "DELETE" }); await loadLibrary(); }, true));
+    row.append(identity, actions); return row;
+  }));
+  if (!library.modes.length) container.append(element("p", "empty-copy", "No modes saved yet."));
+}
+
+async function loadLibrary() {
+  library = await api("/plans");
+  library.subscriptions ||= [];
+  library.account_modes ||= [];
+  library.kingdoms ||= fallbackKingdoms;
+  renderKingdoms();
+  renderWave();
+  renderPicker();
+  renderLibrary();
+}
+
+function emptyAccounts() {
+  const empty = element("div", "empty-state"); empty.append(element("i", "", "+"), element("p", "", "Your saved accounts will appear here.")); $("#accounts").replaceChildren(empty);
+}
+
+async function connectSavedAccount(account, password, radius, reuseExistingMap, output) {
+  if (!password) { output.textContent = "Enter the account password first."; return; }
+  output.textContent = reuseExistingMap ? "Establishing connection…" : "Connecting and extending the Sands scan…";
+  await api("/accounts", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ server: "US1", username: account.player_name, password, scan_radius: radius, reuse_existing_map: reuseExistingMap }),
+  });
+  await refresh();
+}
+
+async function refreshAccounts(knownDirect = null) {
+  connectedAccounts = await api("/accounts");
+  const direct = knownDirect || await api("/direct");
+  latestDirect = direct;
+  $("#account-onboarding").hidden = connectedAccounts.length > 0;
+  if (!connectedAccounts.length) { emptyAccounts(); renderModes(); return; }
+  $("#accounts").replaceChildren(...connectedAccounts.map((account) => {
+    const card = element("article", "account-item"); const avatar = element("div", "account-avatar", account.player_name.slice(0, 1).toUpperCase());
+    const isConnected = direct.connected && direct.account_id?.toLowerCase() === account.account_id.toLowerCase();
+    const isReady = isConnected && direct.phase === "sands_ready";
+    const identity = element("div"); identity.append(element("strong", "", account.player_name), element("span", isConnected ? "connection-label live" : "connection-label", isReady ? "US1 · Connected" : isConnected ? "US1 · Connecting" : "US1 · Stored locally"));
+    const facts = element("dl");
+    for (const [name, value] of [["Castles", account.castle_count], ["Commanders", account.commander_count], ["Targets", account.rbc_count]]) { const group = element("div"); group.append(element("dd", "", value), element("dt", "", name)); facts.append(group); }
+    const discovery = element("div", "kingdom-health");
+    discovery.append(element("p", "list-label", "Map discovery by main castle"));
+    for (const health of account.kingdom_health || []) {
+      const line = element("div", "kingdom-health-row");
+      line.append(element("b", "", kingdomName((library.kingdoms.find((value) => value.id === health.kingdom_id) || fallbackKingdoms.find((value) => value.id === health.kingdom_id))?.name || `Kingdom ${health.kingdom_id}`)), element("span", "", `${health.target_count} targets · ${health.scan_window_count} map areas`));
+      discovery.append(line);
+    }
+    if (!(account.kingdom_health || []).length) discovery.append(element("p", "empty-copy", "No main-castle map data learned yet."));
+    const connection = element("div", "account-connection-control");
+    connection.append(element("p", "list-label", "Game connection"));
+    const password = document.createElement("input"); password.type = "password"; password.placeholder = "Password"; password.autocomplete = "current-password";
+    const radius = document.createElement("input"); radius.type = "number"; radius.min = "0"; radius.max = "500"; radius.value = "50"; radius.title = "Sands scan radius"; radius.setAttribute("aria-label", "Additional Sands scan radius");
+    const connectionResult = element("span", "connection-result", isConnected ? "Socket active. Cached map data is being used." : "Log in without repeating the saved map scan.");
+    const login = actionButton("Log in", async () => {
+      try { await connectSavedAccount(account, password.value, 0, true, connectionResult); password.value = ""; }
+      catch (error) { password.value = ""; connectionResult.textContent = error.message; }
+    });
+    login.disabled = isConnected;
+    const scan = actionButton("Scan more", async () => {
+      try { await connectSavedAccount(account, password.value, Number(radius.value) || 0, false, connectionResult); password.value = ""; }
+      catch (error) { password.value = ""; connectionResult.textContent = error.message; }
+    });
+    const close = actionButton("Close connection", async () => {
+      await api("/direct", { method: "DELETE" });
+      await loadLibrary(); await refreshAccounts(); await refreshDashboard();
+    });
+    close.classList.add("danger-outline"); close.disabled = !isConnected;
+    connection.append(password, login, radius, scan, close, connectionResult);
+
+    const assignment = element("div", "account-mode-control");
+    const current = library.account_modes.find((value) => value.account_id === account.account_id);
+    assignment.append(element("p", "list-label", "Bots"));
+    for (const mode of library.modes) {
+      const row = element("div", "bot-row");
+      const running = Boolean(current?.running && current.mode_id === mode.mode_id && isConnected);
+      const configured = Boolean(current?.mode_id === mode.mode_id);
+      const copy = element("div"); copy.append(element("b", "", mode.name), element("span", running ? "bot-state running" : "bot-state", running ? "Running in background" : configured ? "Stopped" : `${mode.commander_count} commanders`));
+      const button = actionButton(running ? "Stop bot" : "Run bot", async () => {
+        try {
+          await api("/plans/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: account.account_id, mode_id: mode.mode_id, running: !running }) });
+          await loadLibrary(); await refreshAccounts(); await refreshDashboard();
+        } catch (error) { connectionResult.textContent = error.message; }
+      });
+      button.disabled = !isReady && !running;
+      row.append(copy, button); assignment.append(row);
+    }
+    if (!library.modes.length) assignment.append(element("p", "empty-copy", "Create a mode before running a bot."));
+    card.append(avatar, identity, facts, discovery, connection, assignment); return card;
+  }));
+  renderedConnectionKey = `${direct.connected}:${direct.account_id || ""}:${direct.phase === "sands_ready"}`;
+  updateSourceCoordinates();
+  renderModes();
+}
+
+function dashboardStat(value, label) {
+  const card = element("div", "health-stat");
+  card.append(element("b", "", compactNumber(value)), element("span", "", label));
+  return card;
+}
+
+function renderRubyChart(series) {
+  const container = $("#ruby-chart");
+  if (!series?.length) { container.replaceChildren(element("p", "empty-copy", "No ruby returns recorded yet.")); return; }
+  const width = 800; const height = 190; const padX = 34; const padY = 22;
+  const values = series.map((point) => point.value);
+  const minimum = Math.min(...values); const maximum = Math.max(...values); const span = Math.max(1, maximum - minimum);
+  const points = series.map((point, index) => {
+    const x = padX + index * (width - padX * 2) / Math.max(1, series.length - 1);
+    const y = height - padY - (point.value - minimum) * (height - padY * 2) / span;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  const first = new Date(series[0].at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const last = new Date(series.at(-1).at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const area = `${padX},${height - padY} ${points} ${width - padX},${height - padY}`;
+  container.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none"><defs><linearGradient id="ruby-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ef4d5b" stop-opacity=".22"/><stop offset="1" stop-color="#ef4d5b" stop-opacity=".02"/></linearGradient></defs><line class="grid" x1="${padX}" y1="${padY}" x2="${width - padX}" y2="${padY}"/><line class="grid" x1="${padX}" y1="${height / 2}" x2="${width - padX}" y2="${height / 2}"/><line class="grid" x1="${padX}" y1="${height - padY}" x2="${width - padX}" y2="${height - padY}"/><polygon class="area" points="${area}"/><polyline class="line" points="${points}"/><text x="${padX}" y="${height - 5}">${first}</text><text x="${width - padX}" y="${height - 5}" text-anchor="end">${last}</text><text x="${width - 4}" y="${padY + 3}" text-anchor="end">${compactNumber(maximum)}</text><text x="${width - 4}" y="${height - padY}" text-anchor="end">${compactNumber(minimum)}</text></svg>`;
+}
+
+async function refreshDashboard(knownDirect = null, force = false) {
+  try {
+    const now = Date.now();
+    const huntRequest = force || !cachedHunt || now - huntFetchedAt >= 10000 ? api("/hunt").then((value) => { cachedHunt = value; huntFetchedAt = Date.now(); return value; }) : Promise.resolve(cachedHunt);
+    const summaryRequest = force || !cachedDashboard || now - dashboardFetchedAt >= 60000 ? api("/dashboard").then((value) => { cachedDashboard = value; dashboardFetchedAt = Date.now(); return value; }) : Promise.resolve(cachedDashboard);
+    const [hunt, direct, summary] = await Promise.all([huntRequest, knownDirect ? Promise.resolve(knownDirect) : api("/direct"), summaryRequest]);
+    const runningAssignments = library.account_modes.filter((value) => value.running);
+    const runnerActive = hunt.active && direct.connected && runningAssignments.length > 0;
+    const connected = direct.connected;
+    const state = runnerActive ? "Bot running" : connected ? "Account connected" : "Automation stopped";
+    $("#dashboard-state").textContent = state;
+    $("#dashboard-dot").className = `live-dot${runnerActive ? " running" : direct.phase === "failed" ? " error" : ""}`;
+    const assignment = runningAssignments[0];
+    const mode = assignment && library.modes.find((value) => value.mode_id === assignment.mode_id);
+    const scanProgress = direct.scan_total ? `Sands scan ${direct.scan_sent + direct.scan_cached}/${direct.scan_total} · ${direct.scan_cached} cached` : null;
+    $("#dashboard-subtitle").textContent = scanProgress || (runnerActive ? `${mode?.name || hunt.label || "Automation"} · ${direct.account_id || hunt.account_id || "connected account"}` : connected ? "Connected and ready to run a bot" : phaseCopy[direct.phase] || "No active session");
+    $("#metric-attacks").textContent = compactNumber(hunt.marches);
+    $("#metric-returned").textContent = `${compactNumber(hunt.returned)} returned`;
+    $("#metric-flight").textContent = compactNumber(hunt.in_flight);
+    $("#metric-coins").textContent = compactNumber(hunt.coins);
+    $("#metric-rubies").textContent = compactNumber(hunt.rubies);
+    $("#rate-attacks").textContent = compactNumber(summary.attacks_last_hour);
+    $("#rate-returns").textContent = compactNumber(summary.returns_last_hour);
+    $("#rate-rubies").textContent = compactNumber(summary.rubies_last_hour);
+    $("#rate-coins").textContent = compactNumber(summary.coins_last_hour);
+    $("#chart-updated").textContent = `Updated ${new Date(summary.generated_at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+    renderRubyChart(summary.ruby_series);
+
+    const totals = connectedAccounts.reduce((value, account) => {
+      value.castles += account.castle_count || 0; value.commanders += account.commander_count || 0; value.targets += account.rbc_count || 0;
+      value.areas += (account.kingdom_health || []).reduce((sum, health) => sum + (health.scan_window_count || 0), 0);
+      return value;
+    }, { castles: 0, commanders: 0, targets: 0, areas: 0 });
+    $("#dashboard-health").replaceChildren(dashboardStat(totals.castles, "Castles"), dashboardStat(totals.commanders, "Commanders"), dashboardStat(totals.targets, "Targets"), dashboardStat(totals.areas, "Map areas"));
+
+    const setup = $("#dashboard-assignment"); setup.replaceChildren();
+    for (const [label, value] of [["Account", assignment?.account_id || hunt.account_id || connectedAccounts[0]?.player_name || "None"], ["Mode", mode?.name || hunt.label || "None"], ["Session", connected ? "Connected" : "Disconnected"], ["Map setup", direct.phase === "sands_ready" ? "Sands ready" : humanize(direct.phase || "disconnected")]]) {
+      const line = element("div", "assignment-line"); line.append(element("span", "", label), element("b", "", value)); setup.append(line);
+    }
+
+    const events = (hunt.recent || []).map((march) => ({ at_ms: march.result_at_ms || march.sent_at_ms, kind: "attack", march }));
+    events.push(...(summary.scan_activity || []).map((scan) => ({ at_ms: scan.at_ms, kind: "scan", scan })));
+    if (direct.scan_total && direct.scan_sent + direct.scan_cached < direct.scan_total) events.push({ at_ms: Date.now(), kind: "scanning", direct });
+    events.sort((left, right) => right.at_ms - left.at_ms);
+    const activity = $("#dashboard-activity"); activity.replaceChildren();
+    for (const event of events) {
+      const row = element("div", "activity-row");
+      const time = document.createElement("time"); time.textContent = new Date(event.at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      if (event.kind === "scan") {
+        const name = kingdomName((library.kingdoms.find((value) => value.id === event.scan.kingdom_id) || fallbackKingdoms.find((value) => value.id === event.scan.kingdom_id))?.name || `Kingdom ${event.scan.kingdom_id}`);
+        row.append(time, element("b", "", `Learned ${event.scan.windows} ${name} map ${event.scan.windows === 1 ? "area" : "areas"}`), element("span", "activity-tag", "Map scan"));
+      } else if (event.kind === "scanning") {
+        const completed = event.direct.scan_sent + event.direct.scan_cached;
+        row.append(time, element("b", "", `Scanning Sands map · ${completed} of ${event.direct.scan_total} areas processed`), element("span", "activity-tag", "In progress"));
+      } else {
+        const march = event.march;
+        const target = `K${march.kingdom_id} · ${march.x}:${march.y}${march.level == null ? "" : ` · level ${march.level}`}`;
+        row.append(time, element("b", "", `${march.task_id || "Attack"} → ${target}`), element("span", "activity-tag", humanize(march.status)));
+      }
+      activity.append(row);
+    }
+    if (!events.length) activity.append(element("p", "empty-copy", "No recorded activity yet."));
+  } catch (error) {
+    $("#dashboard-state").textContent = "Statistics unavailable";
+    $("#dashboard-subtitle").textContent = error.message;
+    $("#dashboard-dot").className = "live-dot error";
+  }
+}
+
+function sanitizedLogValue(value) {
+  if (Array.isArray(value)) return value.map(sanitizedLogValue);
+  if (!value || typeof value !== "object") return value;
+  const safe = {};
+  for (const [key, child] of Object.entries(value)) {
+    safe[key] = /^(pw|password|lt|rct|token|login_token|registration_token)$/i.test(key) ? "[removed]" : sanitizedLogValue(child);
+  }
+  return safe;
+}
+
+async function refreshLogs() {
+  if (logsLoading) return;
+  logsLoading = true;
+  try {
+    const consoleElement = $("#account-logs");
+    const previousScroll = consoleElement.scrollTop;
+    const [messages, direct] = await Promise.all([api(`/messages?limit=80&_=${Date.now()}`, { cache: "no-store" }), api(`/direct?_=${Date.now()}`, { cache: "no-store" })]);
+    latestDirect = direct;
+    $("#log-live").className = direct.connected ? "log-live" : "log-live offline";
+    $("#log-live-label").textContent = direct.connected ? "Live" : "Offline";
+    accountLogText = messages.slice().reverse().map((message) => {
+      const time = new Date(message.observed_at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      const direction = { client_to_server: "OUT", server_to_client: "IN ", injected: "SEND" }[message.direction] || message.direction;
+      const payload = JSON.stringify(sanitizedLogValue(message.payload));
+      return `${time}  ${direction}  ${(message.command || "system").padEnd(8)}  ${payload.slice(0, 1200)}`;
+    }).join("\n");
+    const scan = direct.scan_total ? ` · scan ${direct.scan_sent + direct.scan_cached}/${direct.scan_total} (${direct.scan_cached} cached)` : "";
+    const bot = direct.bot_state ? ` bot=${direct.bot_state}${direct.bot_detail ? ` (${direct.bot_detail})` : ""}` : "";
+    const liveStatus = `${new Date().toLocaleTimeString()}  ${direct.connected ? "LIVE " : "OFFLINE"}  status    phase=${direct.phase} connected=${direct.connected}${scan}${bot}`;
+    accountLogText = accountLogText ? `${accountLogText}\n${liveStatus}` : liveStatus;
+    consoleElement.textContent = accountLogText;
+    consoleElement.scrollTop = previousScroll;
+    const newest = messages[0]?.sequence ? ` · latest #${messages[0].sequence}` : "";
+    $("#log-result").textContent = `${direct.connected ? "Live update" : "Stored history"} ${new Date().toLocaleTimeString()} · ${messages.length} events${newest}`;
+  } catch (error) {
+    accountLogText = `Could not load logs: ${error.message}`;
+    $("#account-logs").textContent = accountLogText;
+    $("#log-live").className = "log-live error";
+    $("#log-live-label").textContent = "Unavailable";
+    $("#log-result").textContent = `Refresh failed at ${new Date().toLocaleTimeString()}`;
+  } finally {
+    logsLoading = false;
+  }
+}
+
+function updateScanEstimate() {
+  const radius = Math.max(0, Math.min(500, Math.floor(Number($("#scan-radius").value) || 0)));
+  const side = radius === 0 ? 0 : Math.ceil((radius * 2 + 1) / 13);
+  const areas = radius === 0 ? 6 : side * side;
+  const minimumMinutes = Math.ceil(areas * 0.7 / 60);
+  const maximumMinutes = Math.ceil(areas * 1.3 / 60);
+  const grid = radius === 0 ? "the observed 3×2 viewport" : `a ${side}×${side} grid`;
+  $("#scan-estimate").textContent = `Radius ${radius} uses ${grid} (${areas} paced gaa requests) · roughly ${minimumMinutes}–${maximumMinutes} min if none are cached.`;
+}
+
+function updateProgress(currentPhase) {
   const order = ["socket_handshake", "authenticating", "loading_castle", "loading_sands", "sands_ready"];
   const position = order.indexOf(currentPhase);
   const completed = currentPhase === "sands_ready" ? 3 : position >= 3 ? 2 : position >= 1 ? 1 : 0;
-  document.querySelectorAll(".progress-list > div").forEach((item, index) => {
-    // A remembered account with castles and commanders already completed setup,
-    // even if nothing is signed in right now.
-    const done = index < completed || currentPhase === "sands_ready" || remembered;
-    item.classList.toggle("done", done);
-    item.classList.toggle("current", !remembered && index === completed && currentPhase !== "sands_ready" && currentPhase !== "disconnected");
-  });
+  document.querySelectorAll(".progress-list > div").forEach((item, index) => { item.classList.toggle("done", index < completed || currentPhase === "sands_ready"); item.classList.toggle("current", index === completed && currentPhase !== "sands_ready" && currentPhase !== "disconnected"); });
 }
 
 async function refresh() {
   try {
     if (!currentLicence?.active && !(await refreshLicence())) return;
-    const [health, direct, run, remembered] = await Promise.all([
-      fetch(`${API}/health`).then(responseJson),
-      fetch(`${API}/direct`).then(responseJson),
-      fetch(`${API}/hunt`).then(responseJson).catch(() => null),
-      fetch(`${API}/accounts`).then(responseJson).catch(() => []),
-    ]);
-    if (run) renderRun(run);
-    if (!health.licence_active) {
-      currentLicence = null;
-      await refreshLicence();
-      return;
-    }
-    // The account list is stored state, so it is rendered on every visit; only
-    // the "connected" wording depends on a live session.
-    renderAccounts(remembered, direct);
+    const [health, direct] = await Promise.all([api("/health"), api("/direct")]);
+    latestDirect = direct;
+    if (!health.licence_active) { currentLicence = null; await refreshLicence(); return; }
     const ready = direct.phase === "sands_ready";
-    const seen = remembered.length > 0;
-    status.textContent = ready ? "Account ready" : direct.connected ? "Setting up" : seen ? "Signed out" : "OpenAuto ready";
-    status.className = ready ? "status connected" : "status";
-    gateway.textContent = direct.connected ? "Connected to US1" : "OpenAuto is ready";
-    phase.textContent = direct.connected
-      ? phaseCopy[direct.phase] || "Getting ready…"
-      : seen
-        ? `Last set up ${relativeTime(remembered[0].initialized_at_ms)}`
-        : phaseCopy[direct.phase] || "Getting ready…";
-    updateProgress(direct.phase, seen);
-    if (direct.error) directResult.textContent = direct.error;
-    if (ready) {
-      initializeButton.disabled = false;
-      initializeButton.textContent = "Connect account";
-      directResult.textContent = "Account connected and ready.";
-    } else if (seen && !direct.connected) {
-      initializeButton.disabled = false;
-      initializeButton.textContent = "Connect account";
-      directResult.textContent = `Signed in as ${remembered[0].player_name} previously. Enter the password to sign in again.`;
-    }
-  } catch (_) {
-    status.textContent = "OpenAuto unavailable";
-    status.className = "status error";
-    gateway.textContent = "Reconnecting…";
-  }
+    $("#status").textContent = ready ? "Account ready" : direct.connected ? "Setting up" : "OpenAuto ready";
+    $("#status").className = ready ? "status connected" : "status";
+    $("#gateway-label").textContent = direct.connected ? "Connected to US1" : "OpenAuto is ready";
+    $("#phase").textContent = phaseCopy[direct.phase] || "Getting ready…";
+    updateProgress(direct.phase);
+    if (direct.error) $("#direct-result").textContent = direct.error;
+    if (ready) { $("#initialize").disabled = false; $("#initialize").textContent = "Initialize account"; $("#direct-result").textContent = "Account connected and ready."; }
+    const connectionKey = `${direct.connected}:${direct.account_id || ""}:${ready}`;
+    if (connectionKey !== renderedConnectionKey) await refreshAccounts(direct);
+    if (!$("#view-dashboard").hidden) await refreshDashboard(direct);
+  } catch (_) { $("#status").textContent = "OpenAuto unavailable"; $("#status").className = "status error"; $("#gateway-label").textContent = "Reconnecting…"; }
 }
 
-document.querySelector("#licence-form").addEventListener("submit", async (event) => {
+document.querySelectorAll("nav [data-view]").forEach((button) => button.addEventListener("click", async () => {
+  switchView(button.dataset.view);
+  if (button.dataset.view === "dashboard") await refreshDashboard();
+  if (button.dataset.view === "accounts") await refreshAccounts();
+  if (button.dataset.view === "logs") await refreshLogs();
+}));
+$("#wave-tabs").addEventListener("click", (event) => { const button = event.target.closest("[data-wave]"); if (!button) return; activeWave = Number(button.dataset.wave); document.querySelectorAll("#wave-tabs button").forEach((value) => value.classList.toggle("selected", value === button)); renderWave(); });
+$("#priority-buttons").addEventListener("click", (event) => { const button = event.target.closest("[data-priority]"); if (!button) return; priority = button.dataset.priority; document.querySelectorAll("#priority-buttons button").forEach((value) => value.classList.toggle("selected", value === button)); });
+$("#source-kid").addEventListener("change", updateTargetKinds);
+$("#use-main-castle").addEventListener("change", updateSourceCoordinates);
+$("#target-kind").addEventListener("change", updateTargetKinds);
+$("#item-search").addEventListener("input", renderPicker);
+$("#item-search").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
   event.preventDefault();
-  licenceResult.textContent = "Checking your token…";
+  if (!pickerSelection) $("#item-results .picker-item")?.click();
+  confirmPickerItem();
+});
+$("#item-amount").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); confirmPickerItem(); } });
+$("#confirm-item").addEventListener("click", confirmPickerItem);
+$("#clear-item").addEventListener("click", clearPickerItem);
+$("#close-picker").addEventListener("click", () => $("#item-picker").close());
+
+$("#attack-form").addEventListener("submit", async (event) => { event.preventDefault(); try { await api("/plans/attacks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(attackDraft()) }); $("#attack-result").textContent = "Attack saved."; $("#attack-name").value = ""; attackWaves = Array.from({ length: 4 }, blankWave); await loadLibrary(); } catch (error) { $("#attack-result").textContent = error.message; } });
+$("#copy-attack").addEventListener("click", () => copyJson(attackDraft(), $("#attack-result")));
+$("#clear-attack").addEventListener("click", () => { attackWaves = Array.from({ length: 4 }, blankWave); activeWave = 0; $("#attack-name").value = ""; document.querySelectorAll("#wave-tabs button").forEach((button) => button.classList.toggle("selected", button.dataset.wave === "0")); $("#attack-result").textContent = "Attack cleared."; renderWave(); });
+
+$("#task-form").addEventListener("submit", async (event) => { event.preventDefault(); const kingdomId = Number($("#source-kid").value); const automatic = $("#use-main-castle").checked; const fortress = $("#target-kind").value === "fortress"; const destination = fortress ? { kind: "fortress", kingdom_id: kingdomId } : { kind: "rbc_level_range", kingdom_id: kingdomId, minimum: Number($("#target-level-min").value), maximum: Number($("#target-level-max").value) }; const draft = { name: $("#task-name").value.trim(), attack_profile_id: $("#task-attack").value, source: { kingdom_id: kingdomId, x: Number($("#source-x").value), y: Number($("#source-y").value) }, source_kind: automatic ? "main_castle" : "coordinate", destination, algorithm: $("#target-algorithm").value, travel: "coin", priority, commander_count: 1 }; try { await api("/plans/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(draft) }); $("#task-result").textContent = "Dynamic farming task saved."; $("#task-name").value = ""; await loadLibrary(); } catch (error) { $("#task-result").textContent = error.message; } });
+
+$("#mode-tasks").addEventListener("dragover", (event) => event.preventDefault());
+$("#mode-tasks").addEventListener("drop", (event) => { event.preventDefault(); const id = event.dataTransfer.getData("text/plain") || event.dataTransfer.getData("text"); if (!id) return; const from = selectedModeTasks.findIndex((value) => value.task_id === id); if (from < 0) addModeTask(id); else { const [entry] = selectedModeTasks.splice(from, 1); const rows = [...$("#mode-tasks").querySelectorAll(".allocation-card")]; const target = rows.find((row) => event.clientX < row.getBoundingClientRect().left + row.offsetWidth / 2); const index = target ? rows.indexOf(target) : rows.length; selectedModeTasks.splice(index, 0, entry); renderAvailableTasks(); } });
+$("#mode-form").addEventListener("submit", async (event) => { event.preventDefault(); try { await api("/plans/modes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: $("#mode-name").value.trim(), allocations: selectedModeTasks }) }); $("#mode-result").textContent = "Mode saved."; selectedModeTasks = []; $("#mode-name").value = ""; await loadLibrary(); await refreshAccounts(); } catch (error) { $("#mode-result").textContent = error.message; } });
+$("#copy-mode").addEventListener("click", () => copyJson(bundleForMode($("#mode-name").value.trim(), selectedModeTasks), $("#mode-result")));
+$("#load-example").addEventListener("click", async () => { $("#mode-json").value = JSON.stringify(await api("/plans/example"), null, 2); });
+$("#import-mode").addEventListener("click", async () => { try { const bundle = JSON.parse($("#mode-json").value); await api("/plans/import", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(bundle) }); $("#import-result").textContent = "Mode imported with new attack and task IDs."; await loadLibrary(); } catch (error) { $("#import-result").textContent = error.message; } });
+
+$("#licence-form").addEventListener("submit", async (event) => { event.preventDefault(); $("#licence-result").textContent = "Checking your token…"; try { const licence = await api("/licence", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: $("#licence-token").value.trim() }) }); $("#licence-token").value = ""; showApplication(licence); await loadLibrary(); await refreshAccounts(); await refresh(); } catch (error) { $("#licence-result").textContent = error.message; } });
+$("#add-credits").addEventListener("click", () => showActivation(true));
+$("#close-activation").addEventListener("click", () => { if (currentLicence?.active) activation.hidden = true; });
+$("#toggle-password").addEventListener("click", (event) => { const password = $("#password"); const showing = password.type === "text"; password.type = showing ? "password" : "text"; event.currentTarget.textContent = showing ? "Show" : "Hide"; });
+$("#direct-form").addEventListener("submit", async (event) => { event.preventDefault(); const button = $("#initialize"); const password = $("#password"); button.disabled = true; button.textContent = "Initializing…"; $("#direct-result").textContent = "OpenAuto is signing in, discovering the account, and preparing its initial map data."; try { await api("/accounts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ server: $("#server").value, username: $("#player-name").value.trim(), password: password.value, scan_radius: Number($("#scan-radius").value) || 0, reuse_existing_map: false }) }); password.value = ""; await refresh(); } catch (error) { password.value = ""; button.disabled = false; button.textContent = "Initialize account"; $("#direct-result").textContent = error.message; } });
+$("#refresh-accounts").addEventListener("click", refreshAccounts);
+$("#scan-radius").addEventListener("input", updateScanEstimate);
+$("#dashboard-refresh").addEventListener("click", () => refreshDashboard(null, true));
+$("#refresh-logs").addEventListener("click", refreshLogs);
+$("#copy-logs").addEventListener("click", async () => { if (!accountLogText) await refreshLogs(); await navigator.clipboard.writeText(accountLogText); $("#log-result").textContent = "Sanitized logs copied."; });
+
+renderKingdoms();
+renderWave();
+updateScanEstimate();
+refreshLicence().then(async (active) => {
+  if (!active) return;
   try {
-    const licence = await responseJson(await fetch(`${API}/licence`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ token: document.querySelector("#licence-token").value.trim() }),
-    }));
-    document.querySelector("#licence-token").value = "";
-    showApplication(licence);
+    await loadLibrary();
+    await refreshAccounts();
     await refresh();
   } catch (error) {
-    licenceResult.textContent = error.message;
+    $("#attack-result").textContent = `Could not load the attack catalog: ${error.message}`;
   }
-});
-
-document.querySelector("#add-credits").addEventListener("click", () => showActivation(true));
-closeActivation.addEventListener("click", () => {
-  if (currentLicence?.active) activation.hidden = true;
-});
-
-document.querySelector("#toggle-password").addEventListener("click", (event) => {
-  const password = document.querySelector("#password");
-  const showing = password.type === "text";
-  password.type = showing ? "password" : "text";
-  event.currentTarget.textContent = showing ? "Show" : "Hide";
-  event.currentTarget.setAttribute("aria-label", showing ? "Show password" : "Hide password");
-});
-
-document.querySelector("#direct-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  initializeButton.disabled = true;
-  initializeButton.textContent = "Connecting…";
-  directResult.textContent = "OpenAuto is signing in and preparing your account.";
-  const password = document.querySelector("#password");
-  const username = usernameInput.value.trim();
-  try {
-    await responseJson(await fetch(`${API}/accounts`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        server: document.querySelector("#server").value,
-        username,
-        password: password.value,
-      }),
-    }));
-    rememberUsername(username);
-    password.value = "";
-    await refresh();
-  } catch (error) {
-    initializeButton.disabled = false;
-    initializeButton.textContent = "Connect account";
-    directResult.textContent = error.message;
-  }
-});
-
-document.querySelector("#refresh-accounts").addEventListener("click", refreshAccounts);
-refreshLicence().then((active) => { if (active) refresh(); }).catch(() => showActivation(false));
+}).catch(() => showActivation(false));
 setInterval(refresh, 2000);
+setInterval(() => { if (!$("#view-logs").hidden && latestDirect.connected) refreshLogs(); }, 1500);
