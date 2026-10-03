@@ -9,7 +9,28 @@ const phase = document.querySelector("#phase");
 const accounts = document.querySelector("#accounts");
 const directResult = document.querySelector("#direct-result");
 const initializeButton = document.querySelector("#initialize");
+const usernameInput = document.querySelector("#player-name");
 let currentLicence = null;
+
+const USERNAME_STORAGE_KEY = "openauto.username";
+
+function rememberedUsername() {
+  try {
+    return localStorage.getItem(USERNAME_STORAGE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function rememberUsername(username) {
+  try {
+    localStorage.setItem(USERNAME_STORAGE_KEY, username);
+  } catch {
+    return;
+  }
+}
+
+usernameInput.value = rememberedUsername();
 
 const phaseCopy = {
   disconnected: "Ready to connect",
@@ -184,20 +205,21 @@ document.querySelector("#direct-form").addEventListener("submit", async (event) 
   initializeButton.textContent = "Connecting…";
   directResult.textContent = "OpenAuto is signing in and preparing your account.";
   const password = document.querySelector("#password");
+  const username = usernameInput.value.trim();
   try {
     await responseJson(await fetch(`${API}/accounts`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         server: document.querySelector("#server").value,
-        username: document.querySelector("#player-name").value.trim(),
+        username,
         password: password.value,
       }),
     }));
+    rememberUsername(username);
     password.value = "";
     await refresh();
   } catch (error) {
-    password.value = "";
     initializeButton.disabled = false;
     initializeButton.textContent = "Connect account";
     directResult.textContent = error.message;
