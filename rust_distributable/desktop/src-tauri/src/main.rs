@@ -12,11 +12,11 @@ fn main() {
                     ..Default::default()
                 };
                 if let Err(error) = empire_daemon::serve(config).await {
-                    eprintln!("embedded Empire daemon stopped: {error:#}");
+                    eprintln!("embedded OpenAuto service stopped: {error:#}");
                 }
             });
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("failed to run Empire Network desktop app");
+        .expect("failed to run OpenAuto desktop app");
 }

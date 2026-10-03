@@ -1,6 +1,8 @@
 //! Small, UI-independent primitives shared by the daemon and desktop app.
 
 #[cfg(feature = "application")]
+pub mod account;
+#[cfg(feature = "application")]
 pub mod event;
 #[cfg(feature = "application")]
 pub mod injection;

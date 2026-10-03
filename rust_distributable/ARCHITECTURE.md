@@ -36,6 +36,26 @@ private key remains in an external issuer, while the application contains only
 the public verification key. Claims contain `not_before` and `expires_at`
 epochs.
 
+## Licence trust chain
+
+```text
+offline master private key
+        │ signs exact payload bytes
+        ▼
+OA1.<base64url payload>.<base64url Ed25519 signature>
+        │
+        ▼
+embedded public-key ring → verify signature → parse JSON → check time/revision/features
+        │
+        ├── invalid: activation UI only; no game network capability
+        └── valid: explicitly entitled features may run
+```
+
+There is one primary issuer key, not one keypair per installation. All builds
+carry the same public key. The keyring abstraction exists solely for controlled
+future rotation. Renewal is a higher signed revision of a licence, which avoids
+replayable unsigned “credit” counters.
+
 ## Runtime flow
 
 ```text

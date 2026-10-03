@@ -9,3 +9,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 empire-daemon = { path = "../../crates/empire-daemon" }
 tauri = { version = "2", features = [] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

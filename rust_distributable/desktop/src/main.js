@@ -1,85 +1,209 @@
 const API = "http://127.0.0.1:47821/v1";
+const activation = document.querySelector("#activation");
+const appShell = document.querySelector("#app-shell");
+const licenceResult = document.querySelector("#licence-result");
+const closeActivation = document.querySelector("#close-activation");
 const status = document.querySelector("#status");
 const gateway = document.querySelector("#gateway-label");
 const phase = document.querySelector("#phase");
-const rows = document.querySelector("#messages");
-const result = document.querySelector("#result");
+const accounts = document.querySelector("#accounts");
 const directResult = document.querySelector("#direct-result");
+const initializeButton = document.querySelector("#initialize");
+let currentLicence = null;
 
-function label(value) {
-  return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+const phaseCopy = {
+  disconnected: "Ready to connect",
+  socket_handshake: "Opening a secure connection…",
+  awaiting_room: "Contacting US1…",
+  awaiting_version: "Preparing your session…",
+  authenticating: "Signing in…",
+  authenticated: "Sign-in complete",
+  loading_account: "Discovering your account…",
+  loading_castle: "Finding your castles…",
+  loading_sands: "Preparing Burning Sands…",
+  sands_ready: "Setup complete",
+  failed: "Needs attention",
+};
+
+function expiryLabel(epoch) {
+  if (!epoch) return "Token required";
+  const remaining = Math.max(0, epoch * 1000 - Date.now());
+  const days = Math.floor(remaining / 86400000);
+  const hours = Math.floor((remaining % 86400000) / 3600000);
+  return days > 0 ? `${days}d ${hours}h remaining` : `${hours}h remaining`;
+}
+
+function showActivation(canClose = false) {
+  activation.hidden = false;
+  closeActivation.hidden = !canClose;
+}
+
+function showApplication(licence) {
+  currentLicence = licence;
+  activation.hidden = true;
+  appShell.hidden = false;
+  document.querySelector("#licence-expiry").textContent = expiryLabel(licence.expires_at);
+}
+
+async function responseJson(response) {
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  return body;
+}
+
+async function refreshLicence() {
+  const licence = await responseJson(await fetch(`${API}/licence`));
+  currentLicence = licence;
+  if (licence.active) {
+    showApplication(licence);
+    return true;
+  }
+  appShell.hidden = true;
+  showActivation(false);
+  licenceResult.textContent = licence.reason || "A valid access token is required.";
+  return false;
+}
+
+function emptyAccounts() {
+  const empty = document.createElement("div");
+  empty.className = "empty-state";
+  const icon = document.createElement("i");
+  icon.textContent = "+";
+  const copy = document.createElement("p");
+  copy.textContent = "Your connected accounts will appear here.";
+  empty.append(icon, copy);
+  accounts.replaceChildren(empty);
+}
+
+async function refreshAccounts() {
+  const list = await responseJson(await fetch(`${API}/accounts`));
+  if (!list.length) {
+    emptyAccounts();
+    return;
+  }
+  accounts.replaceChildren(...list.map((account) => {
+    const card = document.createElement("article");
+    card.className = "account-item";
+    const avatar = document.createElement("div");
+    avatar.className = "account-avatar";
+    avatar.textContent = account.player_name.slice(0, 1).toUpperCase();
+    const identity = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = account.player_name;
+    const server = document.createElement("span");
+    server.textContent = "US1 · Ready";
+    identity.append(title, server);
+    const facts = document.createElement("dl");
+    for (const [name, value] of [["Castles", account.castle_count], ["Commanders", account.commander_count], ["Targets", account.rbc_count]]) {
+      const group = document.createElement("div");
+      const detail = document.createElement("dd"); detail.textContent = value;
+      const term = document.createElement("dt"); term.textContent = name;
+      group.append(detail, term);
+      facts.append(group);
+    }
+    card.append(avatar, identity, facts);
+    return card;
+  }));
+}
+
+function updateProgress(currentPhase) {
+  const order = ["socket_handshake", "authenticating", "loading_castle", "loading_sands", "sands_ready"];
+  const position = order.indexOf(currentPhase);
+  const completed = currentPhase === "sands_ready" ? 3 : position >= 3 ? 2 : position >= 1 ? 1 : 0;
+  document.querySelectorAll(".progress-list > div").forEach((item, index) => {
+    item.classList.toggle("done", index < completed || currentPhase === "sands_ready");
+    item.classList.toggle("current", index === completed && currentPhase !== "sands_ready" && currentPhase !== "disconnected");
+  });
 }
 
 async function refresh() {
   try {
-    const [healthResponse, directResponse, messagesResponse] = await Promise.all([
-      fetch(`${API}/health`), fetch(`${API}/direct`), fetch(`${API}/messages?limit=50`),
+    if (!currentLicence?.active && !(await refreshLicence())) return;
+    const [health, direct] = await Promise.all([
+      fetch(`${API}/health`).then(responseJson),
+      fetch(`${API}/direct`).then(responseJson),
     ]);
-    if (!healthResponse.ok || !directResponse.ok || !messagesResponse.ok) throw new Error("local API error");
-    const health = await healthResponse.json();
-    const direct = await directResponse.json();
-    const messages = await messagesResponse.json();
-    status.textContent = direct.connected ? "Game socket connected" : "Local core ready";
-    status.className = direct.connected ? "status connected" : "status";
-    gateway.textContent = health.transport_connected ? "Transport connected" : "Local core connected";
-    phase.textContent = label(direct.phase);
+    if (!health.licence_active) {
+      currentLicence = null;
+      await refreshLicence();
+      return;
+    }
+    const ready = direct.phase === "sands_ready";
+    status.textContent = ready ? "Account ready" : direct.connected ? "Setting up" : "OpenAuto ready";
+    status.className = ready ? "status connected" : "status";
+    gateway.textContent = direct.connected ? "Connected to US1" : "OpenAuto is ready";
+    phase.textContent = phaseCopy[direct.phase] || "Getting ready…";
+    updateProgress(direct.phase);
     if (direct.error) directResult.textContent = direct.error;
-    rows.replaceChildren(...messages.map((message) => {
-      const row = document.createElement("tr");
-      const values = [message.sequence, label(message.direction), message.command ?? "system", new Date(message.observed_at_ms).toLocaleTimeString()];
-      row.append(...values.map((value) => { const cell = document.createElement("td"); cell.textContent = value; return cell; }));
-      return row;
-    }));
-  } catch (error) {
-    status.textContent = "Local core offline";
+    if (ready) {
+      initializeButton.disabled = false;
+      initializeButton.textContent = "Connect account";
+      directResult.textContent = "Account connected and ready.";
+      await refreshAccounts();
+    }
+  } catch (_) {
+    status.textContent = "OpenAuto unavailable";
     status.className = "status error";
-    gateway.textContent = "Gateway unavailable";
+    gateway.textContent = "Reconnecting…";
   }
 }
 
+document.querySelector("#licence-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  licenceResult.textContent = "Checking your token…";
+  try {
+    const licence = await responseJson(await fetch(`${API}/licence`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: document.querySelector("#licence-token").value.trim() }),
+    }));
+    document.querySelector("#licence-token").value = "";
+    showApplication(licence);
+    await refresh();
+  } catch (error) {
+    licenceResult.textContent = error.message;
+  }
+});
+
+document.querySelector("#add-credits").addEventListener("click", () => showActivation(true));
+closeActivation.addEventListener("click", () => {
+  if (currentLicence?.active) activation.hidden = true;
+});
+
+document.querySelector("#toggle-password").addEventListener("click", (event) => {
+  const password = document.querySelector("#password");
+  const showing = password.type === "text";
+  password.type = showing ? "password" : "text";
+  event.currentTarget.textContent = showing ? "Show" : "Hide";
+  event.currentTarget.setAttribute("aria-label", showing ? "Show password" : "Hide password");
+});
+
 document.querySelector("#direct-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  directResult.textContent = "Opening direct game session…";
-  const body = {
-    endpoint: document.querySelector("#endpoint").value,
-    credentials: {
-      player_name: document.querySelector("#player-name").value,
-      portal_account_id: document.querySelector("#portal-id").value,
-      password: document.querySelector("#password").value || null,
-      login_token: document.querySelector("#login-token").value || null,
-      registration_token: document.querySelector("#registration-token").value || null,
-    },
-    settings: {
-      server_header: "EmpireEx_21", client_version: "1169011", language: "en", platform_id: 1,
-      connection_time: 676, round_trip_time: 118,
-      map: { kingdom_id: 1, left: Number(document.querySelector("#map-x").value), top: Number(document.querySelector("#map-y").value), columns: 3, rows: 2 },
-    },
-  };
-  const response = await fetch(`${API}/direct`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  const responseBody = await response.json();
-  directResult.textContent = response.ok ? "Session accepted; waiting for the game server." : responseBody.error;
-  if (response.ok) {
-    document.querySelector("#password").value = "";
-    document.querySelector("#login-token").value = "";
-    document.querySelector("#registration-token").value = "";
+  initializeButton.disabled = true;
+  initializeButton.textContent = "Connecting…";
+  directResult.textContent = "OpenAuto is signing in and preparing your account.";
+  const password = document.querySelector("#password");
+  try {
+    await responseJson(await fetch(`${API}/accounts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        server: document.querySelector("#server").value,
+        username: document.querySelector("#player-name").value.trim(),
+        password: password.value,
+      }),
+    }));
+    password.value = "";
+    await refresh();
+  } catch (error) {
+    password.value = "";
+    initializeButton.disabled = false;
+    initializeButton.textContent = "Connect account";
+    directResult.textContent = error.message;
   }
-  refresh();
 });
 
-document.querySelector("#disconnect").addEventListener("click", async () => {
-  await fetch(`${API}/direct`, { method: "DELETE" });
-  directResult.textContent = "Disconnected.";
-  refresh();
-});
-
-document.querySelector("#refresh").addEventListener("click", refresh);
-document.querySelector("#inject-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  result.textContent = "Queueing…";
-  const response = await fetch(`${API}/injections`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ packet: document.querySelector("#packet").value }) });
-  const body = await response.json();
-  result.textContent = response.ok ? `Queued ${body.id}` : body.error;
-});
-
-refresh();
+document.querySelector("#refresh-accounts").addEventListener("click", refreshAccounts);
+refreshLicence().then((active) => { if (active) refresh(); }).catch(() => showActivation(false));
 setInterval(refresh, 2000);

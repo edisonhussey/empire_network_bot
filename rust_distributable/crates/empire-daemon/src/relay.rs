@@ -16,12 +16,19 @@ use tokio::sync::{RwLock, mpsc};
 use tokio_tungstenite::{connect_async, tungstenite::Message as UpstreamMessage};
 use tracing::{info, warn};
 
+use crate::licence::LicenceGate;
+
 pub async fn run(
     client: WebSocket,
     upstream_url: String,
     store: Store,
     active_transport: Arc<RwLock<Option<mpsc::Sender<InjectionRequest>>>>,
+    licence: LicenceGate,
 ) {
+    if let Err(error) = licence.require("game_network").await {
+        warn!(%error, "relay rejected by application token");
+        return;
+    }
     let Ok((upstream, _response)) = connect_async(&upstream_url).await else {
         warn!(%upstream_url, "upstream websocket connection failed");
         return;
@@ -32,6 +39,8 @@ pub async fn run(
 
     let (mut client_sink, mut client_stream) = client.split();
     let (mut upstream_sink, mut upstream_stream) = upstream.split();
+    let mut entitlement_check = tokio::time::interval(std::time::Duration::from_secs(5));
+    entitlement_check.tick().await;
 
     loop {
         tokio::select! {
@@ -64,6 +73,12 @@ pub async fn run(
                 }
                 record(&store, Direction::Injected, &request.packet).await;
                 if upstream_sink.send(UpstreamMessage::Text(request.packet.into())).await.is_err() {
+                    break;
+                }
+            }
+            _ = entitlement_check.tick() => {
+                if let Err(error) = licence.require("game_network").await {
+                    warn!(%error, "relay stopped by application token");
                     break;
                 }
             }

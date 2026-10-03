@@ -1,4 +1,5 @@
 mod direct;
+mod licence;
 mod relay;
 
 use std::{
@@ -34,6 +35,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 struct AppState {
     store: Store,
+    licence: licence::LicenceGate,
     active_transport: Arc<RwLock<Option<mpsc::Sender<InjectionRequest>>>>,
     direct_status: Arc<RwLock<direct::DirectStatus>>,
     direct_task: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -42,6 +44,7 @@ struct AppState {
 #[derive(Debug, Serialize)]
 struct Health {
     status: &'static str,
+    licence_active: bool,
     transport_connected: bool,
     recent_message_limit: i64,
 }
@@ -66,6 +69,11 @@ struct InjectAccepted {
 #[derive(Debug, Deserialize)]
 struct RelayQuery {
     upstream: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ActivateLicenceBody {
+    token: String,
 }
 
 #[derive(Debug, Clone)]
@@ -102,8 +110,10 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
         "sqlite://{}?mode=rwc",
         data_dir.join("empire.sqlite3").display()
     );
+    let store = Store::open(&database_url).await?;
     let state = AppState {
-        store: Store::open(&database_url).await?,
+        licence: licence::LicenceGate::new(store.clone())?,
+        store,
         active_transport: Arc::new(RwLock::new(None)),
         direct_status: Arc::new(RwLock::new(direct::DirectStatus::default())),
         direct_task: Arc::new(Mutex::new(None)),
@@ -120,7 +130,12 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
         .allow_headers([axum::http::header::CONTENT_TYPE]);
     let app = Router::new()
         .route("/v1/health", get(health))
+        .route("/v1/licence", get(licence_status).post(activate_licence))
         .route("/v1/messages", get(messages))
+        .route(
+            "/v1/accounts",
+            get(accounts).post(initialize_account),
+        )
         .route("/v1/injections", post(inject))
         .route(
             "/v1/direct",
@@ -133,7 +148,7 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    info!(%bind, database = %database_url, "empire daemon ready");
+    info!(%bind, database = %database_url, "OpenAuto service ready");
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -146,6 +161,11 @@ async fn direct_connect(
     State(state): State<AppState>,
     Json(request): Json<direct::DirectConnectRequest>,
 ) -> Result<(StatusCode, Json<direct::DirectStatus>), ApiError> {
+    state
+        .licence
+        .require("game_network")
+        .await
+        .map_err(ApiError::forbidden)?;
     if !request.endpoint.starts_with("wss://") {
         return Err(ApiError::bad_request("direct endpoint must use wss://"));
     }
@@ -175,12 +195,23 @@ async fn direct_connect(
         state.store.clone(),
         state.active_transport.clone(),
         state.direct_status.clone(),
+        state.licence.clone(),
     ));
     *state.direct_task.lock().await = Some(task);
     Ok((
         StatusCode::ACCEPTED,
         Json(state.direct_status.read().await.clone()),
     ))
+}
+
+async fn initialize_account(
+    State(state): State<AppState>,
+    Json(request): Json<direct::InitializeAccountRequest>,
+) -> Result<(StatusCode, Json<direct::DirectStatus>), ApiError> {
+    if request.username.trim().is_empty() || request.password.is_empty() {
+        return Err(ApiError::bad_request("username and password are required"));
+    }
+    direct_connect(State(state), Json(request.into_direct())).await
 }
 
 async fn direct_disconnect(State(state): State<AppState>) -> StatusCode {
@@ -193,8 +224,10 @@ async fn direct_disconnect(State(state): State<AppState>) -> StatusCode {
 }
 
 async fn health(State(state): State<AppState>) -> Json<Health> {
+    let licence_active = state.licence.status().await.active;
     Json(Health {
         status: "ok",
+        licence_active,
         transport_connected: state.active_transport.read().await.is_some(),
         recent_message_limit: empire_core::RECENT_MESSAGE_LIMIT,
     })
@@ -204,6 +237,11 @@ async fn messages(
     State(state): State<AppState>,
     Query(query): Query<MessageQuery>,
 ) -> Result<Json<Vec<StoredMessage>>, ApiError> {
+    state
+        .licence
+        .require("game_network")
+        .await
+        .map_err(ApiError::forbidden)?;
     Ok(Json(
         state
             .store
@@ -212,10 +250,26 @@ async fn messages(
     ))
 }
 
+async fn accounts(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<empire_core::store::AccountSummary>>, ApiError> {
+    state
+        .licence
+        .require("account_initialize")
+        .await
+        .map_err(ApiError::forbidden)?;
+    Ok(Json(state.store.account_summaries().await?))
+}
+
 async fn inject(
     State(state): State<AppState>,
     Json(body): Json<InjectBody>,
 ) -> Result<(StatusCode, Json<InjectAccepted>), ApiError> {
+    state
+        .licence
+        .require("game_network")
+        .await
+        .map_err(ApiError::forbidden)?;
     parse_xt_packet(&body.packet).map_err(|error| ApiError::bad_request(error.to_string()))?;
     let now = now_ms();
     let request = InjectionRequest::new(
@@ -248,12 +302,42 @@ async fn relay_socket(
     State(state): State<AppState>,
     Query(query): Query<RelayQuery>,
 ) -> Result<Response, ApiError> {
+    state
+        .licence
+        .require("game_network")
+        .await
+        .map_err(ApiError::forbidden)?;
     if !query.upstream.starts_with("wss://") && !query.upstream.starts_with("ws://") {
         return Err(ApiError::bad_request("upstream must use ws:// or wss://"));
     }
     Ok(ws.on_upgrade(move |socket| {
-        relay::run(socket, query.upstream, state.store, state.active_transport)
+        relay::run(
+            socket,
+            query.upstream,
+            state.store,
+            state.active_transport,
+            state.licence,
+        )
     }))
+}
+
+async fn licence_status(State(state): State<AppState>) -> Json<licence::LicenceStatus> {
+    Json(state.licence.status().await)
+}
+
+async fn activate_licence(
+    State(state): State<AppState>,
+    Json(body): Json<ActivateLicenceBody>,
+) -> Result<Json<licence::LicenceStatus>, ApiError> {
+    if body.token.len() > 16 * 1024 {
+        return Err(ApiError::bad_request("application token is too large"));
+    }
+    let status = state
+        .licence
+        .activate(&body.token)
+        .await
+        .map_err(|error| ApiError::bad_request(error.to_string()))?;
+    Ok(Json(status))
 }
 
 fn now_ms() -> i64 {
@@ -280,6 +364,13 @@ impl ApiError {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
             message: message.into(),
+        }
+    }
+
+    fn forbidden(message: impl std::fmt::Display) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            message: message.to_string(),
         }
     }
 }

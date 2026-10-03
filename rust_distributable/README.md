@@ -1,4 +1,4 @@
-# Empire Network — Rust distribution
+# OpenAuto — Rust distribution
 
 This directory is a clean-room Rust replacement path for the Python proxy bot.
 It deliberately shares no runtime files with the Python implementation.
@@ -24,6 +24,9 @@ It deliberately shares no runtime files with the Python implementation.
   proxy, or Python dependency: it opens the game WebSocket directly, performs
   the reconstructed login sequence, loads the main castle and Sands map, enters
   the account's learned Sands castle, and reports a sanitized live-state proof.
+- The packaged desktop is licence-gated. First launch accepts a signed `OA1`
+  application token; protected APIs and active game transports continuously
+  enforce its time window and feature claims.
 
 ## Honest boundary
 
@@ -122,6 +125,25 @@ npm run tauri dev
 
 The standalone daemon remains available for network tests that do not require a
 GUI. Do not run it on the default port at the same time as the desktop app.
+
+## Issue a test application token
+
+The issuer is an administrator-only tool. Its private key is ignored by source
+control and must never be copied into a customer build:
+
+```sh
+cd rust_distributable
+cargo run -q -p empire-license-admin -- issue \
+  --private admin/master_key.txt \
+  --license-id local-four-day-test \
+  --subject developer \
+  --days 4 \
+  --revision 1
+```
+
+Paste the resulting token into the first-launch screen. Renewal uses the same
+licence ID and a higher revision. See `admin/functions.md` for operational key
+handling and rotation rules.
 
 ## Design constraints
 

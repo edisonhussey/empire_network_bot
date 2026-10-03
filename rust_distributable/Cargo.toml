@@ -1,5 +1,10 @@
 [workspace]
-members = ["crates/empire-core", "crates/empire-daemon", "crates/empire-login"]
+members = [
+    "crates/empire-core",
+    "crates/empire-daemon",
+    "crates/empire-license-admin",
+    "crates/empire-login",
+]
 exclude = ["desktop/src-tauri"]
 resolver = "2"
 
@@ -12,8 +17,9 @@ license = "Proprietary"
 anyhow = "1.0"
 axum = { version = "0.8", features = ["json", "ws"] }
 base64 = "0.22"
-ed25519-dalek = "2.2"
+ed25519-dalek = { version = "2.2", features = ["rand_core"] }
 futures-util = "0.3"
+getrandom = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate"] }

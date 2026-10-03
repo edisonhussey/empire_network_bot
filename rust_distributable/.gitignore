@@ -1,7 +1,11 @@
-/target
-/desktop/node_modules
-/desktop/dist
-/desktop/src-tauri/target
+/target/
+/desktop/src-tauri/target/
+/desktop/dist/
+/desktop/node_modules/
+/releases/*.dmg
+/data/
+/admin/master_key.txt
+/admin/*.token
+*.sqlite3
 *.sqlite3-shm
 *.sqlite3-wal
-

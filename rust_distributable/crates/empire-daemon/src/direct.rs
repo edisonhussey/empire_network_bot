@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use empire_core::{
+    account::{commander_lids, owned_castles, rbc_targets},
     event::Direction,
     injection::{InjectionRequest, channel},
     protocol::parse_xt_packet,
@@ -16,6 +17,42 @@ use tokio_tungstenite::{
     tungstenite::{Message, client::IntoClientRequest, http::header::ORIGIN},
 };
 use tracing::{info, warn};
+
+use crate::licence::LicenceGate;
+
+const US1_ENDPOINT: &str = "wss://ep-live-us1-game.goodgamestudios.com/";
+const US1_PORTAL_ACCOUNT_ID: &str = "1780270034676433896";
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub enum GameServer {
+    #[serde(rename = "US1")]
+    Us1,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct InitializeAccountRequest {
+    pub server: GameServer,
+    pub username: String,
+    pub password: String,
+}
+
+impl InitializeAccountRequest {
+    pub fn into_direct(self) -> DirectConnectRequest {
+        match self.server {
+            GameServer::Us1 => DirectConnectRequest {
+                endpoint: US1_ENDPOINT.to_owned(),
+                credentials: LoginCredentials {
+                    player_name: self.username.trim().to_owned(),
+                    portal_account_id: US1_PORTAL_ACCOUNT_ID.to_owned(),
+                    password: Some(self.password),
+                    login_token: None,
+                    registration_token: None,
+                },
+                settings: SessionSettings::default(),
+            },
+        }
+    }
+}
 
 #[derive(Clone, Deserialize)]
 pub struct DirectConnectRequest {
@@ -49,10 +86,11 @@ pub async fn run(
     store: Store,
     active_transport: Arc<RwLock<Option<mpsc::Sender<InjectionRequest>>>>,
     status: Arc<RwLock<DirectStatus>>,
+    licence: LicenceGate,
 ) {
     let endpoint = request.endpoint.clone();
     status.write().await.endpoint = Some(endpoint.clone());
-    let result = run_inner(request, &store, &active_transport, &status).await;
+    let result = run_inner(request, &store, &active_transport, &status, &licence).await;
     *active_transport.write().await = None;
     let mut current = status.write().await;
     current.connected = false;
@@ -68,7 +106,19 @@ async fn run_inner(
     store: &Store,
     active_transport: &Arc<RwLock<Option<mpsc::Sender<InjectionRequest>>>>,
     status: &Arc<RwLock<DirectStatus>>,
+    licence: &LicenceGate,
 ) -> anyhow::Result<()> {
+    licence.require("game_network").await?;
+    let account_id = request.credentials.player_name.trim().to_owned();
+    store
+        .upsert_account_profile(
+            &account_id,
+            &request.credentials.player_name,
+            &request.endpoint,
+            &request.settings.server_header,
+            now_ms(),
+        )
+        .await?;
     let mut websocket_request = request.endpoint.as_str().into_client_request()?;
     websocket_request
         .headers_mut()
@@ -91,7 +141,9 @@ async fn run_inner(
     info!(endpoint = %request.endpoint, "direct game session connected");
 
     let mut heartbeat = tokio::time::interval(Duration::from_secs(60));
+    let mut entitlement_check = tokio::time::interval(Duration::from_secs(5));
     heartbeat.tick().await;
+    entitlement_check.tick().await;
     loop {
         tokio::select! {
             maybe = stream.next() => {
@@ -103,6 +155,7 @@ async fn run_inner(
                     _ => None,
                 };
                 if let Some(text) = text {
+                    observe_account_packet(store, &account_id, &text).await;
                     record_text(store, Direction::ServerToClient, &text).await;
                     let frames = machine.on_server_text(&text)?;
                     status.write().await.phase = machine.phase();
@@ -127,9 +180,46 @@ async fn run_inner(
                 );
                 sink.send(Message::Text(packet.into())).await?;
             }
+            _ = entitlement_check.tick() => {
+                licence.require("game_network").await?;
+            }
         }
     }
     Ok(())
+}
+
+async fn observe_account_packet(store: &Store, account_id: &str, raw: &str) {
+    let Ok(packet) = parse_xt_packet(raw) else {
+        return;
+    };
+    if packet.status.as_deref().is_some_and(|status| status != "0") {
+        return;
+    }
+    let result = match packet.command.as_str() {
+        "gbd" => {
+            let castles = owned_castles(&packet.payload);
+            let commanders = commander_lids(&packet.payload);
+            if castles.is_empty() {
+                return;
+            }
+            store
+                .replace_account_bootstrap(account_id, &castles, &commanders, now_ms())
+                .await
+        }
+        "gaa" => {
+            let targets = rbc_targets(&packet.payload);
+            if targets.is_empty() {
+                return;
+            }
+            store
+                .upsert_rbc_targets(account_id, &targets, now_ms())
+                .await
+        }
+        _ => return,
+    };
+    if let Err(error) = result {
+        warn!(%error, %account_id, command = %packet.command, "account discovery persistence failed");
+    }
 }
 
 async fn record_safe_outbound(store: &Store, raw: &str) {

@@ -169,6 +169,9 @@ impl SessionMachine {
                 Ok(Vec::new())
             }
             "gbd" if !self.bootstrap_sent => {
+                if let Some(map) = sands_viewport_from_bootstrap(&packet.payload) {
+                    self.settings.map = map;
+                }
                 self.bootstrap_sent = true;
                 self.phase = SessionPhase::LoadingCastle;
                 self.bootstrap_packets()
@@ -262,6 +265,31 @@ impl SessionMachine {
     }
 }
 
+fn sands_viewport_from_bootstrap(payload: &Value) -> Option<MapViewport> {
+    let kingdoms = payload.pointer("/gcl/C")?.as_array()?;
+    for kingdom in kingdoms {
+        if kingdom.get("KID").and_then(Value::as_i64) != Some(1) {
+            continue;
+        }
+        for area in kingdom.get("AI")?.as_array()? {
+            let row = area.get("AI")?.as_array()?;
+            if row.first().and_then(Value::as_i64) != Some(12) {
+                continue;
+            }
+            let x = row.get(1)?.as_i64()?;
+            let y = row.get(2)?.as_i64()?;
+            return Some(MapViewport {
+                kingdom_id: 1,
+                left: x.saturating_sub(21),
+                top: y.saturating_sub(15),
+                columns: 3,
+                rows: 2,
+            });
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,5 +337,14 @@ mod tests {
             .on_server_text("%xt%gaa%1%0%{\"KID\":1,\"AI\":[]}%")
             .unwrap();
         assert_eq!(session.phase(), SessionPhase::SandsReady);
+    }
+
+    #[test]
+    fn derives_sands_viewport_from_the_accounts_castle() {
+        let payload = json!({
+            "gcl": {"C": [{"KID": 1, "AI": [{"AI": [12, 593, 613, 16366514]}]}]}
+        });
+        let viewport = sands_viewport_from_bootstrap(&payload).unwrap();
+        assert_eq!((viewport.left, viewport.top), (572, 598));
     }
 }

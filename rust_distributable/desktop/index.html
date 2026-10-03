@@ -3,64 +3,97 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Citadel</title>
+    <title>OpenAuto</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <div class="shell">
+    <section id="activation" class="activation-screen">
+      <div class="activation-card">
+        <div class="app-icon" aria-hidden="true"><span></span></div>
+        <p class="eyebrow">Welcome to OpenAuto</p>
+        <h1>Enter your access token</h1>
+        <p class="activation-copy">Activate OpenAuto to continue.</p>
+        <form id="licence-form">
+          <label for="licence-token">Access token</label>
+          <textarea id="licence-token" placeholder="Paste token" spellcheck="false" required></textarea>
+          <button type="submit">Continue</button>
+          <output id="licence-result" role="status"></output>
+        </form>
+        <button id="close-activation" class="text-button" type="button" hidden>Cancel</button>
+      </div>
+    </section>
+
+    <div id="app-shell" class="shell" hidden>
       <aside>
-        <div class="brand"><span class="brandmark">C</span><div>Citadel<small>Network command core</small></div></div>
-        <nav>
-          <button class="active">Command center</button>
-          <button disabled>Attack plans</button><button disabled>Recruitment</button>
-          <button disabled>Schedules</button><button disabled>Accounts</button>
+        <div class="brand"><div class="app-icon small" aria-hidden="true"><span></span></div><div>OpenAuto<small>Automation, simplified.</small></div></div>
+        <nav aria-label="Primary navigation">
+          <button class="active"><span class="nav-icon">⌂</span>Overview</button>
+          <button disabled><span class="nav-icon">⌁</span>Attack plans</button>
+          <button disabled><span class="nav-icon">＋</span>Recruitment</button>
+          <button disabled><span class="nav-icon">◷</span>Schedules</button>
         </nav>
-        <div class="gateway"><i></i><span id="gateway-label">Starting local core</span></div>
+        <div class="side-footer">
+          <button id="add-credits" class="licence-button"><span>OpenAuto plan</span><b id="licence-expiry">Checking…</b></button>
+          <div class="gateway"><i></i><span id="gateway-label">Starting OpenAuto</span></div>
+        </div>
       </aside>
+
       <main>
         <header>
-          <div><p class="eyebrow">Direct network session</p><h1>Command center</h1></div>
-          <span id="status" class="status">Connecting</span>
+          <div><p class="eyebrow">Overview</p><h1>Good evening</h1></div>
+          <span id="status" class="status">Getting ready</span>
         </header>
-        <section class="hero card">
-          <div><p class="eyebrow">Current objective</p><h2>Login → main castle → Burning Sands map</h2><p>The Rust core advances only after the expected server response.</p></div>
-          <div class="phase"><span>Session phase</span><strong id="phase">Disconnected</strong></div>
+
+        <section class="welcome-card">
+          <div class="welcome-copy">
+            <p class="eyebrow">Account setup</p>
+            <h2>Connect your kingdom</h2>
+            <p>Choose your server and sign in. OpenAuto will discover your castles and prepare everything automatically.</p>
+          </div>
+          <div class="readiness">
+            <span>Setup status</span>
+            <strong id="phase">Ready to connect</strong>
+          </div>
         </section>
-        <div class="columns">
-          <section class="card">
-            <div class="card-title"><div><p class="eyebrow">Account connection</p><h2>Start network-only session</h2></div></div>
-            <form id="direct-form" class="form-grid" autocomplete="off">
-              <label class="wide">Game WebSocket endpoint<input id="endpoint" value="wss://ep-live-us1-game.goodgamestudios.com/" required /></label>
-              <label>Player name<input id="player-name" value="Ventrilo" required /></label>
-              <label>Portal account ID<input id="portal-id" required /></label>
-              <label class="wide">Account password<input id="password" type="password" /></label>
-              <label>Login token (alternative)<input id="login-token" type="password" /></label>
-              <label>Registration token (optional)<input id="registration-token" type="password" /></label>
-              <label>Sands viewport X<input id="map-x" type="number" value="572" required /></label>
-              <label>Sands viewport Y<input id="map-y" type="number" value="598" required /></label>
-              <div class="wide notice">Use either the password or a fresh login token. Credentials stay in memory and are excluded from SQLite and message history.</div>
-              <div class="wide actions"><button type="button" id="disconnect" class="secondary">Disconnect</button><button type="submit">Connect and prepare Sands</button></div>
-              <output id="direct-result" class="wide"></output>
+
+        <div class="content-grid">
+          <section class="card connect-card">
+            <div class="card-title">
+              <div><p class="eyebrow">New account</p><h2>Sign in</h2></div>
+              <span class="secure-badge">Private connection</span>
+            </div>
+            <form id="direct-form" class="account-form" autocomplete="off">
+              <label for="server">Server</label>
+              <div class="select-wrap"><select id="server" required><option value="US1">US1 — United States</option></select></div>
+              <label for="player-name">Username</label>
+              <input id="player-name" value="Ventrilo" autocomplete="username" autocapitalize="none" spellcheck="false" required />
+              <label for="password">Password</label>
+              <div class="password-wrap">
+                <input id="password" type="password" autocomplete="current-password" required />
+                <button id="toggle-password" class="reveal" type="button" aria-label="Show password">Show</button>
+              </div>
+              <button id="initialize" class="primary-action" type="submit">Connect account</button>
+              <output id="direct-result" role="status"></output>
             </form>
           </section>
-          <section class="card sequence">
-            <p class="eyebrow">Observed state path</p><h2>Protocol stages</h2>
-            <ol>
-              <li><b>Socket handshake</b><span>verChk · apiOK · login · room join</span></li>
-              <li><b>Version negotiation</b><span>vck using the active client build</span></li>
-              <li><b>Account authentication</b><span>lli with live portal credentials</span></li>
-              <li><b>Castle bootstrap</b><span>gbd marker · jca main castle · account reads</span></li>
-              <li><b>Sands viewport</b><span>gbl · six KID 1 chunks · confirmed gaa</span></li>
-            </ol>
+
+          <section class="card progress-card">
+            <p class="eyebrow">Automatic setup</p>
+            <h2>OpenAuto handles the rest</h2>
+            <div class="progress-list">
+              <div><i>1</i><span><b>Sign in securely</b><small>Connect to your selected server</small></span></div>
+              <div><i>2</i><span><b>Discover your account</b><small>Find castles and available commanders</small></span></div>
+              <div><i>3</i><span><b>Prepare your map</b><small>Open Burning Sands and learn nearby targets</small></span></div>
+            </div>
           </section>
         </div>
-        <section class="card">
-          <div class="card-title"><div><p class="eyebrow">Bounded history</p><h2>Recent protocol messages</h2></div><button id="refresh" class="secondary">Refresh</button></div>
-          <div class="table-wrap"><table><thead><tr><th>#</th><th>Direction</th><th>Command</th><th>Observed</th></tr></thead><tbody id="messages"></tbody></table></div>
-        </section>
-        <section class="card">
-          <div class="card-title"><div><p class="eyebrow">Developer control</p><h2>Inject validated XT packet</h2></div></div>
-          <form id="inject-form"><textarea id="packet" spellcheck="false">%xt%EmpireEx_21%gbl%1%{}%</textarea><button type="submit">Queue packet</button><output id="result"></output></form>
+
+        <section class="card accounts-card">
+          <div class="card-title">
+            <div><p class="eyebrow">Your workspace</p><h2>Connected accounts</h2></div>
+            <button id="refresh-accounts" class="icon-button" type="button" aria-label="Refresh accounts">↻</button>
+          </div>
+          <div id="accounts" class="account-grid"><div class="empty-state"><i>＋</i><p>Your connected accounts will appear here.</p></div></div>
         </section>
       </main>
     </div>
