@@ -1,0 +1,304 @@
+mod direct;
+mod relay;
+
+use std::{
+    env,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    path::PathBuf,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use anyhow::Context;
+use axum::{
+    Json, Router,
+    extract::{Query, State, ws::WebSocketUpgrade},
+    http::{HeaderValue, Method, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
+use empire_core::{
+    injection::InjectionRequest,
+    protocol::parse_xt_packet,
+    store::{Store, StoredMessage},
+};
+use serde::{Deserialize, Serialize};
+use tokio::{
+    sync::{Mutex, RwLock, mpsc},
+    task::JoinHandle,
+};
+use tower_http::cors::CorsLayer;
+use tracing::{info, warn};
+use uuid::Uuid;
+
+#[derive(Clone)]
+struct AppState {
+    store: Store,
+    active_transport: Arc<RwLock<Option<mpsc::Sender<InjectionRequest>>>>,
+    direct_status: Arc<RwLock<direct::DirectStatus>>,
+    direct_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+}
+
+#[derive(Debug, Serialize)]
+struct Health {
+    status: &'static str,
+    transport_connected: bool,
+    recent_message_limit: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct MessageQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InjectBody {
+    packet: String,
+    ttl_ms: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+struct InjectAccepted {
+    id: Uuid,
+    status: &'static str,
+}
+
+#[derive(Debug, Deserialize)]
+struct RelayQuery {
+    upstream: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DaemonConfig {
+    pub bind: SocketAddr,
+    pub data_dir: PathBuf,
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 47821),
+            data_dir: PathBuf::from("data"),
+        }
+    }
+}
+
+pub async fn serve_from_env() -> anyhow::Result<()> {
+    let bind: SocketAddr = env::var("EMPIRE_BIND")
+        .unwrap_or_else(|_| "127.0.0.1:47821".to_owned())
+        .parse()
+        .context("EMPIRE_BIND must be an IP socket address")?;
+    let data_dir = env::var_os("EMPIRE_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("data"));
+    serve(DaemonConfig { bind, data_dir }).await
+}
+
+pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
+    let bind = config.bind;
+    let data_dir = config.data_dir;
+    tokio::fs::create_dir_all(&data_dir).await?;
+    let database_url = format!(
+        "sqlite://{}?mode=rwc",
+        data_dir.join("empire.sqlite3").display()
+    );
+    let state = AppState {
+        store: Store::open(&database_url).await?,
+        active_transport: Arc::new(RwLock::new(None)),
+        direct_status: Arc::new(RwLock::new(direct::DirectStatus::default())),
+        direct_task: Arc::new(Mutex::new(None)),
+    };
+
+    let allowed_origins = [
+        "http://localhost:1420".parse::<HeaderValue>().unwrap(),
+        "tauri://localhost".parse::<HeaderValue>().unwrap(),
+        "https://tauri.localhost".parse::<HeaderValue>().unwrap(),
+    ];
+    let cors = CorsLayer::new()
+        .allow_origin(allowed_origins)
+        .allow_methods([Method::GET, Method::POST, Method::DELETE])
+        .allow_headers([axum::http::header::CONTENT_TYPE]);
+    let app = Router::new()
+        .route("/v1/health", get(health))
+        .route("/v1/messages", get(messages))
+        .route("/v1/injections", post(inject))
+        .route(
+            "/v1/direct",
+            get(direct_status)
+                .post(direct_connect)
+                .delete(direct_disconnect),
+        )
+        .route("/v1/relay", get(relay_socket))
+        .layer(cors)
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind(bind).await?;
+    info!(%bind, database = %database_url, "empire daemon ready");
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+async fn direct_status(State(state): State<AppState>) -> Json<direct::DirectStatus> {
+    Json(state.direct_status.read().await.clone())
+}
+
+async fn direct_connect(
+    State(state): State<AppState>,
+    Json(request): Json<direct::DirectConnectRequest>,
+) -> Result<(StatusCode, Json<direct::DirectStatus>), ApiError> {
+    if !request.endpoint.starts_with("wss://") {
+        return Err(ApiError::bad_request("direct endpoint must use wss://"));
+    }
+    if request.credentials.player_name.is_empty()
+        || request.credentials.portal_account_id.is_empty()
+        || (request
+            .credentials
+            .password
+            .as_deref()
+            .is_none_or(str::is_empty)
+            && request
+                .credentials
+                .login_token
+                .as_deref()
+                .is_none_or(str::is_empty))
+    {
+        return Err(ApiError::bad_request(
+            "player, account ID, and either password or login token are required",
+        ));
+    }
+    if let Some(task) = state.direct_task.lock().await.take() {
+        task.abort();
+    }
+    *state.active_transport.write().await = None;
+    let task = tokio::spawn(direct::run(
+        request,
+        state.store.clone(),
+        state.active_transport.clone(),
+        state.direct_status.clone(),
+    ));
+    *state.direct_task.lock().await = Some(task);
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(state.direct_status.read().await.clone()),
+    ))
+}
+
+async fn direct_disconnect(State(state): State<AppState>) -> StatusCode {
+    if let Some(task) = state.direct_task.lock().await.take() {
+        task.abort();
+    }
+    *state.active_transport.write().await = None;
+    *state.direct_status.write().await = direct::DirectStatus::default();
+    StatusCode::NO_CONTENT
+}
+
+async fn health(State(state): State<AppState>) -> Json<Health> {
+    Json(Health {
+        status: "ok",
+        transport_connected: state.active_transport.read().await.is_some(),
+        recent_message_limit: empire_core::RECENT_MESSAGE_LIMIT,
+    })
+}
+
+async fn messages(
+    State(state): State<AppState>,
+    Query(query): Query<MessageQuery>,
+) -> Result<Json<Vec<StoredMessage>>, ApiError> {
+    Ok(Json(
+        state
+            .store
+            .recent_messages(query.limit.unwrap_or(50))
+            .await?,
+    ))
+}
+
+async fn inject(
+    State(state): State<AppState>,
+    Json(body): Json<InjectBody>,
+) -> Result<(StatusCode, Json<InjectAccepted>), ApiError> {
+    parse_xt_packet(&body.packet).map_err(|error| ApiError::bad_request(error.to_string()))?;
+    let now = now_ms();
+    let request = InjectionRequest::new(
+        body.packet,
+        now,
+        body.ttl_ms.unwrap_or(15_000).clamp(1_000, 60_000),
+    );
+    let id = request.id;
+    let sender = state
+        .active_transport
+        .read()
+        .await
+        .clone()
+        .ok_or_else(|| ApiError::unavailable("no active relay transport"))?;
+    sender.try_send(request).map_err(|error| {
+        warn!(%error, "injection rejected");
+        ApiError::unavailable("injection queue is full or disconnected")
+    })?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(InjectAccepted {
+            id,
+            status: "queued",
+        }),
+    ))
+}
+
+async fn relay_socket(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    Query(query): Query<RelayQuery>,
+) -> Result<Response, ApiError> {
+    if !query.upstream.starts_with("wss://") && !query.upstream.starts_with("ws://") {
+        return Err(ApiError::bad_request("upstream must use ws:// or wss://"));
+    }
+    Ok(ws.on_upgrade(move |socket| {
+        relay::run(socket, query.upstream, state.store, state.active_transport)
+    }))
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+struct ApiError {
+    status: StatusCode,
+    message: String,
+}
+
+impl ApiError {
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+
+    fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: message.into(),
+        }
+    }
+}
+
+impl From<sqlx::Error> for ApiError {
+    fn from(error: sqlx::Error) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: error.to_string(),
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (
+            self.status,
+            Json(serde_json::json!({"error": self.message})),
+        )
+            .into_response()
+    }
+}

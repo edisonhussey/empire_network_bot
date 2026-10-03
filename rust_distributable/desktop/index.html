@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Citadel</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside>
+        <div class="brand"><span class="brandmark">C</span><div>Citadel<small>Network command core</small></div></div>
+        <nav>
+          <button class="active">Command center</button>
+          <button disabled>Attack plans</button><button disabled>Recruitment</button>
+          <button disabled>Schedules</button><button disabled>Accounts</button>
+        </nav>
+        <div class="gateway"><i></i><span id="gateway-label">Starting local core</span></div>
+      </aside>
+      <main>
+        <header>
+          <div><p class="eyebrow">Direct network session</p><h1>Command center</h1></div>
+          <span id="status" class="status">Connecting</span>
+        </header>
+        <section class="hero card">
+          <div><p class="eyebrow">Current objective</p><h2>Login → main castle → Burning Sands map</h2><p>The Rust core advances only after the expected server response.</p></div>
+          <div class="phase"><span>Session phase</span><strong id="phase">Disconnected</strong></div>
+        </section>
+        <div class="columns">
+          <section class="card">
+            <div class="card-title"><div><p class="eyebrow">Account connection</p><h2>Start network-only session</h2></div></div>
+            <form id="direct-form" class="form-grid" autocomplete="off">
+              <label class="wide">Game WebSocket endpoint<input id="endpoint" value="wss://ep-live-us1-game.goodgamestudios.com/" required /></label>
+              <label>Player name<input id="player-name" value="Ventrilo" required /></label>
+              <label>Portal account ID<input id="portal-id" required /></label>
+              <label class="wide">Account password<input id="password" type="password" /></label>
+              <label>Login token (alternative)<input id="login-token" type="password" /></label>
+              <label>Registration token (optional)<input id="registration-token" type="password" /></label>
+              <label>Sands viewport X<input id="map-x" type="number" value="572" required /></label>
+              <label>Sands viewport Y<input id="map-y" type="number" value="598" required /></label>
+              <div class="wide notice">Use either the password or a fresh login token. Credentials stay in memory and are excluded from SQLite and message history.</div>
+              <div class="wide actions"><button type="button" id="disconnect" class="secondary">Disconnect</button><button type="submit">Connect and prepare Sands</button></div>
+              <output id="direct-result" class="wide"></output>
+            </form>
+          </section>
+          <section class="card sequence">
+            <p class="eyebrow">Observed state path</p><h2>Protocol stages</h2>
+            <ol>
+              <li><b>Socket handshake</b><span>verChk · apiOK · login · room join</span></li>
+              <li><b>Version negotiation</b><span>vck using the active client build</span></li>
+              <li><b>Account authentication</b><span>lli with live portal credentials</span></li>
+              <li><b>Castle bootstrap</b><span>gbd marker · jca main castle · account reads</span></li>
+              <li><b>Sands viewport</b><span>gbl · six KID 1 chunks · confirmed gaa</span></li>
+            </ol>
+          </section>
+        </div>
+        <section class="card">
+          <div class="card-title"><div><p class="eyebrow">Bounded history</p><h2>Recent protocol messages</h2></div><button id="refresh" class="secondary">Refresh</button></div>
+          <div class="table-wrap"><table><thead><tr><th>#</th><th>Direction</th><th>Command</th><th>Observed</th></tr></thead><tbody id="messages"></tbody></table></div>
+        </section>
+        <section class="card">
+          <div class="card-title"><div><p class="eyebrow">Developer control</p><h2>Inject validated XT packet</h2></div></div>
+          <form id="inject-form"><textarea id="packet" spellcheck="false">%xt%EmpireEx_21%gbl%1%{}%</textarea><button type="submit">Queue packet</button><output id="result"></output></form>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

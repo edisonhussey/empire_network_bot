@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Citadel Command — GGE Automation Console</title>
+<style>
+:root{
+  --bg:#f5f8fc; --panel:#ffffff; --panel2:#f8fbff; --line:#e5ebf4;
+  --text:#152238; --muted:#73829a; --blue:#3578ff; --blue2:#eaf2ff;
+  --green:#1fc7a3; --red:#f45768; --amber:#f7b84b; --purple:#7b6ff6;
+  --shadow:0 8px 28px rgba(37,61,100,.07); --radius:14px;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:13px/1.45 Inter, ui-sans-serif, system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+button,input,select,textarea{font:inherit}
+.shell{display:grid;grid-template-columns:235px 1fr;min-height:100vh}
+.sidebar{background:#f8fbff;border-right:1px solid var(--line);padding:18px 14px;position:sticky;top:0;height:100vh}
+.brand{display:flex;align-items:center;gap:10px;padding:4px 8px 18px;font-weight:800;letter-spacing:.02em}
+.brandmark{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,#0e203d,#336be8);position:relative;box-shadow:0 5px 16px rgba(51,107,232,.2)}
+.brandmark:before,.brandmark:after{content:"";position:absolute;left:8px;right:8px;height:4px;background:white;border-radius:4px;transform:skew(-20deg)}
+.brandmark:before{top:10px}.brandmark:after{top:19px}
+.sub{font-size:10px;color:var(--muted);font-weight:500}
+.nav{display:flex;flex-direction:column;gap:5px}
+.nav button{width:100%;border:0;background:transparent;text-align:left;padding:10px 11px;border-radius:9px;color:#50617a;cursor:pointer;display:flex;gap:10px;align-items:center}
+.nav button.active{background:var(--blue2);color:#205ccf;font-weight:700}
+.ico{width:18px;text-align:center}
+.sidebar-foot{position:absolute;left:22px;right:22px;bottom:20px;color:var(--muted);font-size:11px}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:6px}
+.main{min-width:0}
+.topbar{height:64px;background:rgba(248,251,255,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;padding:0 18px;position:sticky;top:0;z-index:5}
+.search{flex:1;max-width:660px;margin:auto;position:relative}
+.search input{width:100%;height:38px;border:1px solid #dbe4f0;border-radius:9px;background:#fbfdff;padding:0 38px 0 36px;outline:none}
+.search:before{content:"⌕";position:absolute;left:13px;top:8px;font-size:18px;color:#667891}
+.top-actions{display:flex;align-items:center;gap:8px}
+.pill,.btn{border:1px solid #dfe7f1;background:#fff;border-radius:9px;padding:9px 11px;color:#50617a}
+.btn{cursor:pointer}.btn.primary{background:var(--blue);border-color:var(--blue);color:white;font-weight:700}.btn.danger{color:var(--red)}
+.content{padding:14px 16px 28px}
+.grid{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(360px,.83fr);gap:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:0 2px 4px rgba(31,52,82,.02)}
+.card-h{display:flex;align-items:center;justify-content:space-between;padding:13px 15px;border-bottom:1px solid #eef2f7}
+.card-h h3{font-size:13px;margin:0}.card-b{padding:14px 15px}
+.hero{padding:16px}
+.hero-top{display:flex;justify-content:space-between;align-items:flex-start;gap:14px}
+.castle{display:flex;gap:13px;align-items:center}
+.castle-avatar{width:48px;height:48px;border-radius:12px;background:linear-gradient(150deg,#223e79,#12243f);display:grid;place-items:center;color:#fff;font-size:24px}
+.hero h1{font-size:21px;margin:0 0 3px}.tags{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}
+.tag{padding:3px 7px;border-radius:999px;background:#f1f5fa;color:#687a92;font-size:10px;border:1px solid #e4eaf2}
+.account-stat{text-align:right}.account-stat b{font-size:22px}.up{color:var(--green)}.down{color:var(--red)}
+.metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:14px}
+.metric{background:var(--panel2);border:1px solid #edf1f7;border-radius:10px;padding:9px 10px}
+.metric span{font-size:10px;color:var(--muted);display:block}.metric b{display:block;font-size:14px;margin-top:2px}
+.tabs{display:flex;gap:4px;margin-top:14px;border-bottom:1px solid #edf1f6}
+.tab{border:0;background:transparent;padding:9px 12px;color:#718199;cursor:pointer;border-bottom:2px solid transparent}
+.tab.active{color:var(--blue);border-color:var(--blue);font-weight:700}
+.builder{padding-top:13px}
+.form-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}
+.field label{display:block;font-size:10px;color:#718199;margin-bottom:5px}
+.field input,.field select,.field textarea{width:100%;border:1px solid #dfe7f0;border-radius:8px;background:#fbfdff;padding:8px 9px;color:#26364f;outline:none}
+.field textarea{min-height:74px;resize:vertical}
+.field.span2{grid-column:span 2}.field.span4{grid-column:1/-1}
+.switchline{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px}
+.switch{border:1px solid #dfe7f0;border-radius:9px;padding:8px 10px;display:flex;gap:8px;align-items:center;background:#fff}
+.switch input{accent-color:var(--blue)}
+.actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+.right{display:flex;flex-direction:column;gap:12px}
+.statusline{display:flex;align-items:center;gap:8px}
+.statusline .pulse{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 0 4px #dcf9f2}
+.kv{display:grid;grid-template-columns:1fr auto;gap:9px 16px}
+.kv span{color:#6e7f96}.kv b{font-weight:700}
+.queue .row,.looprow,.logrow{display:grid;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid #eef2f6}
+.queue .row{grid-template-columns:1fr auto auto}.queue .row:last-child,.looprow:last-child,.logrow:last-child{border-bottom:0}
+.title2{font-weight:700}.small{font-size:10px;color:#8794a8}
+.badge{font-size:10px;padding:3px 7px;border-radius:999px;background:#eef4ff;color:#3f6cc7}
+.badge.red{background:#fff0f2;color:#d64d5a}.badge.green{background:#e9fbf6;color:#159a7f}.badge.amber{background:#fff6e7;color:#c88714}
+.progress{height:5px;background:#eef2f6;border-radius:99px;overflow:hidden;margin-top:5px}
+.progress > i{display:block;height:100%;background:linear-gradient(90deg,#4a87ff,#6ba0ff);border-radius:99px}
+.lower{display:grid;grid-template-columns:1.05fr 1.1fr .8fr;gap:12px;margin-top:12px}
+.looprow{grid-template-columns:1.4fr .8fr .7fr auto}
+.logrow{grid-template-columns:65px 1fr auto}
+.codebox{background:#101826;color:#cfe3ff;border-radius:10px;padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;max-height:210px;overflow:auto;white-space:pre-wrap}
+.endpoint{color:#8fb8ff}.ok{color:#62e1b7}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{padding:5px 7px;border-radius:7px;background:#f2f6fb;color:#61738c;font-size:10px;border:1px solid #e7edf4}
+.modal{display:none;position:fixed;inset:0;background:rgba(15,29,53,.33);z-index:20;align-items:center;justify-content:center}
+.modal.open{display:flex}.modalbox{width:min(560px,92vw);background:#fff;border-radius:16px;border:1px solid var(--line);box-shadow:0 22px 70px rgba(20,37,68,.25);padding:18px}
+.toast{position:fixed;right:18px;bottom:18px;background:#17243a;color:#fff;border-radius:10px;padding:10px 13px;opacity:0;transform:translateY(8px);transition:.2s;z-index:30}.toast.show{opacity:1;transform:none}
+@media(max-width:1100px){.grid{grid-template-columns:1fr}.lower{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:760px){.shell{grid-template-columns:1fr}.sidebar{display:none}.form-grid{grid-template-columns:1fr 1fr}.field.span4{grid-column:1/-1}.top-actions .pill{display:none}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><div class="brandmark"></div><div>CITADEL<div class="sub">GGE Automation Console</div></div></div>
+    <div class="nav">
+      <button class="active"><span class="ico">⌂</span> Command Center</button>
+      <button><span class="ico">⚔</span> Attack Builder</button>
+      <button><span class="ico">↻</span> Loops & Schedules</button>
+      <button><span class="ico">▤</span> Config Profiles</button>
+      <button><span class="ico">⇄</span> Request Inspector</button>
+      <button><span class="ico">◫</span> Targets</button>
+      <button><span class="ico">◌</span> Accounts</button>
+      <button><span class="ico">⚑</span> Logs</button>
+      <button><span class="ico">⚙</span> Settings</button>
+    </div>
+    <div class="sidebar-foot">
+      <div><span class="dot"></span>Gateway connected</div>
+      <div style="margin-top:9px">Build 0.9.4 · Local mode</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="search"><input placeholder="Search target, config, request, castle…"/></div>
+      <div class="top-actions">
+        <span class="pill">US1 · Ventrilo</span>
+        <span class="pill"><span class="dot"></span>Live</span>
+        <button class="btn">🔔 3</button>
+        <button class="btn">EH ▾</button>
+      </div>
+    </header>
+
+    <div class="content">
+      <div class="grid">
+        <section class="card hero">
+          <div class="hero-top">
+            <div class="castle">
+              <div class="castle-avatar">♜</div>
+              <div>
+                <h1>Attack Operations</h1>
+                <div style="color:#6f8098">Goodgame Empire · Network command workspace</div>
+                <div class="tags"><span class="tag">US1</span><span class="tag">Main Castle</span><span class="tag">Session authenticated</span><span class="tag">Auto-refresh 2s</span></div>
+              </div>
+            </div>
+            <div class="account-stat"><b>Ready</b><div class="up">● session healthy</div></div>
+          </div>
+
+          <div class="metrics">
+            <div class="metric"><span>Outgoing attacks</span><b>18</b></div>
+            <div class="metric"><span>Queued</span><b>42</b></div>
+            <div class="metric"><span>Active loops</span><b>6</b></div>
+            <div class="metric"><span>Requests / min</span><b>31</b></div>
+            <div class="metric"><span>Error rate</span><b>0.3%</b></div>
+          </div>
+
+          <div class="tabs">
+            <button class="tab active" data-tab="attack">Attack Config</button>
+            <button class="tab" data-tab="army">Army</button>
+            <button class="tab" data-tab="timing">Timing</button>
+            <button class="tab" data-tab="advanced">Advanced</button>
+          </div>
+
+          <div class="builder" id="attack">
+            <div class="form-grid">
+              <div class="field"><label>Target X</label><input value="722"/></div>
+              <div class="field"><label>Target Y</label><input value="641"/></div>
+              <div class="field"><label>Kingdom</label><select><option>Great Empire</option><option>EverWinter Glacier</option><option>Burning Sands</option><option>Fire Peaks</option></select></div>
+              <div class="field"><label>Attack preset</label><select><option>Fast NPC Farm</option><option>Max Loot</option><option>Wall Breaker</option><option>Custom</option></select></div>
+
+              <div class="field"><label>Wave count</label><select><option>4</option><option>3</option><option>2</option></select></div>
+              <div class="field"><label>Commander</label><select><option>Auto — fastest available</option><option>Commander 12</option><option>Commander 19</option></select></div>
+              <div class="field"><label>Horse type</label><select><option>Ruby horses</option><option>Coins</option><option>None</option></select></div>
+              <div class="field"><label>Priority</label><select><option>Normal</option><option>High</option><option>Low</option></select></div>
+
+              <div class="field span2"><label>Loop mode</label><select><option>Disabled — single send</option><option>Repeat after return</option><option>Fixed interval</option><option>Target rotation</option></select></div>
+              <div class="field"><label>Repeat count</label><input type="number" value="1" min="1"/></div>
+              <div class="field"><label>Delay jitter</label><input value="1.5 – 4.0 sec"/></div>
+            </div>
+            <div class="switchline">
+              <label class="switch"><input type="checkbox" checked/> Auto-select tools</label>
+              <label class="switch"><input type="checkbox" checked/> Skip if troops unavailable</label>
+              <label class="switch"><input type="checkbox"/> Recall on condition</label>
+              <label class="switch"><input type="checkbox" checked/> Log raw payload</label>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="previewPayload()">Preview request</button>
+              <button class="btn" onclick="saveConfig()">Save config</button>
+              <button class="btn primary" onclick="queueAttack()">Queue attack</button>
+            </div>
+          </div>
+        </section>
+
+        <aside class="right">
+          <section class="card">
+            <div class="card-h"><h3>Account Status</h3><span class="badge green">Healthy</span></div>
+            <div class="card-b">
+              <div class="statusline"><span class="pulse"></span><b>WebSocket connected</b></div>
+              <div class="kv" style="margin-top:13px">
+                <span>Player</span><b>Ventrilo</b>
+                <span>Level</span><b>70 · L800</b>
+                <span>Session age</span><b>01:42:18</b>
+                <span>Latency</span><b>47 ms</b>
+                <span>Last sync</span><b>1.2s ago</b>
+              </div>
+            </div>
+          </section>
+
+          <section class="card queue">
+            <div class="card-h"><h3>Attack Queue</h3><button class="btn" style="padding:5px 8px">View all →</button></div>
+            <div class="card-b">
+              <div class="row"><div><div class="title2">Nomad Camp · 722:641</div><div class="small">Fast NPC Farm · 4 waves</div><div class="progress"><i style="width:73%"></i></div></div><span class="small">00:18</span><span class="badge green">Sending</span></div>
+              <div class="row"><div><div class="title2">Samurai · 703:615</div><div class="small">Max Loot · 4 waves</div></div><span class="small">00:31</span><span class="badge">Queued</span></div>
+              <div class="row"><div><div class="title2">Tower · 681:626</div><div class="small">Rotation loop #3</div></div><span class="small">01:04</span><span class="badge amber">Waiting</span></div>
+              <div class="row"><div><div class="title2">Nomad Camp · 731:644</div><div class="small">Fast NPC Farm · 4 waves</div></div><span class="small">01:15</span><span class="badge">Queued</span></div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-h"><h3>Execution Controls</h3><span class="small">Global</span></div>
+            <div class="card-b">
+              <div class="chips"><span class="chip">Max 2 concurrent</span><span class="chip">Jitter enabled</span><span class="chip">Fail-safe on</span></div>
+              <div class="actions" style="justify-content:flex-start">
+                <button class="btn primary" onclick="toast('Automation resumed')">▶ Resume</button>
+                <button class="btn" onclick="toast('Automation paused')">Ⅱ Pause</button>
+                <button class="btn danger" onclick="toast('Queue stop requested')">■ Stop all</button>
+              </div>
+            </div>
+          </section>
+        </aside>
+      </div>
+
+      <div class="lower">
+        <section class="card">
+          <div class="card-h"><h3>Loops & Schedules</h3><button class="btn" style="padding:5px 8px" onclick="openModal()">+ New loop</button></div>
+          <div class="card-b">
+            <div class="looprow"><div><div class="title2">Nomad rotation</div><div class="small">12 targets · repeat on return</div></div><span class="small">Running</span><span class="badge green">Active</span><button class="btn" style="padding:4px 7px">•••</button></div>
+            <div class="looprow"><div><div class="title2">Tower cycle</div><div class="small">Every 15 min · max 50/day</div></div><span class="small">12:45</span><span class="badge green">Active</span><button class="btn" style="padding:4px 7px">•••</button></div>
+            <div class="looprow"><div><div class="title2">Event burst</div><div class="small">Config: max loot</div></div><span class="small">Paused</span><span class="badge amber">Paused</span><button class="btn" style="padding:4px 7px">•••</button></div>
+            <div class="looprow"><div><div class="title2">Night low-rate</div><div class="small">02:00–06:00 · 1 / 90 sec</div></div><span class="small">02:00</span><span class="badge">Scheduled</span><button class="btn" style="padding:4px 7px">•••</button></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-h"><h3>Request Inspector</h3><div class="chips"><span class="badge green">200 OK</span><span class="small">48 ms</span></div></div>
+          <div class="card-b">
+            <div class="codebox" id="payload"><span class="endpoint">POST /api/gge/attack/send</span>
+{
+  "target": { "x": 722, "y": 641, "kingdom": 0 },
+  "waves": 4,
+  "horse": "ruby",
+  "commander": "auto",
+  "preset": "fast_npc",
+  "jitter_ms": 2180
+}
+
+<span class="ok">← response: queued / request_id req_93F1A8</span></div>
+            <div class="actions"><button class="btn" onclick="toast('Payload copied')">Copy</button><button class="btn">Open trace</button></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-h"><h3>Recent Activity</h3><button class="btn" style="padding:5px 8px">Logs →</button></div>
+          <div class="card-b">
+            <div class="logrow"><span class="small">13:18:42</span><div><b>Attack queued</b><div class="small">722:641 · req_93F1A8</div></div><span class="badge green">OK</span></div>
+            <div class="logrow"><span class="small">13:18:11</span><div><b>Config loaded</b><div class="small">fast_npc_v4</div></div><span class="badge">INFO</span></div>
+            <div class="logrow"><span class="small">13:17:58</span><div><b>Troops unavailable</b><div class="small">Skipped target 719:639</div></div><span class="badge amber">SKIP</span></div>
+            <div class="logrow"><span class="small">13:17:04</span><div><b>Socket heartbeat</b><div class="small">47 ms round trip</div></div><span class="badge green">OK</span></div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="modal" id="modal">
+  <div class="modalbox">
+    <div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">Create automation loop</h3><button class="btn" onclick="closeModal()">✕</button></div>
+    <div class="form-grid" style="margin-top:14px">
+      <div class="field span2"><label>Name</label><input value="New target rotation"/></div>
+      <div class="field"><label>Mode</label><select><option>Repeat on return</option><option>Fixed interval</option></select></div>
+      <div class="field"><label>Max / day</label><input type="number" value="200"/></div>
+      <div class="field span4"><label>Targets (x:y, one per line)</label><textarea>722:641
+703:615
+731:644</textarea></div>
+    </div>
+    <div class="actions"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn primary" onclick="createLoop()">Create loop</button></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const tabs=document.querySelectorAll('.tab');
+tabs.forEach(t=>t.addEventListener('click',()=>{
+  tabs.forEach(x=>x.classList.remove('active')); t.classList.add('active');
+  toast(t.textContent+' selected');
+}));
+
+function toast(msg){
+  const el=document.getElementById('toast'); el.textContent=msg; el.classList.add('show');
+  clearTimeout(window._toast); window._toast=setTimeout(()=>el.classList.remove('show'),1800);
+}
+function previewPayload(){
+  document.getElementById('payload').innerHTML='<span class="endpoint">POST /api/gge/attack/send</span>\\n{\\n  "target": { "x": 722, "y": 641, "kingdom": 0 },\\n  "waves": 4,\\n  "horse": "ruby",\\n  "commander": "auto",\\n  "preset": "fast_npc",\\n  "dry_run": true\\n}\\n\\n<span class="ok">preview generated locally</span>';
+  toast('Request preview generated');
+}
+function saveConfig(){ toast('Config saved as fast_npc_v4'); }
+function queueAttack(){ toast('Attack queued · req_'+Math.random().toString(16).slice(2,8).toUpperCase()); }
+function openModal(){document.getElementById('modal').classList.add('open')}
+function closeModal(){document.getElementById('modal').classList.remove('open')}
+function createLoop(){closeModal();toast('Loop created')}
+</script>
+</body>
+</html>

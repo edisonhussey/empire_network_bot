@@ -1,0 +1,25 @@
+[package]
+name = "empire-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["application"]
+application = [
+    "dep:base64",
+    "dep:ed25519-dalek",
+    "dep:sqlx",
+    "dep:tokio",
+    "dep:uuid",
+]
+
+[dependencies]
+base64 = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+sqlx = { workspace = true, optional = true }
+thiserror.workspace = true
+tokio = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
