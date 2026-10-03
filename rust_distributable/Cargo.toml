@@ -2,6 +2,8 @@
 members = [
     "crates/empire-core",
     "crates/empire-daemon",
+    "crates/empire-game",
+    "crates/empire-hunt",
     "crates/empire-license-admin",
     "crates/empire-login",
 ]

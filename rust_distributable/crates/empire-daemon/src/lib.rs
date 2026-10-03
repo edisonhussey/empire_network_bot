@@ -86,19 +86,35 @@ impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
             bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 47821),
-            data_dir: PathBuf::from("data"),
+            data_dir: empire_core::paths::data_dir(),
         }
     }
 }
 
+/// Common bind address, so the window can find the service it started.
+pub const DEFAULT_BIND: &str = "127.0.0.1:47821";
+
+/// Is something already listening on the service port?
+///
+/// Reusing a running service is what keeps one game session alive across window
+/// closes, instead of signing in again every time the app is opened. A connect
+/// test is enough: the port is loopback-only and belongs to us.
+pub async fn service_is_running(bind: &str) -> bool {
+    tokio::time::timeout(
+        std::time::Duration::from_millis(400),
+        tokio::net::TcpStream::connect(bind),
+    )
+    .await
+    .map(|result| result.is_ok())
+    .unwrap_or(false)
+}
+
 pub async fn serve_from_env() -> anyhow::Result<()> {
     let bind: SocketAddr = env::var("EMPIRE_BIND")
-        .unwrap_or_else(|_| "127.0.0.1:47821".to_owned())
+        .unwrap_or_else(|_| DEFAULT_BIND.to_owned())
         .parse()
         .context("EMPIRE_BIND must be an IP socket address")?;
-    let data_dir = env::var_os("EMPIRE_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("data"));
+    let data_dir = empire_core::paths::data_dir();
     serve(DaemonConfig { bind, data_dir }).await
 }
 
@@ -136,6 +152,7 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
             "/v1/accounts",
             get(accounts).post(initialize_account),
         )
+        .route("/v1/hunt", get(hunt))
         .route("/v1/injections", post(inject))
         .route(
             "/v1/direct",
@@ -250,6 +267,18 @@ async fn messages(
     ))
 }
 
+/// Aggregated view of the automation run, for the desktop overview.
+async fn hunt(
+    State(state): State<AppState>,
+) -> Result<Json<empire_core::store::HuntSummary>, ApiError> {
+    state
+        .licence
+        .require("account_initialize")
+        .await
+        .map_err(ApiError::forbidden)?;
+    Ok(Json(state.store.hunt_summary(20).await?))
+}
+
 async fn accounts(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<empire_core::store::AccountSummary>>, ApiError> {
@@ -257,8 +286,7 @@ async fn accounts(
         .licence
         .require("account_initialize")
         .await
-        .map_err(ApiError::forbidden)?;
-    Ok(Json(state.store.account_summaries().await?))
+        .map_err(ApiError::forbidden)?;    Ok(Json(state.store.account_summaries().await?))
 }
 
 async fn inject(

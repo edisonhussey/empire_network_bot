@@ -4,10 +4,13 @@
 pub mod account;
 #[cfg(feature = "application")]
 pub mod event;
+pub mod hunt;
 #[cfg(feature = "application")]
 pub mod injection;
 #[cfg(feature = "application")]
 pub mod licence;
+pub mod pacing;
+pub mod paths;
 pub mod protocol;
 #[cfg(feature = "application")]
 pub mod scheduler;

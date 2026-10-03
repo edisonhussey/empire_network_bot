@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{Row, SqlitePool, sqlite::SqlitePoolOptions};
@@ -7,6 +9,37 @@ use crate::{
     account::{OwnedCastle, RbcTarget},
     event::Direction,
 };
+
+mod config;
+mod ledger;
+mod schema;
+mod state;
+mod storage;
+
+#[cfg(test)]
+mod tests;
+
+pub use config::{AttackProfile, SubscriptionRecord, TaskRecord};
+pub use ledger::{
+    COMMANDER_AVAILABLE, COMMANDER_OUTBOUND, CommanderState, HEARTBEAT_FRESH_MILLIS,
+    HUNT_HEARTBEAT_KEY, HuntSummary, HuntTaskSummary, MARCH_RETURNING, MARCH_SENT, MarchRecord,
+};
+pub use schema::SCHEMA_VERSION;
+pub use state::{CastleUnit, NavigationState, RecruitCastleState};
+pub use storage::{PruneOutcome, StorageReport, TableFootprint};
+
+/// Extract the on-disk path from a sqlx SQLite URL, when there is one.
+///
+/// `sqlite::memory:` has no file, so the storage report and prune operations
+/// degrade to row counts only.
+fn database_path(url: &str) -> Option<PathBuf> {
+    let rest = url.strip_prefix("sqlite://")?;
+    let path = rest.split('?').next().unwrap_or(rest);
+    if path.is_empty() || path == ":memory:" {
+        return None;
+    }
+    Some(PathBuf::from(path))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredMessage {
@@ -42,6 +75,7 @@ pub struct AccountSummary {
 #[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
+    path: Option<PathBuf>,
 }
 
 impl Store {
@@ -50,104 +84,27 @@ impl Store {
             .max_connections(1)
             .connect(url)
             .await?;
-        let store = Self { pool };
+        let store = Self {
+            pool,
+            path: database_path(url),
+        };
         store.migrate().await?;
         Ok(store)
+    }
+
+    /// Path of the database file, when it is file-backed rather than in-memory.
+    pub fn path(&self) -> Option<&std::path::Path> {
+        self.path.as_deref()
     }
 
     async fn migrate(&self) -> Result<(), sqlx::Error> {
         sqlx::query("PRAGMA journal_mode = WAL")
             .execute(&self.pool)
             .await?;
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS network_message (
-                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                observed_at_ms INTEGER NOT NULL,
-                direction TEXT NOT NULL,
-                command TEXT,
-                payload_json TEXT NOT NULL
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS app_state (
-                key TEXT PRIMARY KEY,
-                value_json TEXT NOT NULL,
-                updated_at_ms INTEGER NOT NULL
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS licence_state (
-                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                token TEXT NOT NULL,
-                license_id TEXT NOT NULL,
-                subject TEXT NOT NULL,
-                revision INTEGER NOT NULL,
-                expires_at INTEGER NOT NULL,
-                highest_seen_at INTEGER NOT NULL,
-                updated_at_ms INTEGER NOT NULL
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS account_profile (
-                account_id TEXT PRIMARY KEY,
-                player_name TEXT NOT NULL,
-                endpoint TEXT NOT NULL,
-                server_header TEXT NOT NULL,
-                initialized_at_ms INTEGER,
-                updated_at_ms INTEGER NOT NULL
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS owned_castle (
-                account_id TEXT NOT NULL,
-                castle_id INTEGER NOT NULL,
-                kingdom_id INTEGER NOT NULL,
-                area_type INTEGER NOT NULL,
-                x INTEGER NOT NULL,
-                y INTEGER NOT NULL,
-                name TEXT NOT NULL,
-                observed_at_ms INTEGER NOT NULL,
-                PRIMARY KEY (account_id, castle_id),
-                FOREIGN KEY (account_id) REFERENCES account_profile(account_id) ON DELETE CASCADE
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS account_commander (
-                account_id TEXT NOT NULL,
-                ordinal INTEGER NOT NULL,
-                lord_id INTEGER NOT NULL,
-                observed_at_ms INTEGER NOT NULL,
-                PRIMARY KEY (account_id, ordinal),
-                FOREIGN KEY (account_id) REFERENCES account_profile(account_id) ON DELETE CASCADE
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS rbc_target (
-                account_id TEXT NOT NULL,
-                kingdom_id INTEGER NOT NULL,
-                x INTEGER NOT NULL,
-                y INTEGER NOT NULL,
-                level INTEGER,
-                observed_at_ms INTEGER NOT NULL,
-                PRIMARY KEY (account_id, kingdom_id, x, y),
-                FOREIGN KEY (account_id) REFERENCES account_profile(account_id) ON DELETE CASCADE
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&self.pool)
+            .await?;
+        schema::apply(&self.pool).await
     }
 
     pub async fn upsert_account_profile(
@@ -354,6 +311,40 @@ impl Store {
         Ok(())
     }
 
+    /// Write a small piece of cross-run state, such as the current run label.
+    pub async fn set_app_state(
+        &self,
+        key: &str,
+        value: &Value,
+        now_ms: i64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO app_state (key, value_json, updated_at_ms) VALUES (?, ?, ?)
+             ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at_ms = excluded.updated_at_ms",
+        )
+        .bind(key)
+        .bind(value.to_string())
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn app_state(&self, key: &str) -> Result<Option<Value>, sqlx::Error> {
+        let row = sqlx::query("SELECT value_json FROM app_state WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+        match row {
+            Some(row) => serde_json::from_str(row.get::<&str, _>("value_json"))
+                .map(Some)
+                .map_err(|error| sqlx::Error::Decode(Box::new(error))),
+            None => Ok(None),
+        }
+    }
+
     pub async fn record_message(
         &self,
         observed_at_ms: i64,
@@ -412,31 +403,5 @@ impl Store {
                 })
             })
             .collect()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[tokio::test]
-    async fn retention_is_bounded_to_recent_messages() {
-        let store = Store::open("sqlite::memory:").await.unwrap();
-        for index in 0..205 {
-            store
-                .record_message(
-                    index,
-                    Direction::Injected,
-                    Some("gbl"),
-                    &json!({"i": index}),
-                )
-                .await
-                .unwrap();
-        }
-        let messages = store.recent_messages(500).await.unwrap();
-        assert_eq!(messages.len(), RECENT_MESSAGE_LIMIT as usize);
-        assert_eq!(messages.first().unwrap().payload, json!({"i": 204}));
-        assert_eq!(messages.last().unwrap().payload, json!({"i": 5}));
     }
 }

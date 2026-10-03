@@ -265,23 +265,64 @@ impl SessionMachine {
     }
 }
 
+/// Area type that identifies a kingdom's main castle inside the `gbd` payload.
+///
+/// A home castle is type 1; an outer-kingdom castle (Sands) is type 12.
+fn main_castle_area_types(kingdom_id: i64) -> &'static [i64] {
+    match kingdom_id {
+        0 => &[1],
+        1 => &[12],
+        _ => &[1, 12],
+    }
+}
+
+/// Offset from a kingdom's main castle to the 3x2 viewport origin.
+///
+/// The tile grid always steps 13 tiles, but the offset is **kingdom-specific**.
+/// Both entries are confirmed against real data, not fitted
+/// (`docs/network_requests.md` §5):
+///
+/// - Green, main castle `507,403` -> tiles requested from `494,390` (live capture).
+/// - Sands, main castle `593,613` -> tiles requested from `572,598` (live capture;
+///   the castle coordinate was confirmed by the account owner).
+///
+/// A single constant cannot satisfy both. Do not collapse them.
+fn viewport_offset(kingdom_id: i64) -> (i64, i64) {
+    match kingdom_id {
+        1 => (21, 15),
+        _ => (13, 13),
+    }
+}
+
 fn sands_viewport_from_bootstrap(payload: &Value) -> Option<MapViewport> {
+    // Literal rather than `crate::account::SANDS_KINGDOM_ID`: `session` is
+    // available without the `application` feature, which `account` is not.
+    viewport_from_bootstrap(payload, 1)
+}
+
+/// Viewport origin for any kingdom, derived from its main castle in `gbd`.
+fn viewport_from_bootstrap(payload: &Value, kingdom_id: i64) -> Option<MapViewport> {
+    let area_types = main_castle_area_types(kingdom_id);
+    let (dx, dy) = viewport_offset(kingdom_id);
     let kingdoms = payload.pointer("/gcl/C")?.as_array()?;
     for kingdom in kingdoms {
-        if kingdom.get("KID").and_then(Value::as_i64) != Some(1) {
+        if kingdom.get("KID").and_then(Value::as_i64) != Some(kingdom_id) {
             continue;
         }
         for area in kingdom.get("AI")?.as_array()? {
             let row = area.get("AI")?.as_array()?;
-            if row.first().and_then(Value::as_i64) != Some(12) {
+            let Some(area_type) = row.first().and_then(Value::as_i64) else {
+                continue;
+            };
+            if !area_types.contains(&area_type) {
                 continue;
             }
             let x = row.get(1)?.as_i64()?;
             let y = row.get(2)?.as_i64()?;
             return Some(MapViewport {
-                kingdom_id: 1,
-                left: x.saturating_sub(21),
-                top: y.saturating_sub(15),
+                kingdom_id,
+                left: x.saturating_sub(dx),
+                top: y.saturating_sub(dy),
                 columns: 3,
                 rows: 2,
             });
@@ -339,6 +380,9 @@ mod tests {
         assert_eq!(session.phase(), SessionPhase::SandsReady);
     }
 
+    /// Sands main castle is `593,613`, and the live capture shows the client
+    /// requesting tiles from `572,598` — an offset of 21/15, not the 13/13 green
+    /// uses. Both numbers are real, which is why the offset is per-kingdom data.
     #[test]
     fn derives_sands_viewport_from_the_accounts_castle() {
         let payload = json!({
@@ -346,5 +390,27 @@ mod tests {
         });
         let viewport = sands_viewport_from_bootstrap(&payload).unwrap();
         assert_eq!((viewport.left, viewport.top), (572, 598));
+    }
+
+    /// The green origin is not a guess: the same live capture that reported the
+    /// castle at 507,403 shows the client requesting tiles from 494,390, so the
+    /// offset there is 13 on both axes rather than the 21/15 Sands uses.
+    #[test]
+    fn green_viewport_uses_its_own_offset_not_the_sands_one() {
+        let payload = json!({
+            "gcl": {"C": [{"KID": 0, "AI": [{"AI": [1, 507, 403, 6771615]}]}]}
+        });
+        let viewport = viewport_from_bootstrap(&payload, 0).unwrap();
+        assert_eq!((viewport.left, viewport.top), (494, 390));
+        assert_eq!(viewport.kingdom_id, 0);
+        // A single fused constant could not satisfy both this and the Sands case.
+        assert_ne!(viewport_offset(0), viewport_offset(1));
+    }
+
+    #[test]
+    fn a_kingdom_without_a_matching_castle_yields_no_viewport() {
+        let payload = json!({"gcl": {"C": [{"KID": 0, "AI": []}]}});
+        assert!(viewport_from_bootstrap(&payload, 0).is_none());
+        assert!(viewport_from_bootstrap(&payload, 3).is_none());
     }
 }

@@ -375,6 +375,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "empire-game"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "empire-hunt"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "empire-core",
+ "empire-game",
+ "futures-util",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
 name = "empire-license-admin"
 version = "0.1.0"
 dependencies = [
