@@ -281,11 +281,21 @@ pub async fn delete_recruitment(
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     require_plans(&state).await?;
-    state
+    let blocking = state
         .store
         .delete_recruitment(&id)
         .await
         .map_err(ApiError::bad_request)?;
+    if !blocking.is_empty() {
+        // The delete is refused rather than cascaded: a recruit bot exists to
+        // run this recruitment, so quietly changing what that bot does would be
+        // a worse answer than saying which bot to edit.
+        let noun = if blocking.len() == 1 { "bot" } else { "bots" };
+        return Err(ApiError::bad_request(format!(
+            "Still used by recruit {noun} {}. Remove it from that bot first.",
+            blocking.join(", ")
+        )));
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

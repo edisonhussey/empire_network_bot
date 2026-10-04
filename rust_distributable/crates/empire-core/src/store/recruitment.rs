@@ -107,12 +107,35 @@ impl Store {
             .collect())
     }
 
-    pub async fn delete_recruitment(&self, id: &str) -> Result<(), sqlx::Error> {
+    /// Deletes a recruitment object, unless a recruit bot still subscribes a
+    /// castle to it.
+    ///
+    /// The schema already declares `ON DELETE RESTRICT` for that reference and
+    /// it does fire, but the only thing it can say is "FOREIGN KEY constraint
+    /// failed" - which leaves the user with no idea that a bot they built is
+    /// holding the recruitment open, or which one. So the bots are named here
+    /// and returned to the caller, and the delete only happens when the list is
+    /// empty.
+    pub async fn delete_recruitment(&self, id: &str) -> Result<Vec<String>, sqlx::Error> {
+        let blocking = sqlx::query(
+            "SELECT DISTINCT rb.name
+               FROM recruit_bot_castle rbc
+               JOIN recruit_bot rb ON rb.recruit_bot_id = rbc.recruit_bot_id
+              WHERE rbc.recruitment_id = ?
+              ORDER BY rb.name COLLATE NOCASE",
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await?;
+        let names: Vec<String> = blocking.into_iter().map(|row| row.get("name")).collect();
+        if !names.is_empty() {
+            return Ok(names);
+        }
         sqlx::query("DELETE FROM recruitment_template WHERE recruitment_id = ?")
             .bind(id)
             .execute(&self.pool)
             .await?;
-        Ok(())
+        Ok(Vec::new())
     }
 
     pub async fn create_recruit_bot(
@@ -164,11 +187,32 @@ impl Store {
         Ok(result)
     }
 
+    /// Removes a recruit bot, its castle list, and any account still subscribed
+    /// to it.
+    ///
+    /// Both children declare `ON DELETE CASCADE`, which is why this works - but
+    /// only for as long as foreign keys are enforced on the connection running
+    /// the delete. Clearing the children explicitly costs one statement each and
+    /// means a row can never be left pointing at a bot that no longer exists.
+    ///
+    /// Dropping the `account_recruit_bot` row is also what stops the live
+    /// runner: it re-reads the subscription each idle pass and reports "no
+    /// running recruit bot", so deleting a bot mid-run stops it cleanly.
     pub async fn delete_recruit_bot(&self, id: i64) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM recruit_bot_castle WHERE recruit_bot_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM account_recruit_bot WHERE recruit_bot_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM recruit_bot WHERE recruit_bot_id = ?")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 

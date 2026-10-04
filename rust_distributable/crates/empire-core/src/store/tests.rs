@@ -1158,3 +1158,254 @@ async fn the_identity_migration_folds_existing_duplicate_rows() {
     );
     assert_eq!(marches[0].account_id, "legacy");
 }
+
+// ---------------------------------------------------------------------------
+// deleting something another row depends on
+// ---------------------------------------------------------------------------
+
+async fn seed_recruitment(store: &Store, id: &str, name: &str) {
+    store
+        .upsert_recruitment(
+            &RecruitmentTemplate {
+                recruitment_id: id.to_owned(),
+                name: name.to_owned(),
+                troop_id: 606,
+                quantity: 50,
+                slot_count: 2,
+                ask_alliance_help: false,
+                lane_id: 0,
+                skill_id: 73,
+            },
+            NOW,
+        )
+        .await
+        .unwrap();
+}
+
+fn simple_task(id: &str, name: &str) -> TaskRecord {
+    TaskRecord {
+        task_id: id.to_owned(),
+        name: name.to_owned(),
+        kind: "attack".to_owned(),
+        kingdom_id: 1,
+        profile_id: None,
+        target_level_min: Some(40),
+        target_level_max: Some(60),
+        commander_count: 1,
+        max_active: None,
+        priority: 100,
+        enabled: true,
+        tags: Vec::new(),
+        notes: String::new(),
+    }
+}
+
+#[tokio::test]
+async fn a_recruitment_a_recruit_bot_still_uses_is_not_deleted() {
+    let db = TempDb::new("recruit-in-use");
+    let store = db.open().await;
+    seed_account(&store, "ventrilo").await;
+    seed_recruitment(&store, "recruit-1", "Spears").await;
+    let bot = store
+        .create_recruit_bot(
+            "Spear Keeper",
+            "advanced",
+            &[RecruitBotCastle {
+                account_id: "ventrilo".to_owned(),
+                castle_id: 100,
+                recruitment_id: "recruit-1".to_owned(),
+                position: 0,
+            }],
+            NOW,
+        )
+        .await
+        .unwrap();
+
+    // Refused, and the bot is named. The schema's own RESTRICT also refuses, but
+    // it can only say "constraint failed", which does not tell the user that a
+    // bot they built is holding the recruitment open or which one it is.
+    let blocking = store.delete_recruitment("recruit-1").await.unwrap();
+    assert_eq!(blocking, vec!["Spear Keeper".to_owned()]);
+    assert_eq!(
+        store.recruitments().await.unwrap().len(),
+        1,
+        "a refused delete leaves the recruitment alone"
+    );
+
+    store.delete_recruit_bot(bot).await.unwrap();
+    assert!(
+        store.delete_recruitment("recruit-1").await.unwrap().is_empty(),
+        "with no bot left the recruitment deletes cleanly"
+    );
+    assert!(store.recruitments().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn deleting_a_recruit_bot_takes_its_castles_and_its_subscription() {
+    let db = TempDb::new("recruit-bot-delete");
+    let store = db.open().await;
+    seed_account(&store, "ventrilo").await;
+    seed_recruitment(&store, "recruit-1", "Spears").await;
+    let bot = store
+        .create_recruit_bot(
+            "Spear Keeper",
+            "advanced",
+            &[RecruitBotCastle {
+                account_id: "ventrilo".to_owned(),
+                castle_id: 100,
+                recruitment_id: "recruit-1".to_owned(),
+                position: 0,
+            }],
+            NOW,
+        )
+        .await
+        .unwrap();
+    store
+        .subscribe_account_recruit_bot("ventrilo", Some(bot), true, NOW)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.active_recruitments("ventrilo").await.unwrap().len(),
+        1,
+        "the bot is running before the delete"
+    );
+
+    store.delete_recruit_bot(bot).await.unwrap();
+
+    assert!(store.recruit_bots().await.unwrap().is_empty());
+    assert!(
+        store.account_recruit_bots().await.unwrap().is_empty(),
+        "the account is no longer subscribed to a bot that is gone"
+    );
+    let orphans: i64 = sqlx::query("SELECT COUNT(*) AS n FROM recruit_bot_castle")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
+        .get("n");
+    assert_eq!(orphans, 0, "no castle row outlives the bot it belonged to");
+    assert!(
+        store.active_recruitments("ventrilo").await.unwrap().is_empty(),
+        "the runner now finds nothing to do, rather than a broken bot"
+    );
+}
+
+#[tokio::test]
+async fn deleting_a_task_takes_it_out_of_the_modes_that_use_it() {
+    let db = TempDb::new("task-in-mode");
+    let store = db.open().await;
+    store.upsert_task(&simple_task("task-1", "Farm forts"), NOW).await.unwrap();
+    store.upsert_task(&simple_task("task-2", "Farm barons"), NOW).await.unwrap();
+    let mode_id = store
+        .create_mode(
+            "Sands",
+            &[
+                crate::planning::ModeTaskDraft {
+                    task_id: "task-1".to_owned(),
+                    commander_count: 2,
+                },
+                crate::planning::ModeTaskDraft {
+                    task_id: "task-2".to_owned(),
+                    commander_count: 1,
+                },
+            ],
+            NOW,
+        )
+        .await
+        .unwrap();
+
+    store.delete_task("task-1").await.unwrap();
+
+    let modes = store.modes().await.unwrap();
+    let mode = modes.iter().find(|value| value.mode_id == mode_id).unwrap();
+    assert_eq!(
+        mode.task_ids,
+        vec!["task-2".to_owned()],
+        "the mode survives, minus the task that was deleted"
+    );
+    assert_eq!(
+        mode.commander_count, 1,
+        "the mode's commander total is recomputed from what is left"
+    );
+}
+
+#[tokio::test]
+async fn upgrading_sweeps_children_whose_parent_is_gone() {
+    let db = TempDb::new("orphan-sweep");
+    let bot = {
+        let store = db.open().await;
+        seed_account(&store, "ventrilo").await;
+        seed_recruitment(&store, "recruit-1", "Spears").await;
+        store
+            .create_recruit_bot(
+                "Spear Keeper",
+                "advanced",
+                &[RecruitBotCastle {
+                    account_id: "ventrilo".to_owned(),
+                    castle_id: 100,
+                    recruitment_id: "recruit-1".to_owned(),
+                    position: 0,
+                }],
+                NOW,
+            )
+            .await
+            .unwrap()
+    };
+
+    // A connection that never had foreign keys enforced turns a cascade into a
+    // no-op. That is how the debris this migration clears was created, so it is
+    // recreated the same way rather than by hand-written SQL that proves nothing.
+    {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&db.url)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&pool)
+            .await
+            .unwrap();
+        for (bot_id, castle_id, recruitment_id) in [
+            (bot, 999, "recruit-gone"), // the template went, the row stayed
+            (bot + 99, 998, "recruit-1"), // the bot went, the row stayed
+        ] {
+            sqlx::query(
+                "INSERT INTO recruit_bot_castle
+                    (recruit_bot_id, account_id, castle_id, recruitment_id, position)
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(bot_id)
+            .bind("ventrilo")
+            .bind(castle_id)
+            .bind(recruitment_id)
+            .bind(0)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        // Wind the version back so the next open runs the sweep.
+        sqlx::query("UPDATE schema_version SET version = 7")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+    }
+
+    let repaired = db.open().await;
+    assert_eq!(
+        schema::version(&repaired.pool).await.unwrap(),
+        schema::SCHEMA_VERSION
+    );
+    let castles: Vec<i64> = repaired
+        .recruit_bots()
+        .await
+        .unwrap()
+        .into_iter()
+        .flat_map(|bot| bot.castles)
+        .map(|castle| castle.castle_id)
+        .collect();
+    assert_eq!(
+        castles,
+        vec![100],
+        "the reachable castle survives and both orphans are swept"
+    );
+}

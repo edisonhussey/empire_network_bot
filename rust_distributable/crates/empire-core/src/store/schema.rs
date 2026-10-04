@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -373,7 +373,31 @@ pub const V7: Migration = &[
        WHERE account_id <> lower(account_id)",
 ];
 
-pub const MIGRATIONS: &[Migration] = &[V1, V2, V3, V4, V5, V6, V7];
+/// Removes rows whose parent is gone.
+///
+/// The schema declares `ON DELETE CASCADE` where a child cannot outlive its
+/// parent, but a foreign key is only enforced by the connection that runs the
+/// statement. A connection that was opened without the pragma turned a cascade
+/// into a no-op: the parent went, the children stayed, and because every read
+/// joins through the parent they became invisible rather than obviously broken.
+///
+/// This sweeps that debris. Only bookkeeping that is derived from a parent is
+/// removed - which is exactly why it is unreachable. Observations the account
+/// cannot re-derive are deliberately left alone: `rbc_target` is learned map
+/// knowledge and `owned_castle` is the map itself, so an orphaned row there is
+/// kept on the chance that a later bootstrap re-adopts it.
+pub const V8: Migration = &[
+    "DELETE FROM recruit_bot_castle WHERE recruit_bot_id NOT IN (SELECT recruit_bot_id FROM recruit_bot)",
+    "DELETE FROM recruit_bot_castle WHERE recruitment_id NOT IN (SELECT recruitment_id FROM recruitment_template)",
+    "DELETE FROM account_recruit_bot WHERE recruit_bot_id NOT IN (SELECT recruit_bot_id FROM recruit_bot)",
+    "DELETE FROM task_subscription WHERE task_id NOT IN (SELECT task_id FROM task_definition)",
+    "DELETE FROM task_runtime WHERE task_id NOT IN (SELECT task_id FROM task_definition)",
+    "DELETE FROM automation_mode_task WHERE mode_id NOT IN (SELECT mode_id FROM automation_mode)",
+    "DELETE FROM automation_mode_task WHERE task_id NOT IN (SELECT task_id FROM task_definition)",
+    "DELETE FROM account_mode WHERE mode_id NOT IN (SELECT mode_id FROM automation_mode)",
+];
+
+pub const MIGRATIONS: &[Migration] = &[V1, V2, V3, V4, V5, V6, V7, V8];
 
 /// Every table that holds user data, for the storage report and full wipe.
 /// Order matters for deletion: children before parents.

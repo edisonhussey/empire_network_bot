@@ -229,9 +229,21 @@ impl Store {
         Ok(())
     }
 
+    /// Removes a task and everything that refers to it.
+    ///
+    /// A mode lists tasks through `automation_mode_task`, which holds the task
+    /// with `ON DELETE RESTRICT`, so a task that any mode uses could not be
+    /// deleted at all - the attempt came back as "FOREIGN KEY constraint failed"
+    /// and the button appeared to do nothing. Taking the task out of the mode is
+    /// what deleting it from the library means anyway, and the command counts the
+    /// mode still holds are recomputed from the rows that remain.
     pub async fn delete_task(&self, task_id: &str) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM task_subscription WHERE task_id = ?")
+            .bind(task_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM automation_mode_task WHERE task_id = ?")
             .bind(task_id)
             .execute(&mut *tx)
             .await?;
