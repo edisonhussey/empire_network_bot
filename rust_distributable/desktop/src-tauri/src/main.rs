@@ -112,7 +112,7 @@ fn service_is_compatible() -> bool {
         return false;
     };
     let response = String::from_utf8_lossy(&response);
-    response.starts_with("HTTP/1.1 200") && response.contains("\"api_version\":13")
+    response.starts_with("HTTP/1.1 200") && response.contains("\"api_version\":16")
 }
 
 /// Stop only a process conclusively identified as our legacy macOS service.

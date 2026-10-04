@@ -1,1 +1,13 @@
-{"connected":true,"phase":"sands_ready","endpoint":"wss://ep-live-us1-game.goodgamestudios.com/","account_id":"ventrilo","error":null,"scan_total":6,"scan_sent":0,"scan_cached":6,"bot_state":"pacing_attack","bot_detail":"Commander 21 selected; waiting above CRA floor"}
+{
+    "connected": false,
+    "phase": "disconnected",
+    "endpoint": null,
+    "account_id": null,
+    "error": null,
+    "scan_total": 0,
+    "scan_sent": 0,
+    "scan_cached": 0,
+    "bot_state": "stopped",
+    "bot_detail": null,
+    "connected_at_ms": null
+}

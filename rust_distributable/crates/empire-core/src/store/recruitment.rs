@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
-use super::{Store, canonical_account_id};
 use super::state::RecruitCastleState;
+use super::{Store, canonical_account_id};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecruitmentTemplate {

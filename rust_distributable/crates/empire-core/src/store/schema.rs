@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -397,7 +397,25 @@ pub const V8: Migration = &[
     "DELETE FROM account_mode WHERE mode_id NOT IN (SELECT mode_id FROM automation_mode)",
 ];
 
-pub const MIGRATIONS: &[Migration] = &[V1, V2, V3, V4, V5, V6, V7, V8];
+/// Per-castle horse/travel unlocks learned from the authoritative GBD payload.
+/// They cannot be a mode/task constant because each castle may have a different
+/// stable level, even inside the same account.
+pub const V9: Migration = &[
+    "CREATE TABLE IF NOT EXISTS account_castle_travel (
+        account_id TEXT NOT NULL,
+        castle_id INTEGER NOT NULL,
+        kingdom_id INTEGER NOT NULL,
+        unlocked_hbw_json TEXT NOT NULL,
+        coin_hbw INTEGER NOT NULL,
+        observed_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (account_id, castle_id),
+        FOREIGN KEY (account_id) REFERENCES account_profile(account_id) ON DELETE CASCADE
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_castle_travel_kingdom
+       ON account_castle_travel(account_id, kingdom_id)",
+];
+
+pub const MIGRATIONS: &[Migration] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9];
 
 /// Every table that holds user data, for the storage report and full wipe.
 /// Order matters for deletion: children before parents.
@@ -419,6 +437,7 @@ pub const DATA_TABLES: &[&str] = &[
     "task_definition",
     "attack_profile",
     "account_castle_unit",
+    "account_castle_travel",
     "recruit_castle_state",
     "account_navigation",
     "map_scan_window",

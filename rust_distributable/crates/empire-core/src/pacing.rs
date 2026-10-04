@@ -278,7 +278,8 @@ pub fn now_seconds() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs_f64())
-        .unwrap_or_default()}
+        .unwrap_or_default()
+}
 
 #[cfg(test)]
 mod tests {
@@ -457,7 +458,10 @@ mod tests {
             greedy <= RECRUIT_DELAY_LOW + 0.4,
             "greedy must stay near the floor, saw {greedy}"
         );
-        assert!(sporadic > advanced, "sporadic must reach further than advanced");
+        assert!(
+            sporadic > advanced,
+            "sporadic must reach further than advanced"
+        );
     }
 
     #[test]

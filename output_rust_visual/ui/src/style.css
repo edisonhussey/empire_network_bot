@@ -91,7 +91,7 @@ output, .connection-result, .recruit-estimate { color: var(--ink-3); font-size: 
 .shell { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
 aside {
   position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column;
-  padding: 36px 0 28px; border-right: 1px solid var(--line);
+  padding: 36px 0 28px; border-right: 1px solid var(--line); overflow-y: auto;
 }
 .brand { padding: 0 26px 36px; font-size: 22px; line-height: 1.2; display: grid; gap: 14px; }
 .brand > div { display: grid; gap: 6px; }
@@ -104,6 +104,21 @@ nav button {
 nav button:hover:not(:disabled) { background: transparent; color: var(--ink); }
 nav button.active { color: var(--ink); }
 nav button.active::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 1px; background: var(--ink); }
+/* Grouped destinations: Attack holds the three part-builders, Recruit holds the
+   two. Collapsed by default so the rail stays short, and the group opens itself
+   when one of its pages is showing. */
+.nav-parent { justify-content: flex-start; }
+.nav-caret {
+  margin-left: auto; width: 7px; height: 7px; flex: none;
+  border-right: 1px solid currentColor; border-bottom: 1px solid currentColor;
+  transform: rotate(45deg) translateY(-2px); transition: transform .15s;
+}
+.nav-group.open .nav-parent { color: var(--ink); }
+.nav-group.open .nav-caret { transform: rotate(225deg) translateY(-2px); }
+.nav-sub { display: grid; gap: 2px; margin-bottom: 8px; }
+.nav-sub button { min-height: 32px; padding: 0 26px 0 62px; border: 0; border-left: 1px solid var(--line); font-size: 13px; color: var(--ink-3); }
+.nav-sub button:hover:not(:disabled) { background: transparent; color: var(--ink); }
+.nav-sub button.active { color: var(--ink); }
 .nav-icon { display: grid; place-items: center; width: 20px; height: 20px; }
 .nav-icon svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.2; }
 .side-footer { margin-top: auto; padding: 0 26px; display: grid; gap: 14px; }
@@ -111,17 +126,18 @@ nav button.active::before { content: ""; position: absolute; left: 0; top: 6px; 
 .licence-button:hover:not(:disabled) { background: transparent; color: var(--ink); }
 .licence-button span { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-2); }
 .licence-button b { font-weight: 400; color: var(--ink-2); }
-.gateway { display: flex; align-items: center; gap: 10px; color: var(--ink-2); font-size: 13px; }
-.gateway i, .live-dot, .log-live i { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3); display: inline-block; flex: none; }
-.gateway i { background: var(--ok); }
+/* The two indicators that matter, always visible and always accurate: whether a
+   socket is open, and whether a bot is actually driving it. */
+.link-state { display: grid; gap: 8px; }
+.link-row { display: flex; align-items: center; gap: 10px; color: var(--ink-3); font-size: 13px; }
+.link-row i, .live-dot, .log-live i { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3); display: inline-block; flex: none; }
+.link-row.on { color: var(--ink); }
+.link-row.on i { background: var(--ok); }
+.link-row b { margin-left: auto; font-weight: 400; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 
 /* ---- Main column: generous negative space ----------------------------- */
 main { padding: 40px clamp(32px, 5vw, 72px) 96px; min-width: 0; max-width: 1180px; }
-header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 28px; border-bottom: 1px solid var(--line); margin-bottom: 40px; }
-.status { font-size: 13px; color: var(--ink-2); display: flex; align-items: center; gap: 10px; }
-.status::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3); }
-.status.connected::after { background: var(--ok); }
-.status.error { color: var(--ink); }
+header { padding-bottom: 28px; border-bottom: 1px solid var(--line); margin-bottom: 40px; }
 .view { display: grid; gap: 56px; }
 
 /* ---- Cards are not cards: no fill, no border, only hairline rules ----- */
@@ -163,12 +179,16 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 .metric-card p { color: var(--ink-2); margin-top: 8px; }
 .metric-card small { margin-top: 2px; }
 
-.dashboard-grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 0; row-gap: 48px; }
+/* Health and setup stack down the left; the chart takes the right column across
+   both rows. That keeps the page short instead of stacking four full-width
+   panels. Activity spans the bottom. */
+.dashboard-grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); column-gap: 48px; row-gap: 48px; }
 .dashboard-panel { border-top: 1px solid var(--line); padding-top: 32px !important; min-width: 0; }
-.dashboard-panel:nth-child(2) { padding-left: 48px; border-left: 1px solid var(--line); }
-.dashboard-panel:nth-child(1) { padding-right: 48px; }
-.dashboard-wide { grid-column: 1 / -1; padding-left: 0 !important; border-left: 0 !important; }
-.health-stat-grid { display: grid; grid-template-columns: repeat(4, auto); justify-content: space-between; gap: 16px; }
+.health-panel { grid-area: 1 / 1; }
+.setup-panel { grid-area: 2 / 1; }
+.ruby-chart-panel { grid-area: 1 / 2 / span 2 / span 1; }
+.activity-panel { grid-area: 3 / 1 / span 1 / span 2; }
+.health-stat-grid { display: grid; grid-template-columns: repeat(3, auto); justify-content: space-between; gap: 16px; }
 .health-stat { display: grid; gap: 4px; }
 .health-stat b { font-size: 36px; line-height: 1.1; }
 .health-stat span { color: var(--ink-2); font-size: 13px; }
@@ -176,7 +196,7 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 .assignment-line:first-child { padding-top: 0; }
 .assignment-line:last-child { border-bottom: 0; }
 .assignment-line b { font-weight: 400; color: var(--ink); }
-.hourly-rates { display: flex; gap: 56px; margin-bottom: 28px; }
+.hourly-rates { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 24px; margin-bottom: 26px; }
 .hourly-rates > div { display: grid; gap: 2px; }
 .hourly-rates b { font-size: 26px; }
 .hourly-rates span { color: var(--ink-3); font-size: 12px; }
@@ -184,9 +204,10 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 /* chart: 1px white line, dashed hairline grid, quiet axis text */
 .ruby-chart .grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 5; }
 .ruby-chart .line { fill: none; stroke: var(--ink); stroke-width: 1.3; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
-.ruby-chart text { fill: var(--ink-3); font-size: 13px; font-family: var(--sans); }
+.ruby-chart text { fill: var(--ink-3); font-size: 15px; font-family: var(--sans); }
 .activity-list { max-height: 320px; overflow: auto; }
 .activity-row { display: grid; grid-template-columns: 64px 1fr auto; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+.activity-detail { display: grid; gap: 2px; min-width: 0; }
 .activity-row time { color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .activity-row b { font-weight: 400; }
 .activity-tag { color: var(--ink-3); font-size: 12px; }
@@ -224,20 +245,32 @@ legend { padding: 0 16px 0 0; }
 .library-row { display: flex; justify-content: space-between; align-items: center; gap: 24px; padding: 16px 0; border-bottom: 1px solid var(--line); }
 .library-row > div { display: grid; gap: 2px; } .library-row b { font-weight: 400; }
 
-/* mode scheduler */
+/* attack bot scheduler: task blocks left to right, with the commanders each one
+   covers ruled directly underneath. No drag and drop - the alignment under the
+   numbers is what makes the split obvious. */
 .list-label { margin-bottom: 14px; }
-.drag-list, .scheduler-track { display: flex; gap: 16px; flex-wrap: wrap; }
-.drag-task { display: flex; align-items: center; gap: 14px; padding: 12px 16px; border: 1px solid var(--line); cursor: grab; }
-.drag-task span { display: grid; } .drag-task b { font-weight: 400; }
-.drag-handle { font-style: normal; color: var(--ink-3); }
-.task-order-actions, .allocation-actions { display: flex; gap: 8px; }
-.drop-hint { color: var(--ink-3); padding: 24px 0; width: 100%; border-top: 1px dashed var(--line); border-bottom: 1px dashed var(--line); text-align: center; }
-.scheduler-track { flex-direction: column; flex-wrap: nowrap; gap: 0; }
-.allocation-card { display: grid; gap: 12px; padding: 18px 0; border-bottom: 1px solid var(--line); }
-.allocation-head { display: flex; justify-content: space-between; align-items: center; } .allocation-head span { display: grid; } .allocation-head b { font-weight: 400; }
-.commander-track { display: flex; flex-wrap: wrap; gap: 6px; }
-.commander-track span { min-width: 28px; padding: 2px 6px; border: 1px solid var(--line); text-align: center; font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
-.commander-range { font-style: normal; color: var(--ink-3); font-size: 12px; }
+.task-pool { display: flex; flex-wrap: wrap; gap: 12px; }
+.pool-task { display: flex; align-items: center; gap: 14px; padding: 12px 16px; border: 1px solid var(--line); }
+.pool-task span { display: grid; } .pool-task b { font-weight: 400; }
+.scheduler-board { display: grid; gap: 0; }
+.board-empty { color: var(--ink-3); padding: 20px 0; border-top: 1px dashed var(--line); border-bottom: 1px dashed var(--line); }
+/* One column per commander; blocks span the columns they own and the numbers sit
+   in row two, so the ruler reads straight across under every block. */
+.board-grid { display: grid; column-gap: 3px; row-gap: 6px; align-items: start; }
+.allocation-block { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); min-width: 0; transition: border-color .15s, opacity .15s; }
+.block-head { display: flex; align-items: baseline; gap: 8px; }
+.block-head b { font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.block-count { margin-left: auto; color: var(--ink-3); font-size: 12px; }
+.block-controls { display: flex; gap: 6px; flex-wrap: wrap; }
+.block-controls .mini-action { padding: 3px 9px; }
+.block-controls input[type=number] { width: 52px; min-height: 30px; padding: 2px 6px; }
+.block-span { font-style: normal; color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ruler-cell { min-width: 0; padding: 4px 0; border-left: 1px solid var(--line); text-align: center; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; overflow: hidden; }
+.ruler-cell:last-of-type { border-right: 1px solid var(--line); }
+/* Hovering a block marks the commanders it owns, directly underneath it. */
+.board-grid:hover .allocation-block { opacity: .5; }
+.board-grid .allocation-block:hover { opacity: 1; border-color: var(--ink); }
+.ruler-cell.covered { color: var(--ink); border-top: 1px solid var(--ink); padding-top: 3px; }
 .capacity-note { color: var(--ink-2); }
 .import-card { display: grid; gap: 20px; }
 .import-card h2 { font-family: var(--serif); font-size: 22px; color: var(--ink); margin: 8px 0; }
@@ -282,6 +315,17 @@ legend { padding: 0 16px 0 0; }
 .account-item dl > div { display: flex; flex-direction: column; } .account-item dl > div:nth-child(2) { align-items: center; } .account-item dl > div:last-child { align-items: flex-end; }
 .account-item dd { margin: 0; order: -1; font-family: var(--serif); font-size: 40px; line-height: 1.1; }
 .account-item dt { color: var(--ink-2); }
+/* ---- Stored accounts (Initialize) ------------------------------------- */
+/* The profile block belongs with account setup, not beside the daily start and
+   stop controls, so the Start card is now just the two steps. */
+.account-steps { display: grid; gap: 34px; }
+.account-caption { font-family: var(--serif); font-size: 22px; }
+.account-grid > article + article { border-top: 1px solid var(--line); padding-top: 48px; }
+.account-profiles { display: grid; }
+.profile-row { padding: 24px 0; border-bottom: 1px solid var(--line); }
+.profile-row:first-child { padding-top: 0; }
+.profile-row:last-child { border-bottom: 0; padding-bottom: 0; }
+
 .kingdom-health { display: grid; }
 .kingdom-health .list-label { text-transform: none; letter-spacing: .02em; font-size: 14px; color: var(--ink); }
 .kingdom-health-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--line); color: var(--ink-2); }
@@ -297,6 +341,23 @@ legend { padding: 0 16px 0 0; }
 .recruit-estimate, .account-mode-control > .empty-copy, .bot-start-actions { grid-column: 1 / -1; }
 .bot-start-actions { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
 .bot-state { margin-left: auto; color: var(--ink-3); } .bot-state.running { color: var(--ok); }
+
+/* ---- Map scan (Initialize) --------------------------------------------- */
+.scan-card { display: grid; gap: 22px; }
+.scan-progress { display: grid; gap: 8px; }
+.scan-bar { height: 3px; background: var(--line); }
+.scan-bar i { display: block; height: 100%; width: 0; background: var(--ink); transition: width .3s; }
+.scan-castles { display: grid; }
+.scan-row { display: grid; grid-template-columns: minmax(0, 1fr) 132px; gap: 6px 20px; align-items: center; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.scan-row > div { display: grid; gap: 5px; min-width: 0; }
+.scan-row b { font-weight: 400; }
+.scan-radius { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.scan-radius input { width: 74px; min-height: 34px; padding: 4px 10px; }
+.scan-coverage { height: 3px; background: var(--line); }
+.scan-coverage i { display: block; height: 100%; background: var(--ink); }
+.scan-tag { color: var(--ink-3); font-size: 12px; }
+.scan-row.read-only .scan-radius input { display: none; }
+.scan-card .form-actions input { width: 240px; }
 
 /* ---- Logs ------------------------------------------------------------- */
 .log-card .card-title { align-items: center; }
@@ -327,7 +388,7 @@ dialog[open] { display: grid; gap: 12px; }
   .dashboard-metrics, .health-stat-grid { grid-template-columns: repeat(2, 1fr); row-gap: 32px; }
   .metric-card:nth-child(3) { padding-left: 0; border-left: 0; }
   .dashboard-grid, .content-grid, .task-form, .wave-builder { grid-template-columns: 1fr; }
-  .dashboard-panel:nth-child(n) { padding-left: 0; padding-right: 0; border-left: 0; }
+  .health-panel, .setup-panel, .ruby-chart-panel, .activity-panel { grid-area: auto; }
   .progress-card { padding-left: 0 !important; border-left: 0; margin-top: 40px; }
   .connect-card { padding-right: 0 !important; }
 }

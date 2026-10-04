@@ -283,7 +283,7 @@ async fn health(State(state): State<AppState>) -> Json<Health> {
     let licence_active = state.licence.status().await.active;
     Json(Health {
         status: "ok",
-        api_version: 13,
+        api_version: 16,
         service_pid: std::process::id(),
         licence_active,
         transport_connected: state.active_transport.read().await.is_some(),

@@ -7,7 +7,7 @@ use uuid::Uuid;
 use super::{Store, canonical_account_id};
 use crate::planning::{
     Destination, ModeBundle, ModeTaskDraft, PlanError, SourceKind, TargetAlgorithm, TaskDraft,
-    VENTRILO_SANDS_HBW,
+    TravelMode, VENTRILO_SANDS_HBW,
 };
 
 #[derive(Debug, Error)]
@@ -29,6 +29,8 @@ pub struct TaskRuntime {
     pub target_x: i64,
     pub target_y: i64,
     pub travel_mode: String,
+    /// Legacy cache retained for database/API compatibility. The direct
+    /// runner resolves the real HBW from the source castle at send time.
     pub hbw: i64,
 }
 
@@ -65,7 +67,7 @@ pub struct ActiveModeTask {
     pub level_max: Option<i64>,
     pub source_x: i64,
     pub source_y: i64,
-    pub hbw: i64,
+    pub travel_mode: TravelMode,
     pub algorithm: String,
     pub commander_lids: Vec<i64>,
 }
@@ -208,7 +210,7 @@ impl Store {
                 "INSERT INTO task_runtime (
                     task_id, source_kingdom_id, source_x, source_y,
                     target_kingdom_id, target_x, target_y, travel_mode, hbw, source_kind
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, 'coin', ?, ?)",
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&task_id)
             .bind(task.source.kingdom_id)
@@ -217,6 +219,7 @@ impl Store {
             .bind(target.kingdom_id)
             .bind(target.x)
             .bind(target.y)
+            .bind(task.travel.as_str())
             .bind(VENTRILO_SANDS_HBW)
             .bind(match task.source_kind {
                 SourceKind::Coordinate => "coordinate",
@@ -472,7 +475,7 @@ impl Store {
         let rows = sqlx::query(
             "SELECT am.mode_id, mt.task_id, t.name, t.profile_id, p.payload_json,
                     t.kingdom_id, t.target_level_min, t.target_level_max,
-                    r.source_x, r.source_y, r.hbw, s.filter_json,
+                    r.source_x, r.source_y, r.travel_mode, s.filter_json,
                     mt.commander_count
              FROM account_mode am
              JOIN automation_mode_task mt ON mt.mode_id = am.mode_id
@@ -523,7 +526,7 @@ impl Store {
                 level_max: row.get("target_level_max"),
                 source_x: row.get("source_x"),
                 source_y: row.get("source_y"),
-                hbw: row.get("hbw"),
+                travel_mode: TravelMode::from_stored(row.get("travel_mode")),
                 algorithm: filter
                     .get("algorithm")
                     .and_then(serde_json::Value::as_str)

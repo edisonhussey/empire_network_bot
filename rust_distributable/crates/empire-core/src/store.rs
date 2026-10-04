@@ -6,8 +6,9 @@ use sqlx::{Row, SqlitePool, sqlite::SqlitePoolOptions};
 
 use crate::{
     RECENT_MESSAGE_LIMIT,
-    account::{OwnedCastle, RbcTarget},
+    account::{AttackTravel, CastleTravelOptions, OwnedCastle, RbcTarget},
     event::Direction,
+    planning::TravelMode,
 };
 
 mod config;
@@ -279,6 +280,84 @@ impl Store {
         }
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Persist the travel choices advertised for each castle by `gbd.gpc.A`.
+    pub async fn upsert_castle_travel_options(
+        &self,
+        account_id: &str,
+        options: &[CastleTravelOptions],
+        now_ms: i64,
+    ) -> Result<(), sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        let mut tx = self.pool.begin().await?;
+        for option in options {
+            let Some(coin_hbw) = option.coin_hbw() else {
+                continue;
+            };
+            let encoded = serde_json::to_string(&option.unlocked_hbw)
+                .expect("serializing integer travel ids cannot fail");
+            sqlx::query(
+                "INSERT INTO account_castle_travel (
+                    account_id, castle_id, kingdom_id, unlocked_hbw_json,
+                    coin_hbw, observed_at_ms
+                 ) VALUES (?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(account_id, castle_id) DO UPDATE SET
+                    kingdom_id = excluded.kingdom_id,
+                    unlocked_hbw_json = excluded.unlocked_hbw_json,
+                    coin_hbw = excluded.coin_hbw,
+                    observed_at_ms = excluded.observed_at_ms",
+            )
+            .bind(&account_id)
+            .bind(option.castle_id)
+            .bind(option.kingdom_id)
+            .bind(encoded)
+            .bind(coin_hbw)
+            .bind(now_ms)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Resolve a semantic travel mode for the exact attack source castle.
+    /// Coordinates prevent two castles in one kingdom from being confused.
+    pub async fn travel_for_source(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+        source_x: i64,
+        source_y: i64,
+        mode: TravelMode,
+    ) -> Result<Option<AttackTravel>, sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        let row = sqlx::query(
+            "SELECT castle.castle_id, travel.unlocked_hbw_json
+             FROM owned_castle castle
+             JOIN account_castle_travel travel
+               ON travel.account_id = castle.account_id
+              AND travel.castle_id = castle.castle_id
+             WHERE castle.account_id = ? AND castle.kingdom_id = ?
+               AND castle.x = ? AND castle.y = ?",
+        )
+        .bind(&account_id)
+        .bind(kingdom_id)
+        .bind(source_x)
+        .bind(source_y)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let unlocked_hbw = serde_json::from_str(row.get("unlocked_hbw_json"))
+            .map_err(|error| sqlx::Error::Decode(Box::new(error)))?;
+        Ok(CastleTravelOptions {
+            castle_id: row.get("castle_id"),
+            kingdom_id,
+            unlocked_hbw,
+        }
+        .resolve(mode))
     }
 
     pub async fn record_scan_window(

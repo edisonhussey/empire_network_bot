@@ -12,7 +12,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 
 use super::schema;
 use super::*;
-use crate::account::{OwnedCastle, RbcTarget};
+use crate::account::{CastleTravelOptions, OwnedCastle, RbcTarget};
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -94,6 +94,95 @@ async fn seed_account(store: &Store, account_id: &str) {
         )
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn every_travel_mode_is_resolved_from_the_exact_source_castle() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    store
+        .upsert_account_profile("Pingpoko", "Pingpoko", "wss://example/", "EmpireEx_49", NOW)
+        .await
+        .unwrap();
+    store
+        .replace_account_bootstrap(
+            "PINGPOKO",
+            &[
+                OwnedCastle {
+                    kingdom_id: 0,
+                    castle_id: 70_499,
+                    area_type: 1,
+                    x: 10,
+                    y: 20,
+                    name: "Green".to_owned(),
+                },
+                OwnedCastle {
+                    kingdom_id: 1,
+                    castle_id: 341_842,
+                    area_type: 12,
+                    x: 722,
+                    y: 533,
+                    name: "Sands".to_owned(),
+                },
+            ],
+            &[1],
+            NOW,
+        )
+        .await
+        .unwrap();
+    store
+        .upsert_castle_travel_options(
+            "pingpoko",
+            &[
+                CastleTravelOptions {
+                    castle_id: 70_499,
+                    kingdom_id: 0,
+                    unlocked_hbw: vec![1007, 1008, 1009],
+                },
+                CastleTravelOptions {
+                    castle_id: 341_842,
+                    kingdom_id: 1,
+                    unlocked_hbw: vec![1004, 1005, 1006],
+                },
+            ],
+            NOW,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store
+            .travel_for_source("PingPoko", 1, 722, 533, crate::planning::TravelMode::Coin)
+            .await
+            .unwrap(),
+        Some(crate::account::AttackTravel { hbw: 1004, ptt: 0 })
+    );
+    assert_eq!(
+        store
+            .travel_for_source("pingpoko", 0, 10, 20, crate::planning::TravelMode::Ruby2,)
+            .await
+            .unwrap(),
+        Some(crate::account::AttackTravel { hbw: 1009, ptt: 0 })
+    );
+    assert_eq!(
+        store
+            .travel_for_source(
+                "pingpoko",
+                1,
+                722,
+                533,
+                crate::planning::TravelMode::Feather,
+            )
+            .await
+            .unwrap(),
+        Some(crate::account::AttackTravel { hbw: -1, ptt: 1 })
+    );
+    assert_eq!(
+        store
+            .travel_for_source("pingpoko", 1, 723, 533, crate::planning::TravelMode::Coin,)
+            .await
+            .unwrap(),
+        None
+    );
 }
 
 #[tokio::test]
@@ -1059,7 +1148,13 @@ async fn the_same_account_written_with_two_casings_stays_one_account() {
     let store = Store::open("sqlite::memory:").await.unwrap();
     seed_account(&store, "ventrilo").await;
     store
-        .upsert_account_profile("Ventrilo", "Ventrilo", "wss://example/", "EmpireEx_21", NOW + 1)
+        .upsert_account_profile(
+            "Ventrilo",
+            "Ventrilo",
+            "wss://example/",
+            "EmpireEx_21",
+            NOW + 1,
+        )
         .await
         .unwrap();
     store
@@ -1111,10 +1206,7 @@ async fn the_identity_migration_folds_existing_duplicate_rows() {
     let path = db.path.clone();
     drop(store);
 
-    let pool = SqlitePoolOptions::new()
-        .connect(&db.url)
-        .await
-        .unwrap();
+    let pool = SqlitePoolOptions::new().connect(&db.url).await.unwrap();
     // Now add what the old hunter wrote: a second profile, a second copy of the
     // same castle, and a ledger row that has no lowercase twin and must survive.
     for sql in [
@@ -1234,7 +1326,11 @@ async fn a_recruitment_a_recruit_bot_still_uses_is_not_deleted() {
 
     store.delete_recruit_bot(bot).await.unwrap();
     assert!(
-        store.delete_recruitment("recruit-1").await.unwrap().is_empty(),
+        store
+            .delete_recruitment("recruit-1")
+            .await
+            .unwrap()
+            .is_empty(),
         "with no bot left the recruitment deletes cleanly"
     );
     assert!(store.recruitments().await.unwrap().is_empty());
@@ -1284,7 +1380,11 @@ async fn deleting_a_recruit_bot_takes_its_castles_and_its_subscription() {
         .get("n");
     assert_eq!(orphans, 0, "no castle row outlives the bot it belonged to");
     assert!(
-        store.active_recruitments("ventrilo").await.unwrap().is_empty(),
+        store
+            .active_recruitments("ventrilo")
+            .await
+            .unwrap()
+            .is_empty(),
         "the runner now finds nothing to do, rather than a broken bot"
     );
 }
@@ -1293,8 +1393,14 @@ async fn deleting_a_recruit_bot_takes_its_castles_and_its_subscription() {
 async fn deleting_a_task_takes_it_out_of_the_modes_that_use_it() {
     let db = TempDb::new("task-in-mode");
     let store = db.open().await;
-    store.upsert_task(&simple_task("task-1", "Farm forts"), NOW).await.unwrap();
-    store.upsert_task(&simple_task("task-2", "Farm barons"), NOW).await.unwrap();
+    store
+        .upsert_task(&simple_task("task-1", "Farm forts"), NOW)
+        .await
+        .unwrap();
+    store
+        .upsert_task(&simple_task("task-2", "Farm barons"), NOW)
+        .await
+        .unwrap();
     let mode_id = store
         .create_mode(
             "Sands",
@@ -1365,7 +1471,7 @@ async fn upgrading_sweeps_children_whose_parent_is_gone() {
             .await
             .unwrap();
         for (bot_id, castle_id, recruitment_id) in [
-            (bot, 999, "recruit-gone"), // the template went, the row stayed
+            (bot, 999, "recruit-gone"),   // the template went, the row stayed
             (bot + 99, 998, "recruit-1"), // the bot went, the row stayed
         ] {
             sqlx::query(

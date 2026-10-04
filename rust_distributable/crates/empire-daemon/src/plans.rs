@@ -449,7 +449,7 @@ pub async fn create_task(
             target_kingdom_id: target.kingdom_id,
             target_x: target.x,
             target_y: target.y,
-            travel_mode: "coin".to_owned(),
+            travel_mode: draft.travel.as_str().to_owned(),
             hbw: VENTRILO_SANDS_HBW,
         })
         .await

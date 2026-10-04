@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
 
+/// Kept only for the legacy non-distributable hunt CLI. OpenAuto resolves HBW
+/// per source castle from account bootstrap data and never uses this value.
 pub const VENTRILO_SANDS_HBW: i64 = 1007;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,6 +129,31 @@ pub enum TargetAlgorithm {
 #[serde(rename_all = "snake_case")]
 pub enum TravelMode {
     Coin,
+    #[serde(rename = "ruby_1")]
+    Ruby1,
+    #[serde(rename = "ruby_2")]
+    Ruby2,
+    Feather,
+}
+
+impl TravelMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Coin => "coin",
+            Self::Ruby1 => "ruby_1",
+            Self::Ruby2 => "ruby_2",
+            Self::Feather => "feather",
+        }
+    }
+
+    pub fn from_stored(value: &str) -> Self {
+        match value {
+            "ruby_1" => Self::Ruby1,
+            "ruby_2" => Self::Ruby2,
+            "feather" => Self::Feather,
+            _ => Self::Coin,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -460,6 +487,18 @@ mod tests {
             assert_eq!(payload[0]["L"]["T"].as_array().unwrap().len(), 2);
             assert_eq!(payload[0]["M"]["U"].as_array().unwrap().len(), 6);
         }
+    }
+
+    #[test]
+    fn travel_modes_have_stable_human_facing_wire_names() {
+        assert_eq!(serde_json::to_value(TravelMode::Coin).unwrap(), "coin");
+        assert_eq!(serde_json::to_value(TravelMode::Ruby1).unwrap(), "ruby_1");
+        assert_eq!(serde_json::to_value(TravelMode::Ruby2).unwrap(), "ruby_2");
+        assert_eq!(
+            serde_json::to_value(TravelMode::Feather).unwrap(),
+            "feather"
+        );
+        assert_eq!(TravelMode::from_stored("unknown"), TravelMode::Coin);
     }
 
     #[test]

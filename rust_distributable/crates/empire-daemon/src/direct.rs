@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use empire_core::{
-    account::{commander_lids, owned_castles, rbc_targets},
+    account::{castle_travel_options, commander_lids, owned_castles, rbc_targets},
     event::Direction,
     hunt::{self, MapTarget},
     injection::{InjectionRequest, channel},
@@ -9,8 +9,8 @@ use empire_core::{
     protocol::{encode_client_xt, parse_xt_packet},
     session::{LoginCredentials, SessionMachine, SessionPhase, SessionSettings},
     store::{
-        ActiveModeTask, ActiveRecruitment, COMMANDER_OUTBOUND, CommanderState, HUNT_HEARTBEAT_KEY,
-        MARCH_SENT, MarchRecord, RecruitCastleState, ReservedTarget, Store,
+        ActiveModeTask, ActiveRecruitment, COMMANDER_AVAILABLE, COMMANDER_OUTBOUND, CommanderState,
+        HUNT_HEARTBEAT_KEY, MARCH_SENT, MarchRecord, RecruitCastleState, ReservedTarget, Store,
     },
 };
 use futures_util::{SinkExt, StreamExt};
@@ -26,12 +26,33 @@ use tracing::{info, warn};
 use crate::licence::LicenceGate;
 
 const US1_ENDPOINT: &str = "wss://ep-live-us1-game.goodgamestudios.com/";
-const US1_PORTAL_ACCOUNT_ID: &str = "1780270034676433896";
+const WORLD2_ENDPOINT: &str = "wss://ep-live-world2-game.goodgamestudios.com/";
+const US1_SERVER_HEADER: &str = "EmpireEx_21";
+const WORLD2_SERVER_HEADER: &str = "EmpireEx_49";
+const VENTRILO_PORTAL_ACCOUNT_ID: &str = "1780270034676433896";
+// Confirmed by Pingpoko's successful `lli` capture. This is a portal identity,
+// not the much smaller in-world owner ID, and it is account-specific.
+const PINGPOKO_PORTAL_ACCOUNT_ID: &str = "1782860727866351909";
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub enum GameServer {
     #[serde(rename = "US1")]
     Us1,
+    #[serde(rename = "WORLD2")]
+    World2,
+}
+
+impl GameServer {
+    fn connection(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            GameServer::Us1 => (US1_ENDPOINT, US1_SERVER_HEADER, VENTRILO_PORTAL_ACCOUNT_ID),
+            GameServer::World2 => (
+                WORLD2_ENDPOINT,
+                WORLD2_SERVER_HEADER,
+                PINGPOKO_PORTAL_ACCOUNT_ID,
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Deserialize)]
@@ -53,26 +74,53 @@ const fn default_scan_radius() -> u16 {
 
 impl InitializeAccountRequest {
     pub fn into_direct(self) -> DirectConnectRequest {
-        match self.server {
-            GameServer::Us1 => {
-                let settings = SessionSettings {
-                    map_scan_radius: self.scan_radius,
-                    ..SessionSettings::default()
-                };
-                DirectConnectRequest {
-                    endpoint: US1_ENDPOINT.to_owned(),
-                    credentials: LoginCredentials {
-                        player_name: self.username.trim().to_owned(),
-                        portal_account_id: US1_PORTAL_ACCOUNT_ID.to_owned(),
-                        password: Some(self.password),
-                        login_token: None,
-                        registration_token: None,
-                    },
-                    settings,
-                    reuse_existing_map: self.reuse_existing_map,
-                }
-            }
+        let (endpoint, server_header, portal_account_id) = self.server.connection();
+        let settings = SessionSettings {
+            map_scan_radius: self.scan_radius,
+            server_header: server_header.to_owned(),
+            ..SessionSettings::default()
+        };
+        DirectConnectRequest {
+            endpoint: endpoint.to_owned(),
+            credentials: LoginCredentials {
+                player_name: self.username.trim().to_owned(),
+                portal_account_id: portal_account_id.to_owned(),
+                password: Some(self.password),
+                login_token: None,
+                registration_token: None,
+            },
+            settings,
+            reuse_existing_map: self.reuse_existing_map,
         }
+    }
+}
+
+#[cfg(test)]
+mod server_tests {
+    use super::*;
+
+    #[test]
+    fn world_profiles_keep_socket_and_portal_identity_together() {
+        assert_eq!(
+            GameServer::Us1.connection(),
+            (US1_ENDPOINT, US1_SERVER_HEADER, VENTRILO_PORTAL_ACCOUNT_ID)
+        );
+        assert_eq!(
+            GameServer::World2.connection(),
+            (
+                WORLD2_ENDPOINT,
+                WORLD2_SERVER_HEADER,
+                PINGPOKO_PORTAL_ACCOUNT_ID
+            )
+        );
+        assert_ne!(
+            GameServer::Us1.connection().2,
+            GameServer::World2.connection().2
+        );
+        assert_ne!(
+            GameServer::Us1.connection().1,
+            GameServer::World2.connection().1
+        );
     }
 }
 
@@ -98,6 +146,10 @@ pub struct DirectStatus {
     pub scan_cached: u64,
     pub bot_state: String,
     pub bot_detail: Option<String>,
+    /// When the socket was established. The UI shows how long the session has
+    /// been up from this, and it survives closing the window because the
+    /// service owns the session, not the window.
+    pub connected_at_ms: Option<i64>,
 }
 
 impl Default for DirectStatus {
@@ -113,6 +165,7 @@ impl Default for DirectStatus {
             scan_cached: 0,
             bot_state: "stopped".to_owned(),
             bot_detail: None,
+            connected_at_ms: None,
         }
     }
 }
@@ -133,6 +186,7 @@ pub async fn run(
     *active_transport.write().await = None;
     let mut current = status.write().await;
     current.connected = false;
+    current.connected_at_ms = None;
     if let Err(error) = result {
         current.phase = SessionPhase::Failed;
         current.error = Some(error.to_string());
@@ -184,6 +238,7 @@ async fn run_inner(
         scan_cached: 0,
         bot_state: "stopped".to_owned(),
         bot_detail: None,
+        connected_at_ms: Some(now_ms()),
     };
     info!(endpoint = %request.endpoint, "direct game session connected");
 
@@ -307,7 +362,9 @@ async fn run_inner(
 
 const REQUEST_TIMEOUT_MS: i64 = 40_000;
 const TARGET_LEASE_MS: i64 = 12 * 60 * 1_000;
-const COMMANDER_REJECT_HOLD_MS: i64 = 10 * 60 * 1_000;
+// A rejected CRA never launched the commander. Keep only a short backoff so a
+// bad option cannot suppress the whole configured commander pool for minutes.
+const COMMANDER_REJECT_HOLD_MS: i64 = 15_000;
 
 #[derive(Debug)]
 enum RecruitPhase {
@@ -776,19 +833,43 @@ impl Automation {
             if now < hard_due {
                 return Ok(None);
             }
+            let Some(travel) = store
+                .travel_for_source(
+                    account_id,
+                    task.kingdom_id,
+                    task.source_x,
+                    task.source_y,
+                    task.travel_mode,
+                )
+                .await?
+            else {
+                self.detail = format!(
+                    "Travel options are not initialized for source {}:{}:{}; reconnect the account",
+                    task.kingdom_id, task.source_x, task.source_y
+                );
+                self.phase = AutomationPhase::Idle {
+                    due_ms: now + 30_000,
+                };
+                return Ok(None);
+            };
             let packet = hunt::attack_packet(
                 server_header,
                 (task.source_x, task.source_y),
                 &as_map_target(target),
                 *lord_id,
                 &task.payload,
-                task.hbw,
-                hunt::MAP_PTT,
+                travel.hbw,
+                travel.ptt,
             )?;
             self.last_cra_ms = Some(now);
             self.detail = format!(
-                "Attack sent with commander {lord_id} to {}:{}:{}",
-                target.kingdom_id, target.x, target.y
+                "Attack sent with commander {lord_id} to {}:{}:{} using {} (HBW {}, PTT {})",
+                target.kingdom_id,
+                target.x,
+                target.y,
+                task.travel_mode.as_str(),
+                travel.hbw,
+                travel.ptt,
             );
             self.phase = AutomationPhase::AwaitCra {
                 task: task.clone(),
@@ -867,26 +948,34 @@ impl Automation {
             return;
         };
         let now = now_ms();
-        if packet.status.as_deref().is_some_and(|status| status != "0") {
+        if let Some(status) = packet.status.as_deref().filter(|status| *status != "0") {
+            let expected_rejection = matches!(
+                (&self.phase, packet.command.as_str()),
+                (AutomationPhase::AwaitAdi { .. }, "adi")
+                    | (AutomationPhase::AwaitCra { .. }, "cra")
+            );
+            if !expected_rejection {
+                return;
+            }
             if let AutomationPhase::AwaitCra { lord_id, .. } = &self.phase {
                 let state = CommanderState {
                     account_id: account_id.to_owned(),
                     lord_id: *lord_id,
-                    status: COMMANDER_OUTBOUND.to_owned(),
+                    status: COMMANDER_AVAILABLE.to_owned(),
                     available_after_ms: now + COMMANDER_REJECT_HOLD_MS,
                     march_id: None,
                     target_key: None,
                 };
                 let _ = store.set_commander_state(&state, now).await;
             }
-            if matches!(
-                self.phase,
-                AutomationPhase::AwaitAdi { .. } | AutomationPhase::AwaitCra { .. }
-            ) {
-                self.phase = AutomationPhase::Idle {
-                    due_ms: now + 15_000,
-                };
-            }
+            self.detail = format!(
+                "{} rejected with status {status}; retrying after backoff",
+                packet.command
+            );
+            warn!(%account_id, command = %packet.command, %status, "automation request rejected");
+            self.phase = AutomationPhase::Idle {
+                due_ms: now + COMMANDER_REJECT_HOLD_MS,
+            };
             return;
         }
 
@@ -1059,12 +1148,20 @@ async fn observe_account_packet(store: &Store, account_id: &str, raw: &str) {
         "gbd" => {
             let castles = owned_castles(&packet.payload);
             let commanders = commander_lids(&packet.payload);
+            let travel_options = castle_travel_options(&packet.payload);
             if castles.is_empty() {
                 return;
             }
-            store
+            if let Err(error) = store
                 .replace_account_bootstrap(account_id, &castles, &commanders, now_ms())
                 .await
+            {
+                Err(error)
+            } else {
+                store
+                    .upsert_castle_travel_options(account_id, &travel_options, now_ms())
+                    .await
+            }
         }
         "gaa" => {
             let targets = rbc_targets(&packet.payload);

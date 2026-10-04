@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::planning::TravelMode;
+
 pub const SANDS_KINGDOM_ID: i64 = 1;
 pub const RBC_AREA_TYPE: i64 = 2;
 
@@ -20,6 +22,44 @@ pub struct RbcTarget {
     pub x: i64,
     pub y: i64,
     pub level: Option<i64>,
+}
+
+/// Travel options unlocked by one owned castle. `gpc.A[].UH` is the server's
+/// authoritative list and differs with that castle's stable level.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CastleTravelOptions {
+    pub castle_id: i64,
+    pub kingdom_id: i64,
+    pub unlocked_hbw: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AttackTravel {
+    pub hbw: i64,
+    pub ptt: i64,
+}
+
+impl CastleTravelOptions {
+    /// Within every observed stable family, the coin horse is the lowest HBW
+    /// id (1001, 1004 or 1007). The wire array is not ordered by price.
+    pub fn coin_hbw(&self) -> Option<i64> {
+        self.unlocked_hbw.iter().copied().filter(|id| *id > 0).min()
+    }
+
+    /// Resolve a human travel choice against this castle's stable family.
+    /// UH is sorted during parsing because the wire order is not meaningful.
+    pub fn resolve(&self, mode: TravelMode) -> Option<AttackTravel> {
+        let hbw = match mode {
+            TravelMode::Coin => *self.unlocked_hbw.first()?,
+            TravelMode::Ruby1 => *self.unlocked_hbw.get(1)?,
+            TravelMode::Ruby2 => *self.unlocked_hbw.get(2)?,
+            TravelMode::Feather => -1,
+        };
+        Some(AttackTravel {
+            hbw,
+            ptt: i64::from(mode == TravelMode::Feather),
+        })
+    }
 }
 
 pub fn owned_castles(payload: &Value) -> Vec<OwnedCastle> {
@@ -58,6 +98,34 @@ pub fn commander_lids(payload: &Value) -> Vec<i64> {
         .into_iter()
         .flatten()
         .filter_map(|row| row.get("ID").and_then(Value::as_i64))
+        .collect()
+}
+
+pub fn castle_travel_options(payload: &Value) -> Vec<CastleTravelOptions> {
+    payload
+        .pointer("/gpc/A")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            let castle_id = row.get("AID").and_then(Value::as_i64)?;
+            let kingdom_id = row.get("KID").and_then(Value::as_i64)?;
+            let mut unlocked_hbw = row
+                .get("UH")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_i64)
+                .filter(|id| *id > 0)
+                .collect::<Vec<_>>();
+            unlocked_hbw.sort_unstable();
+            unlocked_hbw.dedup();
+            (!unlocked_hbw.is_empty()).then_some(CastleTravelOptions {
+                castle_id,
+                kingdom_id,
+                unlocked_hbw,
+            })
+        })
         .collect()
 }
 
@@ -118,5 +186,32 @@ mod tests {
         let targets = rbc_targets(&map);
         assert_eq!(targets.len(), 1);
         assert_eq!((targets[0].x, targets[0].y), (600, 610));
+    }
+
+    #[test]
+    fn learns_per_castle_stable_family_and_coin_option() {
+        let bootstrap = json!({"gpc":{"A":[
+            {"AID":70499,"KID":0,"UH":[1008,1009,1007]},
+            {"AID":341842,"KID":1,"UH":[1004,1005,1006]},
+            {"AID":327523,"KID":2,"UH":[1001,1002,1003]}
+        ]}});
+        let options = castle_travel_options(&bootstrap);
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[0].unlocked_hbw, vec![1007, 1008, 1009]);
+        assert_eq!(options[0].coin_hbw(), Some(1007));
+        assert_eq!(options[1].coin_hbw(), Some(1004));
+        assert_eq!(options[2].coin_hbw(), Some(1001));
+        assert_eq!(
+            options[1].resolve(TravelMode::Ruby1),
+            Some(AttackTravel { hbw: 1005, ptt: 0 })
+        );
+        assert_eq!(
+            options[1].resolve(TravelMode::Ruby2),
+            Some(AttackTravel { hbw: 1006, ptt: 0 })
+        );
+        assert_eq!(
+            options[1].resolve(TravelMode::Feather),
+            Some(AttackTravel { hbw: -1, ptt: 1 })
+        );
     }
 }

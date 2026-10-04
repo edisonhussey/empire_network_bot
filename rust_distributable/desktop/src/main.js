@@ -18,18 +18,48 @@ let cachedHunt = null;
 let huntFetchedAt = 0;
 let cachedDashboard = null;
 let dashboardFetchedAt = 0;
+let addingAccount = false;
 const fallbackKingdoms = [
   { id: 0, name: "green_kingdom" }, { id: 1, name: "sand_kingdom" },
   { id: 2, name: "ice_kingdom" }, { id: 3, name: "fire_kingdom" },
   { id: 4, name: "storm_kingdom" }, { id: 10, name: "berimond_kingdom" },
 ];
+
+/// The worlds OpenAuto can sign in to. `value` is what `/accounts` expects, and
+/// `match` finds the world inside a stored endpoint - the endpoint is the world,
+/// so an account's server is read back from it rather than remembered separately.
+const SERVERS = [
+  { value: "US1", label: "US1", match: "us1-game" },
+  { value: "WORLD2", label: "World 2", match: "world2-game" },
+];
+
+function serverFor(endpoint) {
+  return SERVERS.find((server) => String(endpoint || "").includes(server.match))?.value || SERVERS[0].value;
+}
+
+function serverLabel(endpoint) {
+  return SERVERS.find((server) => String(endpoint || "").includes(server.match))?.label || "Unknown world";
+}
+
+function renderServerOptions() {
+  const select = $("#server");
+  const previous = select.value;
+  select.replaceChildren(...SERVERS.map((server) => { const option = element("option", "", server.label); option.value = server.value; return option; }));
+  if (SERVERS.some((server) => server.value === previous)) select.value = previous;
+}
+
+/// Adding an account is a pro-tier action, gated on the same entitlement that
+/// covers account work in the first place.
+function canAddAccount() {
+  return Boolean(currentLicence?.active && currentLicence.tier === "pro" && (currentLicence.features || []).includes("account_initialize"));
+}
 const blankSide = () => ({ troops: [], tools: [] });
 const blankWave = () => ({ left: blankSide(), middle: blankSide(), right: blankSide() });
 let attackWaves = Array.from({ length: 4 }, blankWave);
 
 const phaseCopy = {
   disconnected: "Ready to connect", socket_handshake: "Opening a secure connection…",
-  awaiting_room: "Contacting US1…", awaiting_version: "Preparing your session…",
+  awaiting_room: "Contacting your world…", awaiting_version: "Preparing your session…",
   authenticating: "Signing in…", authenticated: "Sign-in complete",
   loading_account: "Discovering your account…", loading_castle: "Finding your castles…",
   loading_sands: "Preparing Burning Sands…", sands_ready: "Setup complete", failed: "Needs attention",
@@ -78,11 +108,33 @@ async function refreshLicence() {
   return false;
 }
 
+const viewTitles = {
+  dashboard: ["Overview", "Dashboard"],
+  attacks: ["Attack", "Create attack"],
+  tasks: ["Attack", "Create task"],
+  modes: ["Attack", "Create attack bot"],
+  recruitments: ["Recruit", "Create recruitment"],
+  "recruit-bots": ["Recruit", "Create recruit bot"],
+  accounts: ["Workspace", "Start"],
+  initialize: ["Workspace", "Initialize"],
+  logs: ["Diagnostics", "Logs"],
+};
+
 function switchView(name) {
   document.querySelectorAll(".view").forEach((view) => { view.hidden = view.id !== `view-${name}`; });
   document.querySelectorAll("nav [data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === name));
-  const titles = { dashboard: ["Overview", "Dashboard"], attacks: ["Plan builder", "Create attack"], tasks: ["Plan builder", "Create task"], modes: ["Plan builder", "Create mode"], recruitments: ["Recruitment", "Create recruitment"], "recruit-bots": ["Recruitment", "Create recruit bot"], accounts: ["Workspace", "Start"], logs: ["Diagnostics", "Logs"] };
-  [$("#page-eyebrow").textContent, $("#page-title").textContent] = titles[name];
+  // Reveal the group that owns the page being shown. The others stay as the user
+  // left them, so a group they opened on purpose does not snap shut.
+  document.querySelectorAll(".nav-group").forEach((group) => {
+    if (group.querySelector(`[data-view="${name}"]`)) setNavGroup(group, true);
+  });
+  [$("#page-eyebrow").textContent, $("#page-title").textContent] = viewTitles[name] || ["Overview", "Dashboard"];
+}
+
+function setNavGroup(group, open) {
+  group.classList.toggle("open", open);
+  group.querySelector(".nav-parent").setAttribute("aria-expanded", String(open));
+  group.querySelector(".nav-sub").hidden = !open;
 }
 
 function compactNumber(value) {
@@ -115,6 +167,42 @@ function kingdomName(name) {
     berimond_kingdom: "Berimond",
   };
   return names[name] || humanize(name);
+}
+
+/// Kingdom display name from an id, so activity rows can say "Burning Sands"
+/// rather than "K1".
+function kingdomLabel(kingdomId) {
+  const found = library.kingdoms.find((value) => value.id === kingdomId) || fallbackKingdoms.find((value) => value.id === kingdomId);
+  return kingdomName(found?.name || `Kingdom ${kingdomId}`);
+}
+
+/// How long a session has been up, as "2h30" or "45m".
+function sessionDuration(ms) {
+  if (!ms) return "";
+  const minutes = Math.floor((Date.now() - ms) / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}`;
+}
+
+/// A bot is running when the service holds a live subscription for it, not
+/// merely when a socket is open. The running flags live in the plan tables, so
+/// this reads the same source the runner does.
+function botIsRunning(direct) {
+  if (!direct.connected) return false;
+  return library.account_modes.some((value) => value.running) || library.account_recruit_bots.some((value) => value.running);
+}
+
+/// The two indicators in the sidebar footer: socket state with how long it has
+/// been up, and whether automation is actually driving it.
+function renderLinkState(direct) {
+  const connected = Boolean(direct.connected);
+  $("#link-label").closest(".link-row").classList.toggle("on", connected);
+  $("#link-label").textContent = connected ? "Connected" : "Not connected";
+  $("#link-since").textContent = connected ? sessionDuration(direct.connected_at_ms) : "";
+  const running = botIsRunning(direct);
+  $("#bot-label").closest(".link-row").classList.toggle("on", running);
+  $("#bot-label").textContent = running ? "Bot running" : "Bot stopped";
 }
 
 /// A short wait, for "clears in 12m" style copy.
@@ -338,7 +426,7 @@ function taskToDraft(task) {
       kind: "coordinate", kingdom_id: runtime.target_kingdom_id, x: runtime.target_x, y: runtime.target_y,
     },
     algorithm: subscription?.filter?.algorithm || "advanced",
-    travel: "coin", priority: priorityName(task.priority), commander_count: 1,
+    travel: runtime.travel_mode || "coin", priority: priorityName(task.priority), commander_count: 1,
   };
 }
 
@@ -418,28 +506,18 @@ function renderLibrary() {
 
 function renderAvailableTasks() {
   const container = $("#available-tasks");
-  container.replaceChildren(...library.tasks.map((task) => draggableTask(task, false)));
+  container.replaceChildren(...library.tasks.map((task) => poolTask(task)));
+  if (!library.tasks.length) container.append(element("p", "empty-copy", "Save a task first, then place it here."));
   renderSelectedTasks();
 }
 
-function draggableTask(task, selected) {
-  const row = element("div", "drag-task");
-  row.draggable = true;
-  row.dataset.taskId = task.task_id;
-  row.addEventListener("dragstart", (event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", task.task_id); event.dataTransfer.setData("text", task.task_id); });
-  row.append(element("i", "drag-handle", "⠿"));
-  const copy = element("span"); copy.append(element("b", "", task.name), element("small", "", "Reusable task")); row.append(copy);
-  if (selected) {
-    const controls = element("span", "task-order-actions");
-    controls.append(
-      actionButton("↑", () => moveModeTask(task.task_id, -1)),
-      actionButton("↓", () => moveModeTask(task.task_id, 1)),
-      actionButton("Remove", () => { selectedModeTasks = selectedModeTasks.filter((entry) => entry.task_id !== task.task_id); renderAvailableTasks(); }),
-    );
-    row.append(controls);
-  } else {
-    row.append(actionButton("Add", () => addModeTask(task.task_id)));
-  }
+/// Tasks waiting to be scheduled. Adding is a button, not a drag: the drop
+/// gesture never worked reliably and a drag image told the user nothing.
+function poolTask(task) {
+  const row = element("div", "pool-task");
+  const copy = element("span");
+  copy.append(element("b", "", task.name), element("small", "", "Reusable task"));
+  row.append(copy, actionButton("Add", () => addModeTask(task.task_id)));
   return row;
 }
 
@@ -448,7 +526,15 @@ function moveModeTask(taskId, delta) {
   const to = Math.max(0, Math.min(selectedModeTasks.length - 1, from + delta));
   if (from < 0 || from === to) return;
   selectedModeTasks.splice(to, 0, selectedModeTasks.splice(from, 1)[0]);
-  renderAvailableTasks();
+  rebuildBoardSoon();
+}
+
+/// Rebuilding the board removes the very control that was clicked or edited, so
+/// doing it inside the event leaves the browser dispatching to a detached node
+/// (Chromium throws "node to be removed is no longer a child"). Waiting for the
+/// next tick keeps the rebuild out of the event that asked for it.
+function rebuildBoardSoon() {
+  setTimeout(renderSelectedTasks, 0);
 }
 
 function addModeTask(taskId) {
@@ -462,36 +548,62 @@ function setAllocation(taskId, count) {
   const allocation = selectedModeTasks.find((entry) => entry.task_id === taskId);
   if (!allocation) return;
   allocation.commander_count = Math.max(1, Math.floor(Number(count) || 1));
-  renderSelectedTasks();
+  rebuildBoardSoon();
 }
 
 function renderSelectedTasks() {
-  const container = $("#mode-tasks");
-  container.replaceChildren();
+  const board = $("#mode-tasks");
+  board.replaceChildren();
+  if (!selectedModeTasks.length) {
+    board.append(element("p", "board-empty", "Add a task to begin the schedule."));
+    $("#commander-warning").textContent = "0 commanders allocated";
+    return;
+  }
+  // One grid column per commander. A task block spans the columns it owns and
+  // the numbered cells sit in the row below, so every block starts on the same
+  // line and the numbers form one continuous ruler underneath.
+  const total = selectedModeTasks.reduce((sum, entry) => sum + Math.max(1, Math.floor(entry.commander_count) || 1), 0);
+  const grid = element("div", "board-grid");
+  grid.style.gridTemplateColumns = `repeat(${total}, minmax(0, 1fr))`;
   let first = 1;
   selectedModeTasks.forEach((allocation) => {
     const task = library.tasks.find((value) => value.task_id === allocation.task_id);
     if (!task) return;
-    const row = element("article", "allocation-card");
-    row.draggable = true;
-    row.dataset.taskId = task.task_id;
-    row.addEventListener("dragstart", (event) => event.dataTransfer.setData("text/plain", task.task_id));
-    const head = element("div", "allocation-head");
-    const title = element("span"); title.append(element("b", "", task.name), element("small", "", "Assigned task"));
-    const count = document.createElement("input"); count.type = "number"; count.min = "1"; count.value = allocation.commander_count; count.setAttribute("aria-label", `${task.name} commander count`); count.addEventListener("change", () => setAllocation(task.task_id, count.value));
-    const controls = element("span", "allocation-actions");
-    controls.append(actionButton("−", () => setAllocation(task.task_id, allocation.commander_count - 1)), count, actionButton("+", () => setAllocation(task.task_id, allocation.commander_count + 1)), actionButton("←", () => moveModeTask(task.task_id, -1)), actionButton("→", () => moveModeTask(task.task_id, 1)), actionButton("Remove", () => { selectedModeTasks = selectedModeTasks.filter((entry) => entry.task_id !== task.task_id); renderAvailableTasks(); }));
-    head.append(title, controls);
-    const last = first + allocation.commander_count - 1;
-    const track = element("div", "commander-track");
-    for (let commander = first; commander <= last; commander += 1) track.append(element("span", "", commander));
-    row.append(head, track, element("em", "commander-range", `Commanders ${first}–${last}`));
+    const count = Math.max(1, Math.floor(allocation.commander_count) || 1);
+    const last = first + count - 1;
+    const block = element("article", "allocation-block");
+    block.style.gridColumn = `${first} / span ${count}`;
+    block.style.gridRow = "1";
+    block.dataset.taskId = task.task_id;
+    const head = element("div", "block-head");
+    head.append(element("b", "", task.name), element("span", "block-count", String(count)));
+    const number = document.createElement("input");
+    number.type = "number"; number.min = "1"; number.value = String(count);
+    number.setAttribute("aria-label", `${task.name} commander count`);
+    number.addEventListener("change", () => setAllocation(task.task_id, number.value));
+    const controls = element("div", "block-controls");
+    controls.append(
+      actionButton("−", () => setAllocation(task.task_id, count - 1)), number, actionButton("+", () => setAllocation(task.task_id, count + 1)),
+      actionButton("←", () => moveModeTask(task.task_id, -1)), actionButton("→", () => moveModeTask(task.task_id, 1)),
+      actionButton("Remove", () => { selectedModeTasks = selectedModeTasks.filter((entry) => entry.task_id !== task.task_id); rebuildBoardSoon(); }, true),
+    );
+    block.append(head, controls, element("em", "block-span", `Commanders ${first}–${last}`));
+    const cells = [];
+    for (let commander = first; commander <= last; commander += 1) {
+      const cell = element("span", "ruler-cell", String(commander));
+      cell.style.gridColumn = String(commander);
+      cell.style.gridRow = "2";
+      cells.push(cell);
+      grid.append(cell);
+    }
+    // Hovering the block marks exactly the cells it holds.
+    block.addEventListener("mouseenter", () => cells.forEach((cell) => cell.classList.add("covered")));
+    block.addEventListener("mouseleave", () => cells.forEach((cell) => cell.classList.remove("covered")));
+    grid.append(block);
     first = last + 1;
-    container.append(row);
   });
-  if (!selectedModeTasks.length) container.append(element("div", "drop-hint", "Drag tasks here"));
-  const total = first - 1;
-  $("#commander-warning").textContent = `${total} commanders allocated${total ? ` · numbered 1–${total}` : ""}`;
+  board.append(grid);
+  $("#commander-warning").textContent = `${total} commander${total === 1 ? "" : "s"} allocated · numbered 1–${total}`;
 }
 
 function renderModes() {
@@ -499,13 +611,13 @@ function renderModes() {
   container.replaceChildren(...library.modes.map((mode) => {
     const row = element("article", "library-row mode-row");
     const allocations = mode.allocations?.length ? mode.allocations : mode.task_ids.map((task_id) => ({ task_id, commander_count: 1 }));
-    const identity = element("div"); identity.append(element("b", "", mode.name), element("small", "", `${allocations.length} tasks · ${mode.commander_count} commanders`));
+    const identity = element("div"); identity.append(element("b", "", mode.name), element("small", "", `${allocations.length} task${allocations.length === 1 ? "" : "s"} · ${mode.commander_count} commander${mode.commander_count === 1 ? "" : "s"}`));
     const actions = element("span", "row-actions");
     actions.append(actionButton("Copy JSON", () => copyJson(bundleForMode(mode.name, allocations), $("#mode-result"))));
     actions.append(actionButton("Delete", () => deleteEntry(`/plans/modes/${mode.mode_id}`, "#mode-result"), true));
     row.append(identity, actions); return row;
   }));
-  if (!library.modes.length) container.append(element("p", "empty-copy", "No modes saved yet."));
+  if (!library.modes.length) container.append(element("p", "empty-copy", "No attack bots saved yet."));
 }
 
 function renderRecruitmentBuilder() {
@@ -578,47 +690,78 @@ async function loadLibrary() {
 }
 
 function emptyAccounts() {
-  const empty = element("div", "empty-state"); empty.append(element("i", "", "+"), element("p", "", "Your saved accounts will appear here.")); $("#accounts").replaceChildren(empty);
+  const empty = element("div", "empty-state"); empty.append(element("i", "", "+"), element("p", "", "No account yet. Add one in Initialize, then start it here.")); $("#accounts").replaceChildren(empty);
+  renderAccountProfiles();
 }
 
 async function connectSavedAccount(account, password, radius, reuseExistingMap, output) {
   if (!password) { output.textContent = "Enter the account password first."; return; }
-  output.textContent = reuseExistingMap ? "Establishing connection…" : "Connecting and extending the Sands scan…";
+  output.textContent = reuseExistingMap ? "Establishing connection…" : "Connecting and extending the map scan…";
   await api("/accounts", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ server: "US1", username: account.player_name, password, scan_radius: radius, reuse_existing_map: reuseExistingMap }),
+    // The account's own world, so reconnecting never lands on the wrong server.
+    body: JSON.stringify({ server: serverFor(account.endpoint), username: account.player_name, password, scan_radius: radius, reuse_existing_map: reuseExistingMap }),
   });
   await refresh();
+}
+
+/// Everything OpenAuto knows about each stored account. This belongs next to the
+/// place accounts are set up, not beside the daily start/stop controls.
+function renderAccountProfiles() {
+  const container = $("#account-profiles");
+  container.replaceChildren();
+  if (!connectedAccounts.length) {
+    container.append(element("p", "empty-copy", "No account yet — sign in above."));
+    return;
+  }
+  for (const account of connectedAccounts) {
+    const row = element("article", "account-item profile-row");
+    const avatar = element("div", "account-avatar", account.player_name.slice(0, 1).toUpperCase());
+    const isConnected = latestDirect.connected && latestDirect.account_id?.toLowerCase() === account.account_id.toLowerCase();
+    const identity = element("div");
+    identity.append(
+      element("strong", "", account.player_name),
+      element("span", isConnected ? "connection-label live" : "connection-label", `${serverLabel(account.endpoint)} · ${isConnected ? "Connected" : "Stored locally"}`),
+    );
+    const facts = element("dl");
+    for (const [name, value] of [["Castles", account.castle_count], ["Commanders", account.commander_count], ["Targets", account.rbc_count]]) {
+      const group = element("div"); group.append(element("dd", "", value), element("dt", "", name)); facts.append(group);
+    }
+    row.append(avatar, identity, facts);
+    container.append(row);
+  }
+}
+
+function renderAddAccount() {
+  const button = $("#add-account");
+  button.textContent = addingAccount ? "Cancel" : "Add account";
+  button.disabled = !addingAccount && !canAddAccount();
+  button.title = canAddAccount() ? "Sign in to another world or account" : "Adding an account needs a pro plan with account access";
 }
 
 async function refreshAccounts(knownDirect = null) {
   connectedAccounts = await api("/accounts");
   const direct = knownDirect || await api("/direct");
   latestDirect = direct;
-  $("#account-onboarding").hidden = connectedAccounts.length > 0;
+  // The setup form hides itself once an account exists, unless the user asked to
+  // add another one.
+  $("#account-onboarding").hidden = connectedAccounts.length > 0 && !addingAccount;
+  renderAccountProfiles();
+  renderAddAccount();
   if (!connectedAccounts.length) { emptyAccounts(); renderModes(); return; }
   $("#accounts").replaceChildren(...connectedAccounts.map((account) => {
-    const card = element("article", "account-item"); const avatar = element("div", "account-avatar", account.player_name.slice(0, 1).toUpperCase());
+    const card = element("article", "account-steps");
     const isConnected = direct.connected && direct.account_id?.toLowerCase() === account.account_id.toLowerCase();
     const isReady = isConnected && direct.phase === "sands_ready";
-    const identity = element("div"); identity.append(element("strong", "", account.player_name), element("span", isConnected ? "connection-label live" : "connection-label", isReady ? "US1 · Connected" : isConnected ? "US1 · Connecting" : "US1 · Stored locally"));
-    const facts = element("dl");
-    for (const [name, value] of [["Castles", account.castle_count], ["Commanders", account.commander_count], ["Targets", account.rbc_count]]) { const group = element("div"); group.append(element("dd", "", value), element("dt", "", name)); facts.append(group); }
-    const discovery = element("div", "kingdom-health");
-    discovery.append(element("p", "list-label", "Map discovery by main castle"));
-    for (const health of account.kingdom_health || []) {
-      const line = element("div", "kingdom-health-row");
-      line.append(element("b", "", kingdomName((library.kingdoms.find((value) => value.id === health.kingdom_id) || fallbackKingdoms.find((value) => value.id === health.kingdom_id))?.name || `Kingdom ${health.kingdom_id}`)), element("span", "", `${health.target_count} targets · ${health.scan_window_count} map areas`));
-      discovery.append(line);
-    }
-    if (!(account.kingdom_health || []).length) discovery.append(element("p", "empty-copy", "No main-castle map data learned yet."));
+    // Only the name, so a card is identifiable without repeating the profile
+    // block that now lives in Initialize.
+    card.append(element("p", "account-caption", account.player_name));
     // Step 1 — the socket. Kept separate from automation so it is obvious that
     // signing in and starting a bot are two different decisions.
     const connection = element("div", "account-connection-control");
     connection.append(element("p", "list-label", "Step 1 · Connection"));
     const password = document.createElement("input"); password.type = "password"; password.placeholder = "Password"; password.autocomplete = "current-password";
-    const radius = document.createElement("input"); radius.type = "number"; radius.min = "0"; radius.max = "500"; radius.value = "50"; radius.title = "Sands scan radius"; radius.setAttribute("aria-label", "Additional Sands scan radius");
     const connectionResult = element("span", "connection-result", isConnected ? "Connected. Cached map data is being used." : "Not connected. Your castles and targets are still shown from the last visit.");
     const login = actionButton("Start connection", async () => {
       try { await connectSavedAccount(account, password.value, 0, true, connectionResult); password.value = ""; }
@@ -630,13 +773,13 @@ async function refreshAccounts(knownDirect = null) {
       await loadLibrary(); await refreshAccounts(); await refreshDashboard();
     });
     close.classList.add("danger-outline"); close.disabled = !isConnected;
-    const scan = actionButton("Rescan map", async () => {
-      try { await connectSavedAccount(account, password.value, Number(radius.value) || 0, false, connectionResult); password.value = ""; }
-      catch (error) { password.value = ""; connectionResult.textContent = error.message; }
-    });
+    // Scanning has its own home in Initialize, next to the radius it uses, so
+    // this step is only about opening and closing the socket.
     const scanRow = element("div", "connection-scan");
-    scanRow.append(close, radius, scan);
+    scanRow.append(close);
     connection.append(password, login, scanRow, connectionResult);
+    // Only one socket exists, so signing in here ends whoever holds it.
+    if (!isConnected && direct.connected) connection.append(element("p", "empty-copy", "Another account holds the connection. Starting this one replaces that session."));
 
     // Step 2 — automation. One attack bot, plus at most one recruit bot.
     const assignment = element("div", "account-mode-control");
@@ -646,7 +789,7 @@ async function refreshAccounts(knownDirect = null) {
     assignment.append(element("p", "list-label", "Step 2 · Automation"));
     const attackLabel = document.createElement("label"); attackLabel.textContent = "Attack bot";
     const attackSelect = document.createElement("select");
-    attackSelect.append(...library.modes.map((mode) => { const option = element("option", "", `${mode.name} · ${mode.commander_count} commanders`); option.value = mode.mode_id; return option; }));
+    attackSelect.append(...library.modes.map((mode) => { const option = element("option", "", `${mode.name} · ${mode.commander_count} commander${mode.commander_count === 1 ? "" : "s"}`); option.value = mode.mode_id; return option; }));
     if (current) attackSelect.value = current.mode_id;
     const recruitLabel = document.createElement("label"); recruitLabel.textContent = "Recruit bot (optional)";
     const recruitSelect = document.createElement("select");
@@ -689,13 +832,14 @@ async function refreshAccounts(knownDirect = null) {
     controls.append(start, stop, summary);
     assignment.append(attackLabel, attackSelect, recruitLabel, recruitSelect, recruitEstimate, controls);
     if (!isReady && !running) assignment.append(element("p", "empty-copy", "Start the connection in step 1 to run automation."));
-    if (!library.modes.length) assignment.append(element("p", "empty-copy", "Create an attack mode before starting automation."));
-    card.append(avatar, identity, facts, discovery, connection, assignment); return card;
+    if (!library.modes.length) assignment.append(element("p", "empty-copy", "Create an attack bot before starting automation."));
+    card.append(connection, assignment); return card;
   }));
   renderedConnectionKey = `${direct.connected}:${direct.account_id || ""}:${direct.phase === "sands_ready"}`;
   updateSourceCoordinates();
   renderModes();
   renderRecruitmentBuilder();
+  renderScanPlan();
 }
 
 function dashboardStat(value, label) {
@@ -706,10 +850,13 @@ function dashboardStat(value, label) {
 
 // STYLE: ruby chart redrawn as a single 1px white line over dashed hairline gridlines.
 // No area fill, no gradient, no colour. Y axis starts at zero with round tick values.
+// The viewBox is close to the width it is rendered at - the chart lives in the
+// right-hand dashboard column - so the axis text stays legible instead of being
+// scaled down with the drawing.
 function renderRubyChart(series) {
   const container = $("#ruby-chart");
   if (!series?.length) { container.replaceChildren(element("p", "empty-copy", "No ruby returns recorded yet.")); return; }
-  const width = 1000; const height = 300; const left = 44; const right = 8; const top = 12; const bottom = 34;
+  const width = 440; const height = 300; const left = 40; const right = 8; const top = 12; const bottom = 34;
   const maximum = Math.max(1, ...series.map((point) => point.value));
   const rough = maximum / 4; const magnitude = 10 ** Math.floor(Math.log10(rough));
   const step = [1, 2, 5, 10].map((unit) => unit * magnitude).find((value) => value >= rough);
@@ -722,7 +869,7 @@ function renderRubyChart(series) {
   for (let tick = 0; tick <= ceiling; tick += step) {
     grid += `<line class="grid" x1="${left}" y1="${py(tick)}" x2="${width - right}" y2="${py(tick)}"/><text x="${left - 10}" y="${py(tick) + 4}" text-anchor="end">${tick >= 1000 ? `${tick / 1000}k` : tick}</text>`;
   }
-  const labels = 8; let axis = "";
+  const labels = 4; let axis = "";
   for (let i = 0; i < labels; i += 1) {
     const index = Math.round(i * (series.length - 1) / (labels - 1));
     axis += `<text x="${px(index)}" y="${height - 8}" text-anchor="${i === 0 ? "start" : i === labels - 1 ? "end" : "middle"}">${new Date(series[index].at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}</text>`;
@@ -760,13 +907,12 @@ async function refreshDashboard(knownDirect = null, force = false) {
 
     const totals = connectedAccounts.reduce((value, account) => {
       value.castles += account.castle_count || 0; value.commanders += account.commander_count || 0; value.targets += account.rbc_count || 0;
-      value.areas += (account.kingdom_health || []).reduce((sum, health) => sum + (health.scan_window_count || 0), 0);
       return value;
-    }, { castles: 0, commanders: 0, targets: 0, areas: 0 });
-    $("#dashboard-health").replaceChildren(dashboardStat(totals.castles, "Castles"), dashboardStat(totals.commanders, "Commanders"), dashboardStat(totals.targets, "Targets"), dashboardStat(totals.areas, "Map areas"));
+    }, { castles: 0, commanders: 0, targets: 0 });
+    $("#dashboard-health").replaceChildren(dashboardStat(totals.castles, "Castles"), dashboardStat(totals.commanders, "Commanders"), dashboardStat(totals.targets, "Targets"));
 
     const setup = $("#dashboard-assignment"); setup.replaceChildren();
-    for (const [label, value] of [["Account", assignment?.account_id || hunt.account_id || connectedAccounts[0]?.player_name || "None"], ["Mode", mode?.name || hunt.label || "None"], ["Session", connected ? "Connected" : "Disconnected"], ["Map setup", direct.phase === "sands_ready" ? "Sands ready" : humanize(direct.phase || "disconnected")]]) {
+    for (const [label, value] of [["Account", assignment?.account_id || hunt.account_id || connectedAccounts[0]?.player_name || "None"], ["Attack bot", mode?.name || hunt.label || "None"], ["Session", connected ? "Connected" : "Disconnected"]]) {
       const line = element("div", "assignment-line"); line.append(element("span", "", label), element("b", "", value)); setup.append(line);
     }
 
@@ -778,16 +924,22 @@ async function refreshDashboard(knownDirect = null, force = false) {
     for (const event of events) {
       const row = element("div", "activity-row");
       const time = document.createElement("time"); time.textContent = new Date(event.at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      const detail = element("div", "activity-detail");
       if (event.kind === "scan") {
-        const name = kingdomName((library.kingdoms.find((value) => value.id === event.scan.kingdom_id) || fallbackKingdoms.find((value) => value.id === event.scan.kingdom_id))?.name || `Kingdom ${event.scan.kingdom_id}`);
-        row.append(time, element("b", "", `Learned ${event.scan.windows} ${name} map ${event.scan.windows === 1 ? "area" : "areas"}`), element("span", "activity-tag", "Map scan"));
+        detail.append(element("b", "", `${kingdomLabel(event.scan.kingdom_id)} map`), element("small", "", `${event.scan.windows} ${event.scan.windows === 1 ? "area" : "areas"} learned`));
+        row.append(time, detail, element("span", "activity-tag", "Map scan"));
       } else if (event.kind === "scanning") {
-        const completed = event.direct.scan_sent + event.direct.scan_cached;
-        row.append(time, element("b", "", `Scanning Sands map · ${completed} of ${event.direct.scan_total} areas processed`), element("span", "activity-tag", "In progress"));
+        detail.append(element("b", "", "Map scan in progress"), element("small", "", `${event.direct.scan_sent + event.direct.scan_cached} of ${event.direct.scan_total} areas processed`));
+        row.append(time, detail, element("span", "activity-tag", "In progress"));
       } else {
         const march = event.march;
-        const target = `K${march.kingdom_id} · ${march.x}:${march.y}${march.level == null ? "" : ` · level ${march.level}`}`;
-        row.append(time, element("b", "", `${march.task_id || "Attack"} → ${target}`), element("span", "activity-tag", humanize(march.status)));
+        // Named rather than internal: which task ran, the attack it uses, and
+        // the kingdom it landed in, instead of a task id and "K1".
+        const task = library.tasks.find((value) => value.task_id === march.task_id);
+        const attack = task ? library.attacks.find((value) => value.profile_id === task.profile_id) : null;
+        const where = [kingdomLabel(march.kingdom_id), `${march.x}:${march.y}`, march.level == null ? null : `level ${march.level}`].filter(Boolean).join(" · ");
+        detail.append(element("b", "", task?.name || "Attack"), element("small", "", `${attack?.name || "Unknown attack"} · ${where}`));
+        row.append(time, detail, element("span", "activity-tag", humanize(march.status)));
       }
       activity.append(row);
     }
@@ -845,13 +997,91 @@ async function refreshLogs() {
 }
 
 function updateScanEstimate() {
-  const radius = Math.max(0, Math.min(500, Math.floor(Number($("#scan-radius").value) || 0)));
-  const side = radius === 0 ? 0 : Math.ceil((radius * 2 + 1) / 13);
-  const areas = radius === 0 ? 6 : side * side;
+  const radius = clampRadius($("#scan-radius").value);
+  const areas = scanAreasFor(radius);
+  const side = Math.ceil(Math.sqrt(areas));
   const minimumMinutes = Math.ceil(areas * 0.7 / 60);
   const maximumMinutes = Math.ceil(areas * 1.3 / 60);
   const grid = radius === 0 ? "the observed 3×2 viewport" : `a ${side}×${side} grid`;
-  $("#scan-estimate").textContent = `Radius ${radius} uses ${grid} (${areas} paced gaa requests) · roughly ${minimumMinutes}–${maximumMinutes} min if none are cached.`;
+  $("#scan-estimate").textContent = `Radius ${radius} uses ${grid} (${areas} paced map requests) · roughly ${minimumMinutes}–${maximumMinutes} min if none are cached.`;
+}
+
+/// Map areas a scan has to walk: the client asks in 13-area windows, so the grid
+/// is the radius doubled and rounded up to whole windows.
+function scanAreasFor(radius) {
+  if (radius <= 0) return 6;
+  const side = Math.ceil((radius * 2 + 1) / 13);
+  return side * side;
+}
+
+function clampRadius(value) {
+  return Math.max(0, Math.min(500, Math.floor(Number(value) || 0)));
+}
+
+const SANDS_KINGDOM_ID = 1;
+/// Chosen radii, per castle. Seeded from the setup radius so the first scan here
+/// matches the one Initialize used.
+const scanRadii = {};
+
+function scanRadiusFor(entry) {
+  const stored = scanRadii[entry.castle_id];
+  if (stored !== undefined) return stored;
+  const fromSetup = clampRadius($("#scan-radius").value);
+  return fromSetup > 0 ? fromSetup : 50;
+}
+
+/// How far the map around each castle is learned, and how far it should be.
+///
+/// One row per kingdom, because a scan is measured from the main castle in that
+/// kingdom. Only Burning Sands can be scanned today, so the other rows report
+/// what has been learned rather than offering a control that would do nothing.
+function renderScanPlan() {
+  const container = $("#scan-castles");
+  if (!container) return;
+  const health = connectedAccounts[0]?.kingdom_health || [];
+  container.replaceChildren();
+  $("#scan-actions").hidden = !health.length;
+  if (!health.length) { container.append(element("p", "empty-copy", "Initialize an account to set a scan radius per castle.")); return; }
+  for (const entry of health) {
+    const scannable = entry.kingdom_id === SANDS_KINGDOM_ID;
+    const radius = scanRadiusFor(entry);
+    const target = scanAreasFor(radius);
+    const learned = entry.scan_window_count || 0;
+    const name = entry.castle_name || `Castle ${entry.castle_id}`;
+    const row = element("div", scannable ? "scan-row" : "scan-row read-only");
+    const info = element("div");
+    info.append(element("b", "", `${name} · ${kingdomLabel(entry.kingdom_id)}`));
+    info.append(element("small", "", scannable
+      ? `Radius ${radius} covers ${target} map areas · ${learned} learned`
+      : `${learned} map areas learned · ${entry.last_scanned_at_ms ? `last scanned ${relativeTime(entry.last_scanned_at_ms)}` : "not scanned yet"}`));
+    const bar = element("div", "scan-coverage");
+    const fill = element("i");
+    fill.style.width = `${Math.round(Math.min(1, learned / target) * 100)}%`;
+    bar.append(fill);
+    info.append(bar);
+    const control = element("div", "scan-radius");
+    if (scannable) {
+      const input = document.createElement("input");
+      input.type = "number"; input.min = "0"; input.max = "500"; input.value = String(radius);
+      input.setAttribute("aria-label", `Scan radius around ${name}`);
+      input.addEventListener("change", () => { scanRadii[entry.castle_id] = clampRadius(input.value); renderScanPlan(); });
+      control.append(input, element("span", "scan-tag", "radius"));
+    }
+    row.append(info, control);
+    container.append(row);
+  }
+}
+
+/// Live progress of the scan the service is running. This used to sit on the
+/// dashboard, where it described something the dashboard could not change.
+function renderScanProgress(direct) {
+  const total = direct.scan_total || 0;
+  const done = (direct.scan_sent || 0) + (direct.scan_cached || 0);
+  $("#scan-bar-fill").style.width = total ? `${Math.round(Math.min(1, done / total) * 100)}%` : "0%";
+  $("#scan-state").textContent = !total ? "Idle" : done >= total ? "Complete" : "Scanning";
+  $("#scan-progress-copy").textContent = total
+    ? `${done} of ${total} map areas processed · ${direct.scan_cached || 0} reused from cache`
+    : "No scan running.";
 }
 
 function updateProgress(currentPhase) {
@@ -868,23 +1098,33 @@ async function refresh() {
     latestDirect = direct;
     if (!health.licence_active) { currentLicence = null; await refreshLicence(); return; }
     const ready = direct.phase === "sands_ready";
-    $("#status").textContent = ready ? "Account ready" : direct.connected ? "Setting up" : "OpenAuto ready";
-    $("#status").className = ready ? "status connected" : "status";
-    $("#gateway-label").textContent = direct.connected ? "Connected to US1" : "OpenAuto is ready";
+    renderLinkState(direct);
+    if (!$("#view-initialize").hidden) renderScanProgress(direct);
     $("#phase").textContent = phaseCopy[direct.phase] || "Getting ready…";
     updateProgress(direct.phase);
     if (direct.error) $("#direct-result").textContent = direct.error;
     if (ready) { $("#initialize").disabled = false; $("#initialize").textContent = "Initialize account"; $("#direct-result").textContent = "Account connected and ready."; }
     const connectionKey = `${direct.connected}:${direct.account_id || ""}:${ready}`;
-    if (connectionKey !== renderedConnectionKey) await refreshAccounts(direct);
+    if (connectionKey !== renderedConnectionKey) {
+      // Connect and disconnect both rewrite the running flags, so the plan view
+      // is reloaded before anything reads them.
+      await loadLibrary();
+      await refreshAccounts(direct);
+    }
     if (!$("#view-dashboard").hidden) await refreshDashboard(direct);
-  } catch (_) { $("#status").textContent = "OpenAuto unavailable"; $("#status").className = "status error"; $("#gateway-label").textContent = "Reconnecting…"; }
+  } catch (_) {
+    renderLinkState({ connected: false });
+  }
 }
 
+document.querySelectorAll(".nav-group").forEach((group) => {
+  group.querySelector(".nav-parent").addEventListener("click", () => setNavGroup(group, !group.classList.contains("open")));
+});
 document.querySelectorAll("nav [data-view]").forEach((button) => button.addEventListener("click", async () => {
   switchView(button.dataset.view);
   if (button.dataset.view === "dashboard") await refreshDashboard();
   if (button.dataset.view === "accounts") await refreshAccounts();
+  if (button.dataset.view === "initialize") { renderScanPlan(); renderScanProgress(latestDirect); }
   if (button.dataset.view === "logs") await refreshLogs();
 }));
 $("#wave-tabs").addEventListener("click", (event) => { const button = event.target.closest("[data-wave]"); if (!button) return; activeWave = Number(button.dataset.wave); document.querySelectorAll("#wave-tabs button").forEach((value) => value.classList.toggle("selected", value === button)); renderWave(); });
@@ -908,14 +1148,12 @@ $("#attack-form").addEventListener("submit", async (event) => { event.preventDef
 $("#copy-attack").addEventListener("click", () => copyJson(attackDraft(), $("#attack-result")));
 $("#clear-attack").addEventListener("click", () => { attackWaves = Array.from({ length: 4 }, blankWave); activeWave = 0; $("#attack-name").value = ""; document.querySelectorAll("#wave-tabs button").forEach((button) => button.classList.toggle("selected", button.dataset.wave === "0")); $("#attack-result").textContent = "Attack cleared."; renderWave(); });
 
-$("#task-form").addEventListener("submit", async (event) => { event.preventDefault(); const kingdomId = Number($("#source-kid").value); const automatic = $("#use-main-castle").checked; const fortress = $("#target-kind").value === "fortress"; const destination = fortress ? { kind: "fortress", kingdom_id: kingdomId } : { kind: "rbc_level_range", kingdom_id: kingdomId, minimum: Number($("#target-level-min").value), maximum: Number($("#target-level-max").value) }; const draft = { name: $("#task-name").value.trim(), attack_profile_id: $("#task-attack").value, source: { kingdom_id: kingdomId, x: Number($("#source-x").value), y: Number($("#source-y").value) }, source_kind: automatic ? "main_castle" : "coordinate", destination, algorithm: $("#target-algorithm").value, travel: "coin", priority, commander_count: 1 }; try { await api("/plans/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(draft) }); $("#task-result").textContent = "Dynamic farming task saved."; $("#task-name").value = ""; await loadLibrary(); } catch (error) { $("#task-result").textContent = error.message; } });
+$("#task-form").addEventListener("submit", async (event) => { event.preventDefault(); const kingdomId = Number($("#source-kid").value); const automatic = $("#use-main-castle").checked; const fortress = $("#target-kind").value === "fortress"; const destination = fortress ? { kind: "fortress", kingdom_id: kingdomId } : { kind: "rbc_level_range", kingdom_id: kingdomId, minimum: Number($("#target-level-min").value), maximum: Number($("#target-level-max").value) }; const draft = { name: $("#task-name").value.trim(), attack_profile_id: $("#task-attack").value, source: { kingdom_id: kingdomId, x: Number($("#source-x").value), y: Number($("#source-y").value) }, source_kind: automatic ? "main_castle" : "coordinate", destination, algorithm: $("#target-algorithm").value, travel: $("#travel").value, priority, commander_count: 1 }; try { await api("/plans/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(draft) }); $("#task-result").textContent = "Dynamic farming task saved."; $("#task-name").value = ""; await loadLibrary(); } catch (error) { $("#task-result").textContent = error.message; } });
 
-$("#mode-tasks").addEventListener("dragover", (event) => event.preventDefault());
-$("#mode-tasks").addEventListener("drop", (event) => { event.preventDefault(); const id = event.dataTransfer.getData("text/plain") || event.dataTransfer.getData("text"); if (!id) return; const from = selectedModeTasks.findIndex((value) => value.task_id === id); if (from < 0) addModeTask(id); else { const [entry] = selectedModeTasks.splice(from, 1); const rows = [...$("#mode-tasks").querySelectorAll(".allocation-card")]; const target = rows.find((row) => event.clientX < row.getBoundingClientRect().left + row.offsetWidth / 2); const index = target ? rows.indexOf(target) : rows.length; selectedModeTasks.splice(index, 0, entry); renderAvailableTasks(); } });
-$("#mode-form").addEventListener("submit", async (event) => { event.preventDefault(); try { await api("/plans/modes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: $("#mode-name").value.trim(), allocations: selectedModeTasks }) }); $("#mode-result").textContent = "Mode saved."; selectedModeTasks = []; $("#mode-name").value = ""; await loadLibrary(); await refreshAccounts(); } catch (error) { $("#mode-result").textContent = error.message; } });
+$("#mode-form").addEventListener("submit", async (event) => { event.preventDefault(); try { await api("/plans/modes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: $("#mode-name").value.trim(), allocations: selectedModeTasks }) }); $("#mode-result").textContent = "Attack bot saved."; selectedModeTasks = []; $("#mode-name").value = ""; await loadLibrary(); await refreshAccounts(); } catch (error) { $("#mode-result").textContent = error.message; } });
 $("#copy-mode").addEventListener("click", () => copyJson(bundleForMode($("#mode-name").value.trim(), selectedModeTasks), $("#mode-result")));
 $("#load-example").addEventListener("click", async () => { $("#mode-json").value = JSON.stringify(await api("/plans/example"), null, 2); });
-$("#import-mode").addEventListener("click", async () => { try { const bundle = JSON.parse($("#mode-json").value); await api("/plans/import", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(bundle) }); $("#import-result").textContent = "Mode imported with new attack and task IDs."; await loadLibrary(); } catch (error) { $("#import-result").textContent = error.message; } });
+$("#import-mode").addEventListener("click", async () => { try { const bundle = JSON.parse($("#mode-json").value); await api("/plans/import", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(bundle) }); $("#import-result").textContent = "Attack bot imported with new attack and task IDs."; await loadLibrary(); } catch (error) { $("#import-result").textContent = error.message; } });
 
 $("#recruitment-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -938,12 +1176,34 @@ $("#close-activation").addEventListener("click", () => { if (currentLicence?.act
 $("#toggle-password").addEventListener("click", (event) => { const password = $("#password"); const showing = password.type === "text"; password.type = showing ? "password" : "text"; event.currentTarget.textContent = showing ? "Show" : "Hide"; });
 $("#direct-form").addEventListener("submit", async (event) => { event.preventDefault(); const button = $("#initialize"); const password = $("#password"); button.disabled = true; button.textContent = "Initializing…"; $("#direct-result").textContent = "OpenAuto is signing in, discovering the account, and preparing its initial map data."; try { await api("/accounts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ server: $("#server").value, username: $("#player-name").value.trim(), password: password.value, scan_radius: Number($("#scan-radius").value) || 0, reuse_existing_map: false }) }); password.value = ""; await refresh(); } catch (error) { password.value = ""; button.disabled = false; button.textContent = "Initialize account"; $("#direct-result").textContent = error.message; } });
 $("#refresh-accounts").addEventListener("click", refreshAccounts);
+$("#add-account").addEventListener("click", () => {
+  addingAccount = !addingAccount;
+  if (addingAccount) { $("#player-name").value = ""; $("#password").value = ""; }
+  refreshAccounts(latestDirect);
+  if (addingAccount) $("#player-name").focus();
+});
 $("#scan-radius").addEventListener("input", updateScanEstimate);
+$("#scan-now").addEventListener("click", async () => {
+  const account = connectedAccounts[0];
+  const output = $("#scan-result");
+  if (!account) { output.textContent = "Initialize an account first."; return; }
+  const sands = (account.kingdom_health || []).find((value) => value.kingdom_id === SANDS_KINGDOM_ID);
+  const password = $("#scan-password").value;
+  if (!password) { output.textContent = "Enter the account password to re-scan."; return; }
+  const radius = sands ? scanRadiusFor(sands) : 0;
+  output.textContent = `Scanning around ${sands?.castle_name || "the main castle"}…`;
+  try {
+    await connectSavedAccount(account, password, radius, false, output);
+    $("#scan-password").value = "";
+    renderScanPlan();
+  } catch (error) { output.textContent = error.message; }
+});
 $("#dashboard-refresh").addEventListener("click", () => refreshDashboard(null, true));
 $("#refresh-logs").addEventListener("click", refreshLogs);
 $("#copy-logs").addEventListener("click", async () => { if (!accountLogText) await refreshLogs(); await navigator.clipboard.writeText(accountLogText); $("#log-result").textContent = "Sanitized logs copied."; });
 
 renderKingdoms();
+renderServerOptions();
 renderWave();
 updateScanEstimate();
 refreshLicence().then(async (active) => {
