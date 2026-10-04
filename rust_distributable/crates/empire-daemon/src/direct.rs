@@ -1,7 +1,10 @@
 use std::{sync::Arc, time::Duration};
 
+use anyhow::Context;
 use empire_core::{
-    account::{castle_travel_options, commander_lids, owned_castles, rbc_targets},
+    account::{
+        account_identity, castle_travel_options, commander_lids, owned_castles, rbc_targets,
+    },
     event::Direction,
     hunt::{self, MapTarget},
     injection::{InjectionRequest, channel},
@@ -10,12 +13,13 @@ use empire_core::{
     session::{LoginCredentials, SessionMachine, SessionPhase, SessionSettings},
     store::{
         ActiveModeTask, ActiveRecruitment, COMMANDER_AVAILABLE, COMMANDER_OUTBOUND, CommanderState,
-        HUNT_HEARTBEAT_KEY, MARCH_SENT, MarchRecord, RecruitCastleState, ReservedTarget, Store,
+        HUNT_HEARTBEAT_KEY, MARCH_SENT, MarchRecord, NavigationState, RecruitCastleState,
+        ReservedTarget, Store,
     },
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::sync::{RwLock, mpsc};
 use tokio_tungstenite::{
     connect_async,
@@ -121,6 +125,64 @@ mod server_tests {
             GameServer::Us1.connection().1,
             GameServer::World2.connection().1
         );
+        assert_eq!(
+            trusted_server_name(US1_ENDPOINT, US1_SERVER_HEADER),
+            Some("US1")
+        );
+        assert_eq!(
+            trusted_server_name(WORLD2_ENDPOINT, WORLD2_SERVER_HEADER),
+            Some("WORLD2")
+        );
+        assert_eq!(
+            trusted_server_name("wss://attacker.invalid/", US1_SERVER_HEADER),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn jaa_and_gaa_are_authoritative_castle_and_map_context() {
+        let store = Store::open("sqlite::memory:").await.unwrap();
+        store
+            .upsert_account_profile(
+                "ventrilo",
+                "Ventrilo",
+                US1_ENDPOINT,
+                US1_SERVER_HEADER,
+                1,
+            )
+            .await
+            .unwrap();
+        persist_navigation_packet(
+            &store,
+            "ventrilo",
+            "jaa",
+            &json!({
+                "KID": 0,
+                "gca": {"A": [1, 509, 405, 16011862, 16862926, 7, 7, 7, 3, 0]}
+            }),
+            10,
+        )
+        .await
+        .unwrap();
+        let castle = store.navigation("ventrilo").await.unwrap().unwrap();
+        assert!(!castle.map_mode);
+        assert_eq!(castle.current_kingdom_id, Some(0));
+        assert_eq!(castle.current_castle_id, Some(16011862));
+
+        persist_navigation_packet(
+            &store,
+            "ventrilo",
+            "gaa",
+            &json!({"KID": 1, "AI": []}),
+            20,
+        )
+        .await
+        .unwrap();
+        let map = store.navigation("ventrilo").await.unwrap().unwrap();
+        assert!(map.map_mode);
+        assert_eq!(map.current_kingdom_id, Some(1));
+        assert_eq!(map.current_castle_id, None);
+        assert_eq!(map.last_castle_switch_at_ms, 10);
     }
 }
 
@@ -201,7 +263,7 @@ async fn run_inner(
     status: &Arc<RwLock<DirectStatus>>,
     licence: &LicenceGate,
 ) -> anyhow::Result<()> {
-    licence.require("game_network").await?;
+    licence.require_bootstrap("game_network").await?;
     let account_id = request.credentials.player_name.trim().to_ascii_lowercase();
     let reuse_existing_map =
         request.reuse_existing_map && store.account_has_targets(&account_id, 1).await?;
@@ -247,6 +309,7 @@ async fn run_inner(
     let mut automation_tick = tokio::time::interval(Duration::from_millis(250));
     let mut automation = Automation::new();
     let mut recruitment = RecruitmentAutomation::new();
+    let mut identity_verified = false;
     heartbeat.tick().await;
     entitlement_check.tick().await;
     loop {
@@ -260,6 +323,30 @@ async fn run_inner(
                     _ => None,
                 };
                 if let Some(text) = text {
+                    if let Ok(packet) = parse_xt_packet(&text)
+                        && packet.command == "gbd"
+                        && packet.status.as_deref().is_none_or(|status| status == "0")
+                    {
+                        let identity = account_identity(&packet.payload)
+                            .context("authenticated GBD did not contain account identity")?;
+                        licence
+                            .bind_or_validate(
+                                trusted_server_name(
+                                    &request.endpoint,
+                                    &request.settings.server_header,
+                                )
+                                .context("licence activation requires a known Goodgame world endpoint")?,
+                                &identity,
+                            )
+                            .await?;
+                        identity_verified = true;
+                        info!(
+                            player_id = identity.player_id,
+                            castle_x = identity.main_castle_x,
+                            castle_y = identity.main_castle_y,
+                            "licence account identity verified"
+                        );
+                    }
                     observe_account_packet(store, &account_id, &text).await;
                     record_text(store, Direction::ServerToClient, &text).await;
                     automation.observe(store, &account_id, &text).await;
@@ -276,12 +363,14 @@ async fn run_inner(
                         current.scan_sent = 0;
                         current.scan_cached = 0;
                     }
-                    let mut saw_map_request = false;
                     let mut sent_map_requests = 0_u64;
                     for frame in frames {
                         if let Some((kingdom_id, ax1, ay1, _, _)) = map_request(&frame) {
-                            saw_map_request = true;
-                            if reuse_existing_map
+                            // Cached tiles save discovery traffic, but the first
+                            // live GAA is mandatory navigation proof. Without it
+                            // a stale scan can falsely label castle mode as a
+                            // ready Sands map.
+                            let cached = reuse_existing_map
                                 || store
                                     .scan_window_is_fresh(
                                         &account_id,
@@ -290,8 +379,8 @@ async fn run_inner(
                                         ay1,
                                         now_ms(),
                                     )
-                                    .await?
-                            {
+                                    .await?;
+                            if cached && sent_map_requests > 0 {
                                 status.write().await.scan_cached += 1;
                                 continue;
                             }
@@ -313,10 +402,6 @@ async fn run_inner(
                         record_safe_outbound(store, &account_id, &frame).await;
                         sink.send(Message::Text(frame.into())).await?;
                     }
-                    if saw_map_request && sent_map_requests == 0 {
-                        machine.accept_cached_map();
-                        status.write().await.phase = machine.phase();
-                    }
                 }
             }
             maybe = injection_rx.recv() => {
@@ -332,7 +417,11 @@ async fn run_inner(
                 sink.send(Message::Text(packet.into())).await?;
             }
             _ = entitlement_check.tick() => {
-                licence.require("game_network").await?;
+                if identity_verified {
+                    licence.require("game_network").await?;
+                } else {
+                    licence.require_bootstrap("game_network").await?;
+                }
             }
             _ = automation_tick.tick() => {
                 if machine.phase() == SessionPhase::SandsReady {
@@ -358,6 +447,14 @@ async fn run_inner(
         }
     }
     Ok(())
+}
+
+fn trusted_server_name(endpoint: &str, server_header: &str) -> Option<&'static str> {
+    match (endpoint, server_header) {
+        (US1_ENDPOINT, US1_SERVER_HEADER) => Some("US1"),
+        (WORLD2_ENDPOINT, WORLD2_SERVER_HEADER) => Some("WORLD2"),
+        _ => None,
+    }
 }
 
 const REQUEST_TIMEOUT_MS: i64 = 40_000;
@@ -451,6 +548,22 @@ impl RecruitmentAutomation {
                 sent,
                 due_ms,
             } if now >= *due_ms => {
+                let navigation = store.navigation(account_id).await?;
+                let castle_ready = navigation.as_ref().is_some_and(|state| {
+                    !state.map_mode
+                        && state.current_castle_id == Some(target.castle_id)
+                        && state.current_kingdom_id == Some(target.kingdom_id)
+                });
+                if !castle_ready {
+                    self.detail = format!(
+                        "Castle context changed before recruitment at {}",
+                        target.castle_id
+                    );
+                    self.phase = RecruitPhase::Idle {
+                        due_ms: now + 2_000,
+                    };
+                    return Ok(None);
+                }
                 let packet = encode_client_xt(
                     server_header,
                     "bup",
@@ -593,6 +706,21 @@ impl RecruitmentAutomation {
                 ) else {
                     return;
                 };
+                let returned_castle = packet.payload.pointer("/gca/A/3").and_then(Value::as_i64);
+                let returned_kingdom = packet
+                    .payload
+                    .get("KID")
+                    .and_then(Value::as_i64)
+                    .or_else(|| packet.payload.pointer("/gca/A/9").and_then(Value::as_i64));
+                if returned_castle != Some(target.castle_id)
+                    || returned_kingdom != Some(target.kingdom_id)
+                {
+                    self.detail = format!(
+                        "Castle confirmation did not match {}; recruitment blocked",
+                        target.castle_id
+                    );
+                    return;
+                }
                 self.phase = RecruitPhase::ReadyOrder {
                     target,
                     sent: 0,
@@ -728,6 +856,16 @@ enum AutomationPhase {
     Idle {
         due_ms: i64,
     },
+    AwaitMap {
+        task: ActiveModeTask,
+        target: ReservedTarget,
+        deadline_ms: i64,
+    },
+    ReadyAdi {
+        task: ActiveModeTask,
+        target: ReservedTarget,
+        due_ms: i64,
+    },
     AwaitAdi {
         task: ActiveModeTask,
         target: ReservedTarget,
@@ -771,6 +909,8 @@ impl Automation {
     fn status(&self) -> (&'static str, String) {
         let state = match self.phase {
             AutomationPhase::Idle { .. } => "waiting",
+            AutomationPhase::AwaitMap { .. } => "opening_attack_map",
+            AutomationPhase::ReadyAdi { .. } => "pacing_inspection",
             AutomationPhase::AwaitAdi { .. } => "inspecting_target",
             AutomationPhase::ReadyCra { .. } => "pacing_attack",
             AutomationPhase::AwaitCra { .. } => "awaiting_attack_ack",
@@ -799,7 +939,8 @@ impl Automation {
         }
 
         match &self.phase {
-            AutomationPhase::AwaitAdi { deadline_ms, .. }
+            AutomationPhase::AwaitMap { deadline_ms, .. }
+            | AutomationPhase::AwaitAdi { deadline_ms, .. }
             | AutomationPhase::AwaitCra { deadline_ms, .. }
                 if now >= *deadline_ms =>
             {
@@ -811,6 +952,44 @@ impl Automation {
             _ => {}
         }
 
+        if let AutomationPhase::ReadyAdi {
+            task,
+            target,
+            due_ms,
+        } = &self.phase
+        {
+            if now < *due_ms {
+                return Ok(None);
+            }
+            let navigation = store.navigation(account_id).await?;
+            let map_ready = navigation.as_ref().is_some_and(|state| {
+                state.map_mode && state.current_kingdom_id == Some(task.kingdom_id)
+            });
+            if !map_ready {
+                self.detail = format!(
+                    "Map context changed before ADI; reopening kingdom {}",
+                    task.kingdom_id
+                );
+                self.phase = AutomationPhase::Idle { due_ms: now + 500 };
+                return Ok(None);
+            }
+            let packet = hunt::adi_packet(
+                server_header,
+                (task.source_x, task.source_y),
+                &as_map_target(target),
+            )?;
+            self.detail = format!(
+                "Inspecting {}:{}:{} for task {}",
+                target.kingdom_id, target.x, target.y, task.name
+            );
+            self.phase = AutomationPhase::AwaitAdi {
+                task: task.clone(),
+                target: target.clone(),
+                deadline_ms: now + REQUEST_TIMEOUT_MS,
+            };
+            return Ok(Some(packet));
+        }
+
         if let AutomationPhase::ReadyCra {
             task,
             target,
@@ -819,6 +998,16 @@ impl Automation {
         } = &self.phase
         {
             if now < *due_ms {
+                return Ok(None);
+            }
+            let navigation = store.navigation(account_id).await?;
+            if !navigation.as_ref().is_some_and(|state| {
+                state.map_mode && state.current_kingdom_id == Some(task.kingdom_id)
+            }) {
+                self.detail = "Map context changed before CRA; attack cancelled safely".to_owned();
+                self.phase = AutomationPhase::Idle {
+                    due_ms: now + 2_000,
+                };
                 return Ok(None);
             }
             // Stop is authoritative even in the middle of a handshake.
@@ -919,16 +1108,36 @@ impl Automation {
                 .await?
             {
                 self.cursor = (index + 1) % tasks.len();
-                let packet = hunt::adi_packet(
+                let navigation = store.navigation(account_id).await?;
+                if navigation.as_ref().is_some_and(|state| {
+                    state.map_mode && state.current_kingdom_id == Some(task.kingdom_id)
+                }) {
+                    self.phase = AutomationPhase::ReadyAdi {
+                        task: task.clone(),
+                        target,
+                        due_ms: now,
+                    };
+                    return Ok(None);
+                }
+                let ax1 = task.source_x.div_euclid(13) * 13;
+                let ay1 = task.source_y.div_euclid(13) * 13;
+                let packet = encode_client_xt(
                     server_header,
-                    (task.source_x, task.source_y),
-                    &as_map_target(&target),
+                    "gaa",
+                    "1",
+                    &json!({
+                        "KID": task.kingdom_id,
+                        "AX1": ax1,
+                        "AY1": ay1,
+                        "AX2": ax1 + 12,
+                        "AY2": ay1 + 12
+                    }),
                 )?;
                 self.detail = format!(
-                    "Inspecting {}:{}:{} for task {}",
-                    target.kingdom_id, target.x, target.y, task.name
+                    "Opening kingdom {} map before inspecting {}:{}",
+                    task.kingdom_id, target.x, target.y
                 );
-                self.phase = AutomationPhase::AwaitAdi {
+                self.phase = AutomationPhase::AwaitMap {
                     task: task.clone(),
                     target,
                     deadline_ms: now + REQUEST_TIMEOUT_MS,
@@ -980,6 +1189,26 @@ impl Automation {
         }
 
         match packet.command.as_str() {
+            "gaa" => {
+                let AutomationPhase::AwaitMap { task, target, .. } = std::mem::replace(
+                    &mut self.phase,
+                    AutomationPhase::Idle {
+                        due_ms: now + 10_000,
+                    },
+                ) else {
+                    return;
+                };
+                if packet.payload.get("KID").and_then(Value::as_i64) != Some(task.kingdom_id) {
+                    self.detail = "Wrong map kingdom returned; attack remains blocked".to_owned();
+                    return;
+                }
+                self.detail = format!("Kingdom {} map confirmed; preparing ADI", task.kingdom_id);
+                self.phase = AutomationPhase::ReadyAdi {
+                    task,
+                    target,
+                    due_ms: now + 500,
+                };
+            }
             "adi" => {
                 let AutomationPhase::AwaitAdi { task, target, .. } = std::mem::replace(
                     &mut self.phase,
@@ -989,6 +1218,14 @@ impl Automation {
                 ) else {
                     return;
                 };
+                if packet.payload.is_null() {
+                    self.detail =
+                        "ADI returned no attack data; retrying after map refresh".to_owned();
+                    self.phase = AutomationPhase::Idle {
+                        due_ms: now + 10_000,
+                    };
+                    return;
+                }
                 let offered = hunt::available_commanders(&packet.payload);
                 let states = store.commander_states(account_id).await.unwrap_or_default();
                 let busy = states
@@ -1144,6 +1381,17 @@ async fn observe_account_packet(store: &Store, account_id: &str, raw: &str) {
     if packet.status.as_deref().is_some_and(|status| status != "0") {
         return;
     }
+    if let Err(error) = persist_navigation_packet(
+        store,
+        account_id,
+        &packet.command,
+        &packet.payload,
+        now_ms(),
+    )
+    .await
+    {
+        warn!(%error, %account_id, command = %packet.command, "navigation persistence failed");
+    }
     let result = match packet.command.as_str() {
         "gbd" => {
             let castles = owned_castles(&packet.payload);
@@ -1177,6 +1425,54 @@ async fn observe_account_packet(store: &Store, account_id: &str, raw: &str) {
     if let Err(error) = result {
         warn!(%error, %account_id, command = %packet.command, "account discovery persistence failed");
     }
+}
+
+async fn persist_navigation_packet(
+    store: &Store,
+    account_id: &str,
+    command: &str,
+    payload: &Value,
+    observed_at_ms: i64,
+) -> Result<(), sqlx::Error> {
+    let previous = store.navigation(account_id).await?;
+    let state = match command {
+        "jaa" => {
+            let row = payload.pointer("/gca/A").and_then(Value::as_array);
+            let Some(castle_id) = row.and_then(|values| values.get(3)).and_then(Value::as_i64)
+            else {
+                return Ok(());
+            };
+            let kingdom_id = payload
+                .get("KID")
+                .and_then(Value::as_i64)
+                .or_else(|| row.and_then(|values| values.get(9)).and_then(Value::as_i64));
+            NavigationState {
+                account_id: account_id.to_owned(),
+                current_kingdom_id: kingdom_id,
+                current_castle_id: Some(castle_id),
+                map_mode: false,
+                recruit_page: false,
+                last_castle_switch_at_ms: observed_at_ms,
+            }
+        }
+        "gaa" => {
+            let Some(kingdom_id) = payload.get("KID").and_then(Value::as_i64) else {
+                return Ok(());
+            };
+            NavigationState {
+                account_id: account_id.to_owned(),
+                current_kingdom_id: Some(kingdom_id),
+                current_castle_id: None,
+                map_mode: true,
+                recruit_page: false,
+                last_castle_switch_at_ms: previous
+                    .as_ref()
+                    .map_or(0, |state| state.last_castle_switch_at_ms),
+            }
+        }
+        _ => return Ok(()),
+    };
+    store.set_navigation(&state, observed_at_ms).await
 }
 
 async fn record_safe_outbound(store: &Store, account_id: &str, raw: &str) {

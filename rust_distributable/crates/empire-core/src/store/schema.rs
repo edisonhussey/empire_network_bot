@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -415,7 +415,17 @@ pub const V9: Migration = &[
        ON account_castle_travel(account_id, kingdom_id)",
 ];
 
-pub const MIGRATIONS: &[Migration] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9];
+/// A stage-0 licence has no player id. This immutable record is created only
+/// after an authenticated GBD matches its signed server and bootstrap castle.
+pub const V10: Migration = &["CREATE TABLE IF NOT EXISTS licence_activation (
+        license_id TEXT PRIMARY KEY,
+        server TEXT NOT NULL,
+        player_id INTEGER NOT NULL,
+        activated_at INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+    )"];
+
+pub const MIGRATIONS: &[Migration] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9, V10];
 
 /// Every table that holds user data, for the storage report and full wipe.
 /// Order matters for deletion: children before parents.
@@ -423,6 +433,7 @@ pub const DATA_TABLES: &[&str] = &[
     "network_message",
     "app_state",
     "licence_state",
+    "licence_activation",
     "attack_ledger",
     "commander_state",
     "task_subscription",

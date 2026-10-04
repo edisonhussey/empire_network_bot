@@ -1058,11 +1058,24 @@ async fn a_running_mode_compiles_tasks_and_reserves_each_target_once() {
         .into_iter()
         .find(|mode| mode.mode_id == imported)
         .unwrap();
+    let portable_task_id = imported_mode.task_ids[0].clone();
+    let mut portable_runtime = store
+        .task_runtimes()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|runtime| runtime.task_id == portable_task_id)
+        .unwrap();
+    portable_runtime.source_kind = crate::planning::SourceKind::MainCastle;
+    // Deliberately stale coordinates prove that execution does not use them.
+    portable_runtime.source_x = 999;
+    portable_runtime.source_y = 999;
+    store.upsert_task_runtime(&portable_runtime).await.unwrap();
     let mode_id = store
         .create_mode(
             "Executable",
             &[crate::planning::ModeTaskDraft {
-                task_id: imported_mode.task_ids[0].clone(),
+                task_id: portable_task_id,
                 commander_count: 2,
             }],
             NOW,
@@ -1079,6 +1092,38 @@ async fn a_running_mode_compiles_tasks_and_reserves_each_target_once() {
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].commander_lids, vec![0, 2]);
     assert!(tasks[0].payload.is_array());
+    assert_eq!((tasks[0].source_x, tasks[0].source_y), (593, 613));
+
+    // A main-castle task is portable. Its stored coordinates came from the
+    // original account, but execution must resolve the castle belonging to
+    // the account that is actually running the shared mode.
+    seed_account(&store, "pingpoko").await;
+    store
+        .replace_account_bootstrap(
+            "pingpoko",
+            &[OwnedCastle {
+                kingdom_id: 1,
+                castle_id: 200,
+                area_type: 12,
+                x: 722,
+                y: 533,
+                name: "Pingpoko Sands".to_owned(),
+            }],
+            &[0, 2],
+            NOW,
+        )
+        .await
+        .unwrap();
+    store
+        .subscribe_account_mode("pingpoko", mode_id, true, NOW)
+        .await
+        .unwrap();
+    let pingpoko_tasks = store.active_mode_tasks("pingpoko").await.unwrap();
+    assert_eq!(pingpoko_tasks.len(), 1);
+    assert_eq!(
+        (pingpoko_tasks[0].source_x, pingpoko_tasks[0].source_y),
+        (722, 533)
+    );
 
     // Older releases could persist a second physical row for username casing.
     // It is still one logical target and reserving both copies must succeed.

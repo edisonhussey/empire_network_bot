@@ -24,6 +24,27 @@ pub struct RbcTarget {
     pub level: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AccountIdentity {
+    pub player_id: i64,
+    pub main_castle_id: i64,
+    pub main_castle_x: i64,
+    pub main_castle_y: i64,
+}
+
+pub fn account_identity(payload: &Value) -> Option<AccountIdentity> {
+    let player_id = payload.pointer("/gpi/PID").and_then(Value::as_i64)?;
+    let main = owned_castles(payload)
+        .into_iter()
+        .find(|castle| castle.kingdom_id == 0 && castle.area_type == 1)?;
+    Some(AccountIdentity {
+        player_id,
+        main_castle_id: main.castle_id,
+        main_castle_x: main.x,
+        main_castle_y: main.y,
+    })
+}
+
 /// Travel options unlocked by one owned castle. `gpc.A[].UH` is the server's
 /// authoritative list and differs with that castle's stable level.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -186,6 +207,26 @@ mod tests {
         let targets = rbc_targets(&map);
         assert_eq!(targets.len(), 1);
         assert_eq!((targets[0].x, targets[0].y), (600, 610));
+    }
+
+    #[test]
+    fn learns_permanent_identity_and_green_main_castle_from_gbd() {
+        let bootstrap = json!({
+            "gpi":{"PID":16862926},
+            "gcl":{"C":[{"KID":0,"AI":[
+                {"AI":[4,505,407,16632819,16862926,5,5,1,0,1,"outpost"]},
+                {"AI":[1,509,405,16011862,16862926,7,7,7,3,1,"main"]}
+            ]}]}
+        });
+        assert_eq!(
+            account_identity(&bootstrap),
+            Some(AccountIdentity {
+                player_id: 16_862_926,
+                main_castle_id: 16_011_862,
+                main_castle_x: 509,
+                main_castle_y: 405,
+            })
+        );
     }
 
     #[test]

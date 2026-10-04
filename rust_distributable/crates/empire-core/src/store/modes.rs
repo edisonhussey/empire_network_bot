@@ -475,7 +475,23 @@ impl Store {
         let rows = sqlx::query(
             "SELECT am.mode_id, mt.task_id, t.name, t.profile_id, p.payload_json,
                     t.kingdom_id, t.target_level_min, t.target_level_max,
-                    r.source_x, r.source_y, r.travel_mode, s.filter_json,
+                    CASE WHEN r.source_kind = 'main_castle' THEN
+                        (SELECT c.x FROM owned_castle c
+                         WHERE lower(c.account_id) = lower(am.account_id)
+                           AND c.kingdom_id = r.source_kingdom_id
+                           AND ((r.source_kingdom_id = 0 AND c.area_type = 1)
+                             OR (r.source_kingdom_id <> 0 AND c.area_type = 12))
+                         ORDER BY c.castle_id LIMIT 1)
+                        ELSE r.source_x END AS resolved_source_x,
+                    CASE WHEN r.source_kind = 'main_castle' THEN
+                        (SELECT c.y FROM owned_castle c
+                         WHERE lower(c.account_id) = lower(am.account_id)
+                           AND c.kingdom_id = r.source_kingdom_id
+                           AND ((r.source_kingdom_id = 0 AND c.area_type = 1)
+                             OR (r.source_kingdom_id <> 0 AND c.area_type = 12))
+                         ORDER BY c.castle_id LIMIT 1)
+                        ELSE r.source_y END AS resolved_source_y,
+                    r.source_kind, r.source_kingdom_id, r.travel_mode, s.filter_json,
                     mt.commander_count
              FROM account_mode am
              JOIN automation_mode_task mt ON mt.mode_id = am.mode_id
@@ -515,6 +531,26 @@ impl Store {
                 .map_err(|error| sqlx::Error::Decode(Box::new(error)))?;
             let filter: serde_json::Value = serde_json::from_str(row.get::<&str, _>("filter_json"))
                 .unwrap_or_else(|_| json!({}));
+            let source_x = row
+                .try_get::<Option<i64>, _>("resolved_source_x")?
+                .ok_or_else(|| {
+                    sqlx::Error::Protocol(format!(
+                        "{} source is unavailable for account {} in kingdom {}",
+                        row.get::<&str, _>("source_kind"),
+                        account_id,
+                        row.get::<i64, _>("source_kingdom_id")
+                    ))
+                })?;
+            let source_y = row
+                .try_get::<Option<i64>, _>("resolved_source_y")?
+                .ok_or_else(|| {
+                    sqlx::Error::Protocol(format!(
+                        "{} source is unavailable for account {} in kingdom {}",
+                        row.get::<&str, _>("source_kind"),
+                        account_id,
+                        row.get::<i64, _>("source_kingdom_id")
+                    ))
+                })?;
             tasks.push(ActiveModeTask {
                 mode_id: row.get("mode_id"),
                 task_id: row.get("task_id"),
@@ -524,8 +560,8 @@ impl Store {
                 kingdom_id: row.get("kingdom_id"),
                 level_min: row.get("target_level_min"),
                 level_max: row.get("target_level_max"),
-                source_x: row.get("source_x"),
-                source_y: row.get("source_y"),
+                source_x,
+                source_y,
                 travel_mode: TravelMode::from_stored(row.get("travel_mode")),
                 algorithm: filter
                     .get("algorithm")

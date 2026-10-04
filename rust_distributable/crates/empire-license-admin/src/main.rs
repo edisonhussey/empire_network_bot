@@ -10,7 +10,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::json;
 
-const PREFIX: &str = "OA1";
+const PREFIX: &str = "OA2";
 const KEY_ID: &str = "oa-main-2026";
 
 fn main() -> anyhow::Result<()> {
@@ -20,7 +20,7 @@ fn main() -> anyhow::Result<()> {
         Some("public") => derive_public(value(&args, "--private")?),
         Some("issue") => issue(&args),
         _ => bail!(
-            "usage:\n  empire-license-admin keygen --private PATH --public PATH\n  empire-license-admin public --private PATH\n  empire-license-admin issue --private PATH --license-id ID --subject NAME --days N [--revision N] [--tier NAME] [--features a,b] [--output PATH]"
+            "usage:\n  empire-license-admin keygen --private PATH --public PATH\n  empire-license-admin public --private PATH\n  empire-license-admin issue --private PATH --license-id ID --subject NAME --server US1 --bootstrap-x X --bootstrap-y Y --days N [--revision N] [--tier NAME] [--features a,b] [--output PATH]"
         ),
     }
 }
@@ -82,11 +82,20 @@ fn issue(args: &[String]) -> anyhow::Result<()> {
         .filter(|item| !item.is_empty())
         .map(str::to_owned)
         .collect();
+    let bootstrap_x: i64 = value(args, "--bootstrap-x")?
+        .parse()
+        .context("--bootstrap-x must be an integer")?;
+    let bootstrap_y: i64 = value(args, "--bootstrap-y")?
+        .parse()
+        .context("--bootstrap-y must be an integer")?;
     let claims = json!({
-        "schema": 1,
+        "schema": 2,
         "key_id": KEY_ID,
         "license_id": value(args, "--license-id")?,
         "subject": value(args, "--subject")?,
+        "server": value(args, "--server")?.trim().to_ascii_uppercase(),
+        "bootstrap_x": bootstrap_x,
+        "bootstrap_y": bootstrap_y,
         "issued_at": now,
         "not_before": now,
         "expires_at": now.saturating_add(days.saturating_mul(86_400)),

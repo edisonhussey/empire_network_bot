@@ -3,8 +3,8 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const TOKEN_PREFIX: &str = "OA1";
-pub const CLAIMS_SCHEMA: u16 = 1;
+pub const TOKEN_PREFIX: &str = "OA2";
+pub const CLAIMS_SCHEMA: u16 = 2;
 pub const PRIMARY_KEY_ID: &str = "oa-main-2026";
 pub const CLOCK_ROLLBACK_TOLERANCE_SECONDS: i64 = 300;
 const PRIMARY_PUBLIC_KEY_B64: &str = include_str!("../assets/licence_public_key.b64");
@@ -16,6 +16,11 @@ pub struct LicenceClaims {
     pub key_id: String,
     pub license_id: String,
     pub subject: String,
+    /// Signed stage-0 bootstrap facts. The permanent player id is deliberately
+    /// absent and is learned only from the first authenticated game bootstrap.
+    pub server: String,
+    pub bootstrap_x: i64,
+    pub bootstrap_y: i64,
     pub issued_at: i64,
     pub not_before: i64,
     pub expires_at: i64,
@@ -114,6 +119,7 @@ pub fn verify_token(
     }
     if claims.license_id.trim().is_empty()
         || claims.subject.trim().is_empty()
+        || claims.server.trim().is_empty()
         || claims.tier.trim().is_empty()
         || claims.issued_at > claims.not_before
         || claims.not_before >= claims.expires_at
@@ -156,6 +162,9 @@ mod tests {
             key_id: "test-key".to_owned(),
             license_id: "lic-test".to_owned(),
             subject: "developer".to_owned(),
+            server: "US1".to_owned(),
+            bootstrap_x: 509,
+            bootstrap_y: 405,
             issued_at: 100,
             not_before: 100,
             expires_at: 200,

@@ -69,9 +69,18 @@ client emitted `gbl`, `upt`, and groups of `gaa` reads.
 - The captured Sands viewport began at `572:598` and requested three columns by
   two rows. Those coordinates are account/view dependent and are configurable.
 
-A successful Sands `gaa` response is therefore the current definition of
-"Sands ready" for a network-only client. It does not imply that a separate game
-webview has visually changed.
+A successful `jaa` is authoritative castle context. A successful `gaa` is
+authoritative map context for exactly the returned `KID`; cached map rows prove
+what was previously discovered but do not prove where the live session is now.
+The safe initial transition is therefore Green `jaa` → live Green `gaa` → live
+Sands `gaa`. A network-only client cannot imply that a separate game webview
+has visually changed.
+
+Recruitment is allowed only after a `jaa` whose castle and kingdom match the
+requested subscription. Attack inspection is allowed only after a `gaa` whose
+kingdom matches the attack task, and `cra` rechecks that context before commit.
+After recruiting in a different kingdom, the attack runner must obtain a fresh
+map response for its own kingdom before sending `adi`.
 
 ## Stable level and attack travel options
 
@@ -127,9 +136,10 @@ to cause server rejection.
 - Stopping an account mode prevents a pending `cra` from being committed. A
   disconnected socket cannot execute a mode even if its database flag is on.
 - Account discovery and map targets persist locally. A normal login for an
-  initialized account reuses that data and skips map refresh packets; an
-  explicit additional scan reconnects with a chosen radius and requests only
-  windows that are not still fresh.
+  initialized account reuses that data, but still sends one live map request
+  per required transition because cache freshness is not navigation proof. An
+  explicit additional scan requests only windows that are not still fresh,
+  apart from the one live request needed to establish current context.
 - Network logs can continue to show stored history while disconnected, but
   they are live only while the direct game socket is connected. Closing or
   losing that socket stops the account's running mode.

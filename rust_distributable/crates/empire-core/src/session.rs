@@ -111,6 +111,8 @@ pub struct SessionMachine {
     settings: SessionSettings,
     phase: SessionPhase,
     bootstrap_sent: bool,
+    green_map: Option<MapViewport>,
+    green_requested: bool,
     sands_requested: bool,
 }
 
@@ -121,20 +123,14 @@ impl SessionMachine {
             settings,
             phase: SessionPhase::Disconnected,
             bootstrap_sent: false,
+            green_map: None,
+            green_requested: false,
             sands_requested: false,
         }
     }
 
     pub fn phase(&self) -> SessionPhase {
         self.phase
-    }
-
-    /// A durable recent map scan is sufficient evidence for network-only map
-    /// readiness; it avoids repeating the full viewport on every login.
-    pub fn accept_cached_map(&mut self) {
-        if self.phase == SessionPhase::LoadingSands {
-            self.phase = SessionPhase::SandsReady;
-        }
     }
 
     pub fn on_connected(&mut self) -> Vec<String> {
@@ -181,6 +177,13 @@ impl SessionMachine {
                 Ok(Vec::new())
             }
             "gbd" if !self.bootstrap_sent => {
+                self.green_map = viewport_from_bootstrap(&packet.payload, 0).map(|mut viewport| {
+                    // One live Green tile is navigation proof; Green discovery
+                    // is not part of the user-selected Sands scan.
+                    viewport.columns = 1;
+                    viewport.rows = 1;
+                    viewport
+                });
                 let map = if self.settings.map_scan_radius == 0 {
                     sands_viewport_from_bootstrap(&packet.payload)
                 } else {
@@ -197,21 +200,40 @@ impl SessionMachine {
                 self.phase = SessionPhase::LoadingCastle;
                 self.bootstrap_packets()
             }
-            "jaa" if self.bootstrap_sent && !self.sands_requested => {
+            "jaa" if self.bootstrap_sent && !self.green_requested => {
+                self.green_requested = true;
+                self.phase = SessionPhase::LoadingCastle;
+                let mut packets = vec![
+                    encode_client_xt(&self.settings.server_header, "gbl", "1", &json!({}))?,
+                    encode_client_xt(&self.settings.server_header, "upt", "1", &json!({}))?,
+                ];
+                if let Some(green_map) = self.green_map {
+                    packets.extend(green_map.requests(&self.settings.server_header)?);
+                } else {
+                    // A real authenticated account always has a Green main
+                    // castle. Refuse to claim Sands readiness without it.
+                    self.phase = SessionPhase::Failed;
+                }
+                Ok(packets)
+            }
+            "gaa"
+                if self.green_requested
+                    && !self.sands_requested
+                    && packet.payload.get("KID").and_then(Value::as_i64) == Some(0) =>
+            {
                 self.sands_requested = true;
                 self.phase = SessionPhase::LoadingSands;
-                let mut packets = vec![encode_client_xt(
-                    &self.settings.server_header,
-                    "gbl",
-                    "1",
-                    &json!({}),
-                )?];
+                let mut packets = vec![
+                    encode_client_xt(&self.settings.server_header, "gbl", "1", &json!({}))?,
+                    encode_client_xt(&self.settings.server_header, "upt", "1", &json!({}))?,
+                ];
                 packets.extend(self.settings.map.requests(&self.settings.server_header)?);
                 Ok(packets)
             }
             "gaa"
-                if packet.payload.get("KID").and_then(Value::as_i64)
-                    == Some(self.settings.map.kingdom_id) =>
+                if self.sands_requested
+                    && packet.payload.get("KID").and_then(Value::as_i64)
+                        == Some(self.settings.map.kingdom_id) =>
             {
                 self.phase = SessionPhase::SandsReady;
                 Ok(Vec::new())
@@ -417,8 +439,25 @@ mod tests {
         assert!(login[0].contains("%lli%"));
         session.on_server_text("%xt%lli%1%0%").unwrap();
         assert_eq!(session.phase(), SessionPhase::Authenticated);
-        assert_eq!(session.on_server_text("%xt%gbd%1%0%{}%").unwrap().len(), 9);
-        assert_eq!(session.on_server_text("%xt%jaa%1%0%{}%").unwrap().len(), 7);
+        let gbd = json!({
+            "gcl": {"C": [
+                {"KID": 0, "AI": [{"AI": [1, 509, 405, 16011862]}]},
+                {"KID": 1, "AI": [{"AI": [12, 593, 613, 16366514]}]}
+            ]}
+        });
+        let gbd_frame = format!("%xt%gbd%1%0%{}%", gbd);
+        assert_eq!(session.on_server_text(&gbd_frame).unwrap().len(), 9);
+        let green = session.on_server_text("%xt%jaa%1%0%{}%").unwrap();
+        assert_eq!(green.len(), 3);
+        assert!(green[2].contains("%gaa%"));
+        assert!(green[2].contains("\"KID\":0"));
+        assert_ne!(session.phase(), SessionPhase::SandsReady);
+        let sands = session
+            .on_server_text("%xt%gaa%1%0%{\"KID\":0,\"AI\":[]}%")
+            .unwrap();
+        assert_eq!(sands.len(), 8);
+        assert!(sands[2..].iter().all(|packet| packet.contains("\"KID\":1")));
+        assert_eq!(session.phase(), SessionPhase::LoadingSands);
         session
             .on_server_text("%xt%gaa%1%0%{\"KID\":1,\"AI\":[]}%")
             .unwrap();
@@ -477,10 +516,9 @@ mod tests {
     }
 
     #[test]
-    fn recent_persisted_map_coverage_can_complete_setup_without_rescanning() {
+    fn cached_map_data_cannot_replace_live_navigation_proof() {
         let mut session = machine();
         session.phase = SessionPhase::LoadingSands;
-        session.accept_cached_map();
-        assert_eq!(session.phase(), SessionPhase::SandsReady);
+        assert_ne!(session.phase(), SessionPhase::SandsReady);
     }
 }

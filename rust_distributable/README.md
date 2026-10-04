@@ -137,6 +137,9 @@ cargo run -q -p empire-license-admin -- issue \
   --private admin/master_key.txt \
   --license-id local-four-day-test \
   --subject developer \
+  --server US1 \
+  --bootstrap-x 509 \
+  --bootstrap-y 405 \
   --days 4 \
   --revision 1
 ```

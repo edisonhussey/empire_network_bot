@@ -39,12 +39,15 @@ cargo run -q -p empire-license-admin -- issue \
   --private admin/master_key.txt \
   --license-id customer-alice \
   --subject alice@example.com \
+  --server US1 \
+  --bootstrap-x 509 \
+  --bootstrap-y 405 \
   --days 4 \
   --revision 1 \
   --output admin/alice-4-day.token
 ```
 
-The output file contains one `OA1.<payload>.<signature>` token and is created
+The output file contains one `OA2.<payload>.<signature>` stage-0 token and is created
 with mode `0600` on Unix. Omit `--output` to print it instead. The default feature set is
 `game_network,account_initialize,automation` and the default tier is `pro`.
 Use `--features` or `--tier` to override them.
@@ -59,6 +62,9 @@ cargo run -q -p empire-license-admin -- issue \
   --private admin/master_key.txt \
   --license-id customer-alice \
   --subject alice@example.com \
+  --server US1 \
+  --bootstrap-x 509 \
+  --bootstrap-y 405 \
   --days 365 \
   --revision 2 \
   --tier pro

@@ -79,6 +79,14 @@ pub struct StoredLicence {
     pub highest_seen_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LicenceActivation {
+    pub license_id: String,
+    pub server: String,
+    pub player_id: i64,
+    pub activated_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountSummary {
     pub account_id: String,
@@ -657,6 +665,47 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn licence_activation(
+        &self,
+        license_id: &str,
+    ) -> Result<Option<LicenceActivation>, sqlx::Error> {
+        let row = sqlx::query(
+            "SELECT license_id, server, player_id, activated_at
+             FROM licence_activation WHERE license_id = ?",
+        )
+        .bind(license_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| LicenceActivation {
+            license_id: row.get("license_id"),
+            server: row.get("server"),
+            player_id: row.get("player_id"),
+            activated_at: row.get("activated_at"),
+        }))
+    }
+
+    /// First binding is immutable. Renewals reuse the same licence id and
+    /// therefore the same permanent game identity.
+    pub async fn bind_licence(
+        &self,
+        activation: &LicenceActivation,
+        now_ms: i64,
+    ) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            "INSERT OR IGNORE INTO licence_activation (
+                license_id, server, player_id, activated_at, updated_at_ms
+             ) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&activation.license_id)
+        .bind(&activation.server)
+        .bind(activation.player_id)
+        .bind(activation.activated_at)
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 
     /// Write a small piece of cross-run state, such as the current run label.

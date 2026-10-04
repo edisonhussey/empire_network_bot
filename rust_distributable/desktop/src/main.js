@@ -93,6 +93,10 @@ function showApplication(licence) {
   activation.hidden = true;
   appShell.hidden = false;
   $("#licence-expiry").textContent = expiryLabel(licence.expires_at);
+  if (licence.stage === "unactivated") {
+    switchView("initialize");
+    $("#direct-result").textContent = "Access accepted. Initialize the matching account to activate this installation.";
+  }
 }
 
 async function refreshLicence() {
@@ -956,7 +960,7 @@ function sanitizedLogValue(value) {
   if (!value || typeof value !== "object") return value;
   const safe = {};
   for (const [key, child] of Object.entries(value)) {
-    safe[key] = /^(pw|password|lt|rct|token|login_token|registration_token)$/i.test(key) ? "[removed]" : sanitizedLogValue(child);
+    safe[key] = /^(pw|password|lt|rct|abt|abtv2|token|login_token|registration_token)$/i.test(key) ? "[removed]" : sanitizedLogValue(child);
   }
   return safe;
 }
@@ -1104,6 +1108,12 @@ async function refresh() {
     updateProgress(direct.phase);
     if (direct.error) $("#direct-result").textContent = direct.error;
     if (ready) { $("#initialize").disabled = false; $("#initialize").textContent = "Initialize account"; $("#direct-result").textContent = "Account connected and ready."; }
+    if (currentLicence?.stage === "unactivated") {
+      const licence = await api("/licence");
+      currentLicence = licence;
+      if (licence.stage === "unactivated") return;
+      showApplication(licence);
+    }
     const connectionKey = `${direct.connected}:${direct.account_id || ""}:${ready}`;
     if (connectionKey !== renderedConnectionKey) {
       // Connect and disconnect both rewrite the running flags, so the plan view
@@ -1170,7 +1180,7 @@ $("#recruit-bot-form").addEventListener("submit", async (event) => {
   catch (error) { $("#recruit-bot-result").textContent = error.message; }
 });
 
-$("#licence-form").addEventListener("submit", async (event) => { event.preventDefault(); $("#licence-result").textContent = "Checking your token…"; try { const licence = await api("/licence", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: $("#licence-token").value.trim() }) }); $("#licence-token").value = ""; showApplication(licence); await loadLibrary(); await refreshAccounts(); await refresh(); } catch (error) { $("#licence-result").textContent = error.message; } });
+$("#licence-form").addEventListener("submit", async (event) => { event.preventDefault(); $("#licence-result").textContent = "Checking your token…"; try { const licence = await api("/licence", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: $("#licence-token").value.trim() }) }); $("#licence-token").value = ""; showApplication(licence); if (licence.stage === "unactivated") return; await loadLibrary(); await refreshAccounts(); await refresh(); } catch (error) { $("#licence-result").textContent = error.message; } });
 $("#add-credits").addEventListener("click", () => showActivation(true));
 $("#close-activation").addEventListener("click", () => { if (currentLicence?.active) activation.hidden = true; });
 $("#toggle-password").addEventListener("click", (event) => { const password = $("#password"); const showing = password.type === "text"; password.type = showing ? "password" : "text"; event.currentTarget.textContent = showing ? "Show" : "Hide"; });
@@ -1208,6 +1218,7 @@ renderWave();
 updateScanEstimate();
 refreshLicence().then(async (active) => {
   if (!active) return;
+  if (currentLicence?.stage === "unactivated") return;
   try {
     await loadLibrary();
     await refreshAccounts();

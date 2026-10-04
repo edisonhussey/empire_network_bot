@@ -202,7 +202,7 @@ async fn direct_connect(
 ) -> Result<(StatusCode, Json<direct::DirectStatus>), ApiError> {
     state
         .licence
-        .require("game_network")
+        .require_bootstrap("game_network")
         .await
         .map_err(ApiError::forbidden)?;
     if !request.endpoint.starts_with("wss://") {
@@ -283,7 +283,7 @@ async fn health(State(state): State<AppState>) -> Json<Health> {
     let licence_active = state.licence.status().await.active;
     Json(Health {
         status: "ok",
-        api_version: 16,
+        api_version: 18,
         service_pid: std::process::id(),
         licence_active,
         transport_connected: state.active_transport.read().await.is_some(),
