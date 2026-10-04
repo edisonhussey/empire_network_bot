@@ -4,7 +4,7 @@ use sqlx::Row;
 use thiserror::Error;
 use uuid::Uuid;
 
-use super::Store;
+use super::{Store, canonical_account_id};
 use crate::planning::{
     Destination, ModeBundle, ModeTaskDraft, PlanError, SourceKind, TargetAlgorithm, TaskDraft,
     VENTRILO_SANDS_HBW,
@@ -402,6 +402,8 @@ impl Store {
         running: bool,
         now_ms: i64,
     ) -> Result<(), sqlx::Error> {
+        // Identity is case-insensitive; see `canonical_account_id`.
+        let account_id = canonical_account_id(account_id);
         let account_id = account_id.trim().to_ascii_lowercase();
         let available: i64 = sqlx::query_scalar(
             "SELECT COUNT(DISTINCT lord_id) FROM account_commander
@@ -465,6 +467,8 @@ impl Store {
         &self,
         account_id: &str,
     ) -> Result<Vec<ActiveModeTask>, sqlx::Error> {
+        // Identity is case-insensitive; see `canonical_account_id`.
+        let account_id = canonical_account_id(account_id);
         let rows = sqlx::query(
             "SELECT am.mode_id, mt.task_id, t.name, t.profile_id, p.payload_json,
                     t.kingdom_id, t.target_level_min, t.target_level_max,
@@ -481,14 +485,14 @@ impl Store {
              GROUP BY mt.task_id
              ORDER BY mt.position, t.priority, t.name COLLATE NOCASE",
         )
-        .bind(account_id)
+        .bind(&account_id)
         .fetch_all(&self.pool)
         .await?;
         if rows.is_empty() {
             return Ok(Vec::new());
         }
 
-        let roster = self.commander_lids(account_id).await?;
+        let roster = self.commander_lids(&account_id).await?;
         let usable = roster
             .into_iter()
             .filter(|lid| crate::hunt::USABLE_COMMANDER_LIDS.contains(lid))
@@ -532,10 +536,12 @@ impl Store {
     }
 
     pub async fn account_mode_running(&self, account_id: &str) -> Result<bool, sqlx::Error> {
+        // Identity is case-insensitive; see `canonical_account_id`.
+        let account_id = canonical_account_id(account_id);
         let running: Option<i64> = sqlx::query_scalar(
             "SELECT running FROM account_mode WHERE lower(account_id) = lower(?)",
         )
-        .bind(account_id)
+        .bind(&account_id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(running.is_some_and(|value| value != 0))
@@ -546,12 +552,14 @@ impl Store {
         account_id: &str,
         now_ms: i64,
     ) -> Result<(), sqlx::Error> {
+        // Identity is case-insensitive; see `canonical_account_id`.
+        let account_id = canonical_account_id(account_id);
         sqlx::query(
             "UPDATE account_mode SET running = 0, updated_at_ms = ?
              WHERE lower(account_id) = lower(?)",
         )
         .bind(now_ms)
-        .bind(account_id)
+        .bind(&account_id)
         .execute(&self.pool)
         .await?;
         Ok(())

@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -276,7 +276,104 @@ const V5: Migration = &[
      )",
 ];
 
-pub const MIGRATIONS: &[Migration] = &[V1, V2, V3, V4, V5];
+/// Reusable recruitment templates and castle-independent recruit bots.
+const V6: Migration = &[
+    "CREATE TABLE IF NOT EXISTS recruitment_template (
+        recruitment_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        troop_id INTEGER NOT NULL,
+        quantity INTEGER NOT NULL CHECK (quantity > 0),
+        slot_count INTEGER NOT NULL CHECK (slot_count BETWEEN 1 AND 5),
+        ask_alliance_help INTEGER NOT NULL DEFAULT 0,
+        lane_id INTEGER NOT NULL DEFAULT 0,
+        skill_id INTEGER NOT NULL DEFAULT 73,
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS recruit_bot (
+        recruit_bot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        algorithm TEXT NOT NULL CHECK (algorithm IN ('greedy', 'sporadic', 'advanced')),
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS recruit_bot_castle (
+        recruit_bot_id INTEGER NOT NULL,
+        account_id TEXT NOT NULL,
+        castle_id INTEGER NOT NULL,
+        recruitment_id TEXT NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (recruit_bot_id, castle_id),
+        FOREIGN KEY (recruit_bot_id) REFERENCES recruit_bot(recruit_bot_id) ON DELETE CASCADE,
+        FOREIGN KEY (recruitment_id) REFERENCES recruitment_template(recruitment_id) ON DELETE RESTRICT
+    )",
+    "CREATE TABLE IF NOT EXISTS account_recruit_bot (
+        account_id TEXT PRIMARY KEY,
+        recruit_bot_id INTEGER NOT NULL,
+        running INTEGER NOT NULL DEFAULT 0,
+        updated_at_ms INTEGER NOT NULL,
+        FOREIGN KEY (recruit_bot_id) REFERENCES recruit_bot(recruit_bot_id) ON DELETE CASCADE
+    )",
+];
+
+/// Canonicalise the account identity.
+///
+/// The account id is an identity, but it was written with whatever casing the
+/// caller happened to hold: the desktop session lowercases it, the command line
+/// hunter used the name as typed. Reads compare with `lower(account_id)`, so the
+/// two copies collapsed into one account with every castle, commander and target
+/// listed twice.
+///
+/// The profile is repaired first because children carry a foreign key to it.
+/// Where a lowercase row already describes the same thing, the duplicate is
+/// dropped; anything else is relabelled, so ledger history and learned targets
+/// survive.
+pub const V7: Migration = &[
+    "DELETE FROM account_profile WHERE account_id <> lower(account_id)
+       AND EXISTS (SELECT 1 FROM account_profile x
+                    WHERE x.account_id = lower(account_profile.account_id))",
+    "UPDATE account_profile SET account_id = lower(account_id)
+       WHERE account_id <> lower(account_id)",
+    "DELETE FROM owned_castle WHERE account_id <> lower(account_id)
+       AND EXISTS (SELECT 1 FROM owned_castle x
+                    WHERE x.account_id = lower(owned_castle.account_id)
+                      AND x.castle_id = owned_castle.castle_id)",
+    "DELETE FROM account_commander WHERE account_id <> lower(account_id)
+       AND EXISTS (SELECT 1 FROM account_commander x
+                    WHERE x.account_id = lower(account_commander.account_id)
+                      AND x.lord_id = account_commander.lord_id)",
+    "UPDATE owned_castle SET account_id = lower(account_id)
+       WHERE account_id <> lower(account_id)",
+    "UPDATE account_commander SET account_id = lower(account_id)
+       WHERE account_id <> lower(account_id)",
+    "UPDATE rbc_target SET account_id = lower(account_id)
+       WHERE account_id <> lower(account_id)
+         AND NOT EXISTS (SELECT 1 FROM rbc_target x
+                          WHERE x.account_id = lower(rbc_target.account_id)
+                            AND x.kingdom_id = rbc_target.kingdom_id
+                            AND x.x = rbc_target.x AND x.y = rbc_target.y)",
+    "DELETE FROM rbc_target WHERE account_id <> lower(account_id)",
+    "UPDATE attack_ledger SET account_id = lower(account_id)
+       WHERE account_id <> lower(account_id)",
+    "UPDATE commander_state SET account_id = lower(account_id)
+       WHERE account_id <> lower(account_id)",
+    "UPDATE account_navigation SET account_id = lower(account_id)
+       WHERE account_id <> lower(account_id)",
+    "UPDATE account_castle_unit SET account_id = lower(account_id)
+       WHERE account_id <> lower(account_id)",
+    "UPDATE recruit_castle_state SET account_id = lower(account_id)
+       WHERE account_id <> lower(account_id)",
+    "UPDATE account_mode SET account_id = lower(account_id)
+       WHERE account_id <> lower(account_id)",
+    "UPDATE map_scan_window SET account_id = lower(account_id)
+       WHERE account_id <> lower(account_id)",
+    "UPDATE recruit_bot_castle SET account_id = lower(account_id)
+       WHERE account_id <> lower(account_id)",
+    "UPDATE account_recruit_bot SET account_id = lower(account_id)
+       WHERE account_id <> lower(account_id)",
+];
+
+pub const MIGRATIONS: &[Migration] = &[V1, V2, V3, V4, V5, V6, V7];
 
 /// Every table that holds user data, for the storage report and full wipe.
 /// Order matters for deletion: children before parents.
@@ -287,6 +384,10 @@ pub const DATA_TABLES: &[&str] = &[
     "attack_ledger",
     "commander_state",
     "task_subscription",
+    "account_recruit_bot",
+    "recruit_bot_castle",
+    "recruit_bot",
+    "recruitment_template",
     "account_mode",
     "automation_mode_task",
     "automation_mode",

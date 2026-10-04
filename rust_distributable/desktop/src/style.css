@@ -208,14 +208,23 @@ output { min-height: 18px; color: #73737a; font-size: 11px; text-align: center; 
 .kingdom-health-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 8px; border-radius: 8px; background: #f6f7f9; }
 .kingdom-health-row b { font-size: 10px; }
 .kingdom-health-row span { margin: 0; color: #74747b; font-size: 9px; }
-.account-connection-control { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(120px, 1fr) auto 82px auto auto; align-items: center; gap: 7px; padding-top: 12px; border-top: 1px solid #ececf0; }
-.account-connection-control .list-label, .account-connection-control .connection-result { grid-column: 1 / -1; }
+.account-connection-control { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(140px, 1fr) auto; align-items: center; gap: 7px; padding-top: 12px; border-top: 1px solid #ececf0; }
+.account-connection-control .list-label, .account-connection-control .connection-result, .account-connection-control .connection-scan { grid-column: 1 / -1; }
 .account-connection-control input { min-width: 0; }
 .account-connection-control .connection-result { color: #85858b; font-size: 9px; }
+.connection-scan { display: flex; align-items: center; gap: 7px; }
+.connection-scan input { width: 82px; flex: 0 0 auto; }
+.connection-scan .mini-action { flex: 0 0 auto; }
 .account-mode-control { grid-column: 1 / -1; display: grid; gap: 7px; padding-top: 12px; border-top: 1px solid #ececf0; }
 .account-mode-control .mini-action { min-height: 42px; padding: 0 14px; font-size: 10px; }
 .account-mode-control .bot-state { margin: 0; color: #85858b; }
 .account-mode-control .bot-state.running { color: #18805d; }
+.account-mode-control > label { margin-top: 4px; color: #6f6f76; font-size: 10px; font-weight: 650; }
+.account-mode-control > select { width: 100%; }
+.recruit-estimate { margin: 0; color: #85858b; font-size: 9px; }
+.castle-queue { color: #4a6fa5 !important; }
+.bot-start-actions { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
+.bot-start-actions .bot-state { margin-left: auto; }
 .bot-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 9px 10px; border: 1px solid #e7e7eb; border-radius: 10px; background: #f8f9fb; }
 .bot-row b, .bot-row span { display: block; }
 .bot-row b { font-size: 11px; }
@@ -354,6 +363,14 @@ legend { padding: 0 5px; color: #66666d; font-size: 10px; font-weight: 700; }
 .import-card textarea { min-height: 170px; margin-top: 15px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; resize: vertical; }
 .import-card output { display: block; margin-top: 8px; text-align: left; }
 
+.castle-subscriptions { display: grid; max-height: 520px; gap: 7px; padding: 9px; overflow-y: auto; border: 1px solid #e0e0e4; border-radius: 12px; background: #fafafb; }
+.castle-account-label { margin: 8px 4px 1px; color: #2c64ad; font-size: 10px; font-weight: 750; text-transform: uppercase; letter-spacing: .06em; }
+.castle-subscription { display: grid; grid-template-columns: auto minmax(150px, 1fr) minmax(190px, .8fr); align-items: center; gap: 11px; padding: 11px; border: 1px solid #e4e5e9; border-radius: 10px; background: white; }
+.castle-subscription > input { width: 16px; height: 16px; margin: 0; }
+.castle-subscription b, .castle-subscription small { display: block; }
+.castle-subscription b { font-size: 11px; }.castle-subscription small { margin-top: 3px; color: #898990; font-size: 9px; }
+.castle-subscription select:disabled { color: #9999a0; background: #f0f0f2; }
+
 dialog { width: min(440px, calc(100vw - 40px)); padding: 21px; border: 1px solid rgba(0,0,0,.08); border-radius: 18px; background: rgba(255,255,255,.96); box-shadow: 0 28px 75px rgba(20,30,50,.24); backdrop-filter: blur(28px); }
 dialog::backdrop { background: rgba(25,31,43,.22); backdrop-filter: blur(4px); }
 .picker-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
@@ -378,8 +395,8 @@ dialog::backdrop { background: rgba(25,31,43,.22); backdrop-filter: blur(4px); }
   .dashboard-metrics { grid-template-columns: 1fr 1fr; }
   .dashboard-grid { grid-template-columns: 1fr; }
   .dashboard-wide { grid-column: auto; }
-  .account-connection-control { grid-template-columns: 1fr 1fr; }
-  .account-connection-control .danger-outline { grid-column: 1 / -1; }
+  .account-connection-control { grid-template-columns: 1fr; }
+  .connection-scan { flex-wrap: wrap; }
 }
 
 @media (prefers-reduced-motion: reduce) {

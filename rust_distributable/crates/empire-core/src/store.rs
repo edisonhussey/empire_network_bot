@@ -13,6 +13,7 @@ use crate::{
 mod config;
 mod ledger;
 mod modes;
+mod recruitment;
 mod schema;
 mod state;
 mod storage;
@@ -27,12 +28,26 @@ pub use ledger::{
     MARCH_SENT, MarchRecord, ScanActivity,
 };
 pub use modes::{AccountModeRecord, ActiveModeTask, ImportModeError, ModeRecord, TaskRuntime};
+pub use recruitment::{
+    AccountRecruitBot, ActiveRecruitment, OwnedCastleRecord, RecruitBot, RecruitBotCastle,
+    RecruitmentTemplate,
+};
 pub use schema::SCHEMA_VERSION;
 pub use state::{CastleUnit, NavigationState, RecruitCastleState};
 pub use storage::{PruneOutcome, StorageReport, TableFootprint};
 
-/// Extract the on-disk path from a sqlx SQLite URL, when there is one.
+/// The one true form of an account id.
 ///
+/// An account id is an identity, not a label: it is the foreign key shared by
+/// castles, commanders, targets and the attack ledger. Reads compare it with
+/// `lower(account_id)`, so every write has to agree on one casing or the same
+/// account appears twice. The player's own spelling is kept separately in
+/// `player_name` for display.
+pub fn canonical_account_id(account_id: &str) -> String {
+    account_id.trim().to_ascii_lowercase()
+}
+
+/// Extract the on-disk path from a sqlx SQLite URL, when there is one.///
 /// `sqlite::memory:` has no file, so the storage report and prune operations
 /// degrade to row counts only.
 fn database_path(url: &str) -> Option<PathBuf> {
@@ -152,6 +167,10 @@ impl Store {
         server_header: &str,
         now_ms: i64,
     ) -> Result<(), sqlx::Error> {
+        // The display name keeps its casing; the identity does not. Every read
+        // compares with `lower(account_id)`, so storing the caller's casing here
+        // would create a second copy of the same account.
+        let account_id = canonical_account_id(account_id);
         sqlx::query(
             "INSERT INTO account_profile (
                 account_id, player_name, endpoint, server_header, updated_at_ms
@@ -162,7 +181,7 @@ impl Store {
                 server_header = excluded.server_header,
                 updated_at_ms = excluded.updated_at_ms",
         )
-        .bind(account_id)
+        .bind(&account_id)
         .bind(player_name)
         .bind(endpoint)
         .bind(server_header)
@@ -179,13 +198,14 @@ impl Store {
         commanders: &[i64],
         now_ms: i64,
     ) -> Result<(), sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
         let mut tx = self.pool.begin().await?;
         sqlx::query("DELETE FROM owned_castle WHERE account_id = ?")
-            .bind(account_id)
+            .bind(&account_id)
             .execute(&mut *tx)
             .await?;
         sqlx::query("DELETE FROM account_commander WHERE account_id = ?")
-            .bind(account_id)
+            .bind(&account_id)
             .execute(&mut *tx)
             .await?;
         for castle in castles {
@@ -194,7 +214,7 @@ impl Store {
                     account_id, castle_id, kingdom_id, area_type, x, y, name, observed_at_ms
                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind(account_id)
+            .bind(&account_id)
             .bind(castle.castle_id)
             .bind(castle.kingdom_id)
             .bind(castle.area_type)
@@ -210,7 +230,7 @@ impl Store {
                 "INSERT INTO account_commander (account_id, ordinal, lord_id, observed_at_ms)
                  VALUES (?, ?, ?, ?)",
             )
-            .bind(account_id)
+            .bind(&account_id)
             .bind(i64::try_from(ordinal + 1).unwrap_or(i64::MAX))
             .bind(lord_id)
             .bind(now_ms)
@@ -223,7 +243,7 @@ impl Store {
         )
         .bind(now_ms)
         .bind(now_ms)
-        .bind(account_id)
+        .bind(&account_id)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -236,6 +256,8 @@ impl Store {
         targets: &[RbcTarget],
         now_ms: i64,
     ) -> Result<(), sqlx::Error> {
+        // Identity is case-insensitive; see `canonical_account_id`.
+        let account_id = canonical_account_id(account_id);
         let mut tx = self.pool.begin().await?;
         for target in targets {
             sqlx::query(
@@ -246,7 +268,7 @@ impl Store {
                     level = excluded.level,
                     observed_at_ms = excluded.observed_at_ms",
             )
-            .bind(account_id)
+            .bind(&account_id)
             .bind(target.kingdom_id)
             .bind(target.x)
             .bind(target.y)
@@ -266,6 +288,8 @@ impl Store {
         bounds: (i64, i64, i64, i64),
         now_ms: i64,
     ) -> Result<(), sqlx::Error> {
+        // Identity is case-insensitive; see `canonical_account_id`.
+        let account_id = canonical_account_id(account_id);
         sqlx::query(
             "INSERT INTO map_scan_window (
                 account_id, kingdom_id, ax1, ay1, ax2, ay2, scanned_at_ms
@@ -275,7 +299,7 @@ impl Store {
                 ay2 = excluded.ay2,
                 scanned_at_ms = excluded.scanned_at_ms",
         )
-        .bind(account_id)
+        .bind(&account_id)
         .bind(kingdom_id)
         .bind(bounds.0)
         .bind(bounds.1)
@@ -295,11 +319,13 @@ impl Store {
         ay1: i64,
         now_ms: i64,
     ) -> Result<bool, sqlx::Error> {
+        // Identity is case-insensitive; see `canonical_account_id`.
+        let account_id = canonical_account_id(account_id);
         let scanned_at: Option<i64> = sqlx::query_scalar(
             "SELECT scanned_at_ms FROM map_scan_window
              WHERE account_id = ? AND kingdom_id = ? AND ax1 = ? AND ay1 = ?",
         )
-        .bind(account_id)
+        .bind(&account_id)
         .bind(kingdom_id)
         .bind(ax1)
         .bind(ay1)
@@ -315,11 +341,13 @@ impl Store {
         account_id: &str,
         kingdom_id: i64,
     ) -> Result<bool, sqlx::Error> {
+        // Identity is case-insensitive; see `canonical_account_id`.
+        let account_id = canonical_account_id(account_id);
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM rbc_target
              WHERE lower(account_id) = lower(?) AND kingdom_id = ?",
         )
-        .bind(account_id)
+        .bind(&account_id)
         .bind(kingdom_id)
         .fetch_one(&self.pool)
         .await?;
@@ -340,6 +368,8 @@ impl Store {
         now_ms: i64,
         reserved_until_ms: i64,
     ) -> Result<Option<ReservedTarget>, sqlx::Error> {
+        // Identity is case-insensitive; see `canonical_account_id`.
+        let account_id = canonical_account_id(account_id);
         let rows = sqlx::query(
             "SELECT kingdom_id, x, y, level, last_attacked_ms
              FROM rbc_target
@@ -348,7 +378,7 @@ impl Store {
                AND (? IS NULL OR level >= ?)
                AND (? IS NULL OR level <= ?)",
         )
-        .bind(account_id)
+        .bind(&account_id)
         .bind(kingdom_id)
         .bind(now_ms)
         .bind(level_min)
@@ -384,7 +414,7 @@ impl Store {
                AND reserved_until_ms <= ?",
         )
         .bind(reserved_until_ms)
-        .bind(account_id)
+        .bind(&account_id)
         .bind(target.kingdom_id)
         .bind(target.x)
         .bind(target.y)
@@ -403,12 +433,14 @@ impl Store {
         target: &ReservedTarget,
         now_ms: i64,
     ) -> Result<(), sqlx::Error> {
+        // Identity is case-insensitive; see `canonical_account_id`.
+        let account_id = canonical_account_id(account_id);
         sqlx::query(
             "UPDATE rbc_target SET last_attacked_ms = ?
              WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND x = ? AND y = ?",
         )
         .bind(now_ms)
-        .bind(account_id)
+        .bind(&account_id)
         .bind(target.kingdom_id)
         .bind(target.x)
         .bind(target.y)

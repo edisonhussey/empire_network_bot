@@ -163,6 +163,17 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
         .route("/v1/plans/tasks/{id}", delete(plans::delete_task))
         .route("/v1/plans/modes", post(plans::create_mode))
         .route("/v1/plans/modes/{id}", delete(plans::delete_mode))
+        .route("/v1/plans/recruitments", post(plans::create_recruitment))
+        .route(
+            "/v1/plans/recruitments/{id}",
+            delete(plans::delete_recruitment),
+        )
+        .route("/v1/plans/recruit-bots", post(plans::create_recruit_bot))
+        .route(
+            "/v1/plans/recruit-bots/{id}",
+            delete(plans::delete_recruit_bot),
+        )
+        .route("/v1/plans/start", post(plans::start_bots))
         .route("/v1/plans/import", post(plans::import_mode))
         .route("/v1/plans/subscribe", post(plans::subscribe_mode))
         .route(
@@ -255,6 +266,10 @@ async fn initialize_account(
 async fn direct_disconnect(State(state): State<AppState>) -> StatusCode {
     if let Some(account_id) = state.direct_status.read().await.account_id.clone() {
         let _ = state.store.stop_account_mode(&account_id, now_ms()).await;
+        let _ = state
+            .store
+            .stop_account_recruit_bot(&account_id, now_ms())
+            .await;
     }
     if let Some(task) = state.direct_task.lock().await.take() {
         task.abort();
@@ -268,7 +283,7 @@ async fn health(State(state): State<AppState>) -> Json<Health> {
     let licence_active = state.licence.status().await.active;
     Json(Health {
         status: "ok",
-        api_version: 12,
+        api_version: 13,
         service_pid: std::process::id(),
         licence_active,
         transport_connected: state.active_transport.read().await.is_some(),

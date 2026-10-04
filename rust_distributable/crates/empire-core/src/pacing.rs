@@ -146,10 +146,15 @@ impl Waits {
 
     /// How long a returning commander is held before it may be sent again.
     ///
-    /// `U(10, 20)`, the Python's `COMMANDER_RETURN_HOLD_RANGE`. Held on top of the
-    /// return trip itself, not instead of it.
+    /// `U(5, 10)`. Held on top of the return trip itself, not instead of it.
     pub fn commander_return_hold(rng: &mut Rng) -> f64 {
-        rng.uniform(10.0, 20.0)
+        rng.uniform(5.0, 10.0)
+    }
+
+    /// Fallback when the result packet is missed because the socket closes:
+    /// outbound plus a 20% estimated return leg, then normal reuse jitter.
+    pub fn provisional_commander_hold(outbound_seconds: i64, rng: &mut Rng) -> f64 {
+        outbound_seconds.max(0) as f64 * 1.2 + Self::commander_return_hold(rng)
     }
 
     /// How long a freshly claimed target stays out of the selection pool.
@@ -187,13 +192,93 @@ pub mod target_retry {
     pub const BAD_LEVEL: (f64, f64) = (150.0 * 60.0, 240.0 * 60.0);
 }
 
+// ---------------------------------------------------------------------------
+// recruitment cadence
+// ---------------------------------------------------------------------------
+
+/// The observed client cadence, straight from
+/// `bot/utility/recruit/config.py::CastleRecruitEvent`.
+///
+/// The gap between two recruitment requests is Gaussian with mean 3.1 s and
+/// deviation 0.8 s, clamped to 0.5–6.0 s. Sampling each gap independently is the
+/// point: a fixed beat is the thing that looks automated.
+pub const RECRUIT_DELAY_MEAN: f64 = 3.1;
+pub const RECRUIT_DELAY_DEVIATION: f64 = 0.8;
+pub const RECRUIT_DELAY_LOW: f64 = 0.5;
+pub const RECRUIT_DELAY_HIGH: f64 = 6.0;
+
+/// How the gaps between recruitment requests are chosen.
+///
+/// This is a *timing* profile, not a way of choosing which castle to work on.
+/// What the server sees is the rhythm of the requests, so that is what the
+/// operator actually picks between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RecruitTempo {
+    /// As fast as the floor allows, for clearing queues in a hurry.
+    Greedy,
+    /// Flat random gaps with an occasional longer pause, so bursts never repeat.
+    Sporadic,
+    /// Bounded Gaussian, reproducing the recorded client. The default.
+    #[default]
+    Advanced,
+}
+
+impl RecruitTempo {
+    /// Names come from the database, so an unknown or empty value must fall back
+    /// to the default rather than failing a run that is already in progress.
+    pub fn from_name(name: &str) -> Self {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "greedy" => Self::Greedy,
+            "sporadic" => Self::Sporadic,
+            _ => Self::Advanced,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Greedy => "greedy",
+            Self::Sporadic => "sporadic",
+            Self::Advanced => "advanced",
+        }
+    }
+}
+
+/// One gap between two recruitment requests, in seconds.
+pub fn recruit_request_delay(tempo: RecruitTempo, rng: &mut Rng) -> f64 {
+    match tempo {
+        // Just above the floor, with enough movement that it is not a metronome.
+        RecruitTempo::Greedy => rng.uniform(RECRUIT_DELAY_LOW, RECRUIT_DELAY_LOW + 0.4),
+        RecruitTempo::Sporadic => {
+            if rng.unit() < 0.15 {
+                rng.uniform(RECRUIT_DELAY_HIGH, RECRUIT_DELAY_HIGH + 14.0)
+            } else {
+                rng.uniform(RECRUIT_DELAY_LOW, RECRUIT_DELAY_HIGH)
+            }
+        }
+        RecruitTempo::Advanced => rng
+            .normal(RECRUIT_DELAY_MEAN, RECRUIT_DELAY_DEVIATION)
+            .clamp(RECRUIT_DELAY_LOW, RECRUIT_DELAY_HIGH),
+    }
+}
+
+/// The pause before moving on to the next castle, using the same profile widened,
+/// because a castle change is a bigger step than the next slot in a queue.
+pub fn recruit_turn_delay(tempo: RecruitTempo, rng: &mut Rng) -> f64 {
+    match tempo {
+        RecruitTempo::Greedy => rng.uniform(RECRUIT_DELAY_LOW, RECRUIT_DELAY_LOW + 1.0),
+        RecruitTempo::Sporadic => rng.uniform(RECRUIT_DELAY_LOW, RECRUIT_DELAY_HIGH + 14.0),
+        RecruitTempo::Advanced => rng
+            .normal(RECRUIT_DELAY_MEAN * 2.0, RECRUIT_DELAY_DEVIATION * 2.0)
+            .clamp(RECRUIT_DELAY_LOW, RECRUIT_DELAY_HIGH * 2.0),
+    }
+}
+
 /// Current wall-clock seconds, matching the Python `time.time()` basis.
 pub fn now_seconds() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs_f64())
-        .unwrap_or_default()
-}
+        .unwrap_or_default()}
 
 #[cfg(test)]
 mod tests {
@@ -243,14 +328,23 @@ mod tests {
             assert!(Waits::scan_batch(&mut rng) >= 8.0);
             assert!(Waits::attack_send(&mut rng) >= 5.0);
             assert!(Waits::adi(&mut rng) >= 3.3);
-            assert!(Waits::commander_return_hold(&mut rng) >= 10.0);
-            assert!(Waits::commander_return_hold(&mut rng) <= 20.0);
+            assert!(Waits::commander_return_hold(&mut rng) >= 5.0);
+            assert!(Waits::commander_return_hold(&mut rng) <= 10.0);
         }
     }
 
     #[test]
     fn the_target_lease_is_twelve_minutes() {
         assert_eq!(Waits::target_reserve_seconds(), 720.0);
+    }
+
+    #[test]
+    fn missed_return_fallback_is_one_point_two_outbound_plus_small_jitter() {
+        let mut rng = Rng::seeded(91);
+        for _ in 0..100 {
+            let hold = Waits::provisional_commander_hold(500, &mut rng);
+            assert!((605.0..=610.0).contains(&hold));
+        }
     }
 
     #[test]
@@ -285,6 +379,107 @@ mod tests {
         for _ in 0..10_000 {
             let value = rng.uniform(-3.0, 7.0);
             assert!((-3.0..7.0).contains(&value), "{value} out of range");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // recruitment cadence
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn an_unset_or_unknown_tempo_falls_back_to_advanced() {
+        assert_eq!(RecruitTempo::from_name(""), RecruitTempo::Advanced);
+        assert_eq!(RecruitTempo::from_name("   "), RecruitTempo::Advanced);
+        assert_eq!(RecruitTempo::from_name("nonsense"), RecruitTempo::Advanced);
+        assert_eq!(RecruitTempo::default(), RecruitTempo::Advanced);
+        assert_eq!(
+            RecruitTempo::from_name("GREEDY").name(),
+            "greedy",
+            "names round-trip through the database in either direction"
+        );
+    }
+
+    /// `advanced` is the recorded client, so its shape is the one that matters:
+    /// mostly in the middle of the range, never outside it.
+    #[test]
+    fn the_advanced_cadence_is_a_bounded_gaussian() {
+        let mut rng = Rng::seeded(7);
+        let mut samples = Vec::new();
+        for _ in 0..20_000 {
+            let value = recruit_request_delay(RecruitTempo::Advanced, &mut rng);
+            assert!(
+                (RECRUIT_DELAY_LOW..=RECRUIT_DELAY_HIGH).contains(&value),
+                "{value} left the observed bounds"
+            );
+            samples.push(value);
+        }
+        let mean = samples.iter().sum::<f64>() / samples.len() as f64;
+        assert!(
+            (mean - RECRUIT_DELAY_MEAN).abs() < 0.1,
+            "mean {mean} should sit near the observed {RECRUIT_DELAY_MEAN}"
+        );
+    }
+
+    /// The point of the cadence is that it is not a metronome: a fixed beat is
+    /// what looks automated.
+    #[test]
+    fn no_tempo_repeats_a_fixed_gap() {
+        for tempo in [
+            RecruitTempo::Greedy,
+            RecruitTempo::Sporadic,
+            RecruitTempo::Advanced,
+        ] {
+            let mut rng = Rng::seeded(11);
+            let first = recruit_request_delay(tempo, &mut rng);
+            let repeats = (0..200)
+                .filter(|_| (recruit_request_delay(tempo, &mut rng) - first).abs() < f64::EPSILON)
+                .count();
+            assert!(
+                repeats < 5,
+                "{tempo:?} produced the same gap {repeats} times"
+            );
+        }
+    }
+
+    #[test]
+    fn greedy_is_the_fastest_and_sporadic_can_stretch_furthest() {
+        let mut rng = Rng::seeded(3);
+        let greedy = (0..2_000)
+            .map(|_| recruit_request_delay(RecruitTempo::Greedy, &mut rng))
+            .fold(0.0_f64, f64::max);
+        let advanced = (0..2_000)
+            .map(|_| recruit_request_delay(RecruitTempo::Advanced, &mut rng))
+            .fold(0.0_f64, f64::max);
+        let sporadic = (0..2_000)
+            .map(|_| recruit_request_delay(RecruitTempo::Sporadic, &mut rng))
+            .fold(0.0_f64, f64::max);
+        assert!(
+            greedy <= RECRUIT_DELAY_LOW + 0.4,
+            "greedy must stay near the floor, saw {greedy}"
+        );
+        assert!(sporadic > advanced, "sporadic must reach further than advanced");
+    }
+
+    #[test]
+    fn a_castle_change_pauses_longer_than_a_slot() {
+        for tempo in [
+            RecruitTempo::Greedy,
+            RecruitTempo::Sporadic,
+            RecruitTempo::Advanced,
+        ] {
+            let mut rng = Rng::seeded(5);
+            let turn = (0..500)
+                .map(|_| recruit_turn_delay(tempo, &mut rng))
+                .sum::<f64>()
+                / 500.0;
+            let slot = (0..500)
+                .map(|_| recruit_request_delay(tempo, &mut rng))
+                .sum::<f64>()
+                / 500.0;
+            assert!(
+                turn > slot,
+                "{tempo:?}: a castle change ({turn:.2}s) should outlast a slot ({slot:.2}s)"
+            );
         }
     }
 }

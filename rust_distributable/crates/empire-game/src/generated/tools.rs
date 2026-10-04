@@ -56,7 +56,10 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 391,
         name: "assault_flame_thrower_lvl_1",
-        attributes: &[("increase_unit_attack_strength_in_the_courtyard", 20), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            ("increase_unit_attack_strength_in_the_courtyard", 20),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 110,
@@ -166,32 +169,65 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 792,
         name: "bronze_magmatic_chrono_vial_all_sides",
-        attributes: &[("seconds_to_all_flanks_regeneration_cooldown_after_breaching", 30), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "seconds_to_all_flanks_regeneration_cooldown_after_breaching",
+                30,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 790,
         name: "bronze_magmatic_chrono_vial_gate",
-        attributes: &[("seconds_to_gate_regeneration_cooldown_after_breaching", 30), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            ("seconds_to_gate_regeneration_cooldown_after_breaching", 30),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 789,
         name: "bronze_magmatic_chrono_vial_left",
-        attributes: &[("seconds_to_left_wall_regeneration_cooldown_after_breaching", 30), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "seconds_to_left_wall_regeneration_cooldown_after_breaching",
+                30,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 791,
         name: "bronze_magmatic_chrono_vial_right",
-        attributes: &[("seconds_to_right_wall_regeneration_cooldown_after_breaching", 30), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "seconds_to_right_wall_regeneration_cooldown_after_breaching",
+                30,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 804,
         name: "bronze_magmatic_flintlock_gun",
-        attributes: &[("instantly_kills_dormant_rift_wyrmling_units_from_the_enemy_reserve", 1000), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "instantly_kills_dormant_rift_wyrmling_units_from_the_enemy_reserve",
+                1000,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 801,
         name: "bronze_magmatic_grenade_flask",
-        attributes: &[("instantly_kills_dormant_rift_egg_units_from_the_enemy_reserve", 5000), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "instantly_kills_dormant_rift_egg_units_from_the_enemy_reserve",
+                5000,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 810,
@@ -206,32 +242,65 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 979,
         name: "bronze_sporebane_flintlock_gun",
-        attributes: &[("instantly_kills_dormant_spore_cyst_units_from_the_enemy_reserve", 100000), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "instantly_kills_dormant_spore_cyst_units_from_the_enemy_reserve",
+                100000,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 976,
         name: "bronze_sporebane_grenade_flask",
-        attributes: &[("instantly_kills_dormant_spore_maw_units_from_the_enemy_reserve", 100000), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "instantly_kills_dormant_spore_maw_units_from_the_enemy_reserve",
+                100000,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 967,
         name: "bronze_sporeguard_chrono_vial_all_sides",
-        attributes: &[("seconds_to_all_flanks_regeneration_cooldown_after_breaching", 30), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "seconds_to_all_flanks_regeneration_cooldown_after_breaching",
+                30,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 965,
         name: "bronze_sporeguard_chrono_vial_gate",
-        attributes: &[("seconds_to_gate_regeneration_cooldown_after_breaching", 30), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            ("seconds_to_gate_regeneration_cooldown_after_breaching", 30),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 964,
         name: "bronze_sporeguard_chrono_vial_left",
-        attributes: &[("seconds_to_left_wall_regeneration_cooldown_after_breaching", 30), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "seconds_to_left_wall_regeneration_cooldown_after_breaching",
+                30,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 966,
         name: "bronze_sporeguard_chrono_vial_right",
-        attributes: &[("seconds_to_right_wall_regeneration_cooldown_after_breaching", 30), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "seconds_to_right_wall_regeneration_cooldown_after_breaching",
+                30,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 45,
@@ -416,7 +485,10 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 462,
         name: "explosive_arrows_lvl_1",
-        attributes: &[("kills_a_number_of_ranged_attackers_in_the_courtyard", 100), ("strength_in_courtyard_when_defending", 1)],
+        attributes: &[
+            ("kills_a_number_of_ranged_attackers_in_the_courtyard", 100),
+            ("strength_in_courtyard_when_defending", 1),
+        ],
     },
     ToolStats {
         id: 777,
@@ -476,7 +548,11 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 245,
         name: "fortified_ram_lvl_1",
-        attributes: &[("gate_reduction", 30), ("range_reduction", 15), ("tool_limit_per_wave", 5)],
+        attributes: &[
+            ("gate_reduction", 30),
+            ("range_reduction", 15),
+            ("tool_limit_per_wave", 5),
+        ],
     },
     ToolStats {
         id: 25,
@@ -496,7 +572,11 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 256,
         name: "glory_tower_lvl_1",
-        attributes: &[("glory_points", 1), ("range_reduction", 20), ("tool_limit_per_wave", 20)],
+        attributes: &[
+            ("glory_points", 1),
+            ("range_reduction", 20),
+            ("tool_limit_per_wave", 20),
+        ],
     },
     ToolStats {
         id: 163,
@@ -506,32 +586,65 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 800,
         name: "gold_magmatic_chrono_vial_all_sides",
-        attributes: &[("seconds_to_all_flanks_regeneration_cooldown_after_breaching", 270), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "seconds_to_all_flanks_regeneration_cooldown_after_breaching",
+                270,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 798,
         name: "gold_magmatic_chrono_vial_gate",
-        attributes: &[("seconds_to_gate_regeneration_cooldown_after_breaching", 270), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            ("seconds_to_gate_regeneration_cooldown_after_breaching", 270),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 797,
         name: "gold_magmatic_chrono_vial_left",
-        attributes: &[("seconds_to_left_wall_regeneration_cooldown_after_breaching", 270), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "seconds_to_left_wall_regeneration_cooldown_after_breaching",
+                270,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 799,
         name: "gold_magmatic_chrono_vial_right",
-        attributes: &[("seconds_to_right_wall_regeneration_cooldown_after_breaching", 270), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "seconds_to_right_wall_regeneration_cooldown_after_breaching",
+                270,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 806,
         name: "gold_magmatic_flintlock_gun",
-        attributes: &[("instantly_kills_dormant_rift_wyrmling_units_from_the_enemy_reserve", 50000), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "instantly_kills_dormant_rift_wyrmling_units_from_the_enemy_reserve",
+                50000,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 803,
         name: "gold_magmatic_grenade_flask",
-        attributes: &[("instantly_kills_dormant_rift_egg_units_from_the_enemy_reserve", 250000), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "instantly_kills_dormant_rift_egg_units_from_the_enemy_reserve",
+                250000,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 812,
@@ -546,32 +659,65 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 981,
         name: "gold_sporebane_flintlock_gun",
-        attributes: &[("instantly_kills_dormant_spore_cyst_units_from_the_enemy_reserve", 600000), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "instantly_kills_dormant_spore_cyst_units_from_the_enemy_reserve",
+                600000,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 978,
         name: "gold_sporebane_grenade_flask",
-        attributes: &[("instantly_kills_dormant_spore_maw_units_from_the_enemy_reserve", 600000), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "instantly_kills_dormant_spore_maw_units_from_the_enemy_reserve",
+                600000,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 975,
         name: "gold_sporeguard_chrono_vial_all_sides",
-        attributes: &[("seconds_to_all_flanks_regeneration_cooldown_after_breaching", 270), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "seconds_to_all_flanks_regeneration_cooldown_after_breaching",
+                270,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 973,
         name: "gold_sporeguard_chrono_vial_gate",
-        attributes: &[("seconds_to_gate_regeneration_cooldown_after_breaching", 270), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            ("seconds_to_gate_regeneration_cooldown_after_breaching", 270),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 972,
         name: "gold_sporeguard_chrono_vial_left",
-        attributes: &[("seconds_to_left_wall_regeneration_cooldown_after_breaching", 270), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "seconds_to_left_wall_regeneration_cooldown_after_breaching",
+                270,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 974,
         name: "gold_sporeguard_chrono_vial_right",
-        attributes: &[("seconds_to_right_wall_regeneration_cooldown_after_breaching", 270), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "seconds_to_right_wall_regeneration_cooldown_after_breaching",
+                270,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 73,
@@ -606,12 +752,18 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 579,
         name: "graveguard_potion",
-        attributes: &[("tool_limit_per_wave", 1), ("zombie_infection_rate_reduction", 5)],
+        attributes: &[
+            ("tool_limit_per_wave", 1),
+            ("zombie_infection_rate_reduction", 5),
+        ],
     },
     ToolStats {
         id: 580,
         name: "great_graveguard_potion",
-        attributes: &[("tool_limit_per_wave", 1), ("zombie_infection_rate_reduction", 15)],
+        attributes: &[
+            ("tool_limit_per_wave", 1),
+            ("zombie_infection_rate_reduction", 15),
+        ],
     },
     ToolStats {
         id: 643,
@@ -641,7 +793,11 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 381,
         name: "hand_cannon_lvl_1",
-        attributes: &[("increase_unit_attack_strength_in_the_courtyard", 1), ("kills_a_number_of_defenders_in_the_courtyard", 300), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            ("increase_unit_attack_strength_in_the_courtyard", 1),
+            ("kills_a_number_of_defenders_in_the_courtyard", 300),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 57,
@@ -671,7 +827,11 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 267,
         name: "hookshot_cannon_lvl_1",
-        attributes: &[("melee_attack", 1), ("tool_limit_per_wave", 20), ("wall_reduction", 25)],
+        attributes: &[
+            ("melee_attack", 1),
+            ("tool_limit_per_wave", 20),
+            ("wall_reduction", 25),
+        ],
     },
     ToolStats {
         id: 734,
@@ -701,7 +861,11 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 278,
         name: "hwacha_lvl_1",
-        attributes: &[("moat_reduction", 20), ("ranged_attack", 2), ("tool_limit_per_wave", 5)],
+        attributes: &[
+            ("moat_reduction", 20),
+            ("ranged_attack", 2),
+            ("tool_limit_per_wave", 5),
+        ],
     },
     ToolStats {
         id: 167,
@@ -896,7 +1060,10 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 451,
         name: "mobile_cauldron_lvl_1",
-        attributes: &[("kills_a_number_of_melee_attackers_in_the_courtyard", 100), ("strength_in_courtyard_when_defending", 1)],
+        attributes: &[
+            ("kills_a_number_of_melee_attackers_in_the_courtyard", 100),
+            ("strength_in_courtyard_when_defending", 1),
+        ],
     },
     ToolStats {
         id: 638,
@@ -931,7 +1098,11 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 370,
         name: "organ_cannon_lvl_1",
-        attributes: &[("increase_unit_attack_strength_in_the_courtyard", 1), ("kills_a_number_of_ranged_defenders_in_the_courtyard", 275), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            ("increase_unit_attack_strength_in_the_courtyard", 1),
+            ("kills_a_number_of_ranged_defenders_in_the_courtyard", 275),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 776,
@@ -961,7 +1132,10 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 581,
         name: "premium_graveguard_potion",
-        attributes: &[("tool_limit_per_wave", 1), ("zombie_infection_rate_reduction", 30)],
+        attributes: &[
+            ("tool_limit_per_wave", 1),
+            ("zombie_infection_rate_reduction", 30),
+        ],
     },
     ToolStats {
         id: 67,
@@ -1166,12 +1340,20 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 359,
         name: "shrapnel_bomb_lvl_1",
-        attributes: &[("increase_unit_attack_strength_in_the_courtyard", 1), ("kills_a_number_of_melee_defenders_in_the_courtyard", 275), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            ("increase_unit_attack_strength_in_the_courtyard", 1),
+            ("kills_a_number_of_melee_defenders_in_the_courtyard", 275),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 289,
         name: "siege_mortar_lvl_1",
-        attributes: &[("ranged_attack", 1), ("tool_limit_per_wave", 20), ("wall_reduction", 25)],
+        attributes: &[
+            ("ranged_attack", 1),
+            ("tool_limit_per_wave", 20),
+            ("wall_reduction", 25),
+        ],
     },
     ToolStats {
         id: 640,
@@ -1186,32 +1368,65 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 796,
         name: "silver_magmatic_chrono_vial_all_sides",
-        attributes: &[("seconds_to_all_flanks_regeneration_cooldown_after_breaching", 90), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "seconds_to_all_flanks_regeneration_cooldown_after_breaching",
+                90,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 794,
         name: "silver_magmatic_chrono_vial_gate",
-        attributes: &[("seconds_to_gate_regeneration_cooldown_after_breaching", 90), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            ("seconds_to_gate_regeneration_cooldown_after_breaching", 90),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 793,
         name: "silver_magmatic_chrono_vial_left",
-        attributes: &[("seconds_to_left_wall_regeneration_cooldown_after_breaching", 90), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "seconds_to_left_wall_regeneration_cooldown_after_breaching",
+                90,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 795,
         name: "silver_magmatic_chrono_vial_right",
-        attributes: &[("seconds_to_right_wall_regeneration_cooldown_after_breaching", 90), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "seconds_to_right_wall_regeneration_cooldown_after_breaching",
+                90,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 805,
         name: "silver_magmatic_flintlock_gun",
-        attributes: &[("instantly_kills_dormant_rift_wyrmling_units_from_the_enemy_reserve", 10000), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "instantly_kills_dormant_rift_wyrmling_units_from_the_enemy_reserve",
+                10000,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 802,
         name: "silver_magmatic_grenade_flask",
-        attributes: &[("instantly_kills_dormant_rift_egg_units_from_the_enemy_reserve", 50000), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "instantly_kills_dormant_rift_egg_units_from_the_enemy_reserve",
+                50000,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 811,
@@ -1226,32 +1441,65 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 980,
         name: "silver_sporebane_flintlock_gun",
-        attributes: &[("instantly_kills_dormant_spore_cyst_units_from_the_enemy_reserve", 250000), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "instantly_kills_dormant_spore_cyst_units_from_the_enemy_reserve",
+                250000,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 977,
         name: "silver_sporebane_grenade_flask",
-        attributes: &[("instantly_kills_dormant_spore_maw_units_from_the_enemy_reserve", 250000), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "instantly_kills_dormant_spore_maw_units_from_the_enemy_reserve",
+                250000,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 971,
         name: "silver_sporeguard_chrono_vial_all_sides",
-        attributes: &[("seconds_to_all_flanks_regeneration_cooldown_after_breaching", 90), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "seconds_to_all_flanks_regeneration_cooldown_after_breaching",
+                90,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 969,
         name: "silver_sporeguard_chrono_vial_gate",
-        attributes: &[("seconds_to_gate_regeneration_cooldown_after_breaching", 90), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            ("seconds_to_gate_regeneration_cooldown_after_breaching", 90),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 968,
         name: "silver_sporeguard_chrono_vial_left",
-        attributes: &[("seconds_to_left_wall_regeneration_cooldown_after_breaching", 90), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "seconds_to_left_wall_regeneration_cooldown_after_breaching",
+                90,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 970,
         name: "silver_sporeguard_chrono_vial_right",
-        attributes: &[("seconds_to_right_wall_regeneration_cooldown_after_breaching", 90), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            (
+                "seconds_to_right_wall_regeneration_cooldown_after_breaching",
+                90,
+            ),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 28,
@@ -1271,7 +1519,10 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 421,
         name: "spear_trap_lvl_1",
-        attributes: &[("kills_a_number_of_attackers_in_the_courtyard", 100), ("strength_in_courtyard_when_defending", 1)],
+        attributes: &[
+            ("kills_a_number_of_attackers_in_the_courtyard", 100),
+            ("strength_in_courtyard_when_defending", 1),
+        ],
     },
     ToolStats {
         id: 348,
@@ -1461,7 +1712,11 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 401,
         name: "warwagon_lvl_1",
-        attributes: &[("additional_waves", 1), ("combat_strength_when_attacking", 1), ("tool_limit_per_wave", 1)],
+        attributes: &[
+            ("additional_waves", 1),
+            ("combat_strength_when_attacking", 1),
+            ("tool_limit_per_wave", 1),
+        ],
     },
     ToolStats {
         id: 337,
@@ -1496,7 +1751,10 @@ pub static TOOLS: &[ToolStats] = &[
     ToolStats {
         id: 441,
         name: "wooden_hoarding_lvl_1",
-        attributes: &[("increase_strength_of_defense_units", 1), ("increase_the_wall_capacity_for_defenders", 20)],
+        attributes: &[
+            ("increase_strength_of_defense_units", 1),
+            ("increase_the_wall_capacity_for_defenders", 20),
+        ],
     },
     ToolStats {
         id: 130,

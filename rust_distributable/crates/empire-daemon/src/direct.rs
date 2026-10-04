@@ -5,12 +5,12 @@ use empire_core::{
     event::Direction,
     hunt::{self, MapTarget},
     injection::{InjectionRequest, channel},
-    pacing::{PacingPolicy, Rng, Waits},
-    protocol::parse_xt_packet,
+    pacing::{self, PacingPolicy, RecruitTempo, Rng, Waits},
+    protocol::{encode_client_xt, parse_xt_packet},
     session::{LoginCredentials, SessionMachine, SessionPhase, SessionSettings},
     store::{
-        ActiveModeTask, COMMANDER_OUTBOUND, CommanderState, HUNT_HEARTBEAT_KEY, MARCH_SENT,
-        MarchRecord, ReservedTarget, Store,
+        ActiveModeTask, ActiveRecruitment, COMMANDER_OUTBOUND, CommanderState, HUNT_HEARTBEAT_KEY,
+        MARCH_SENT, MarchRecord, RecruitCastleState, ReservedTarget, Store,
     },
 };
 use futures_util::{SinkExt, StreamExt};
@@ -129,6 +129,7 @@ pub async fn run(
     status.write().await.endpoint = Some(endpoint.clone());
     let result = run_inner(request, &store, &active_transport, &status, &licence).await;
     let _ = store.stop_account_mode(&account_id, now_ms()).await;
+    let _ = store.stop_account_recruit_bot(&account_id, now_ms()).await;
     *active_transport.write().await = None;
     let mut current = status.write().await;
     current.connected = false;
@@ -190,6 +191,7 @@ async fn run_inner(
     let mut entitlement_check = tokio::time::interval(Duration::from_secs(5));
     let mut automation_tick = tokio::time::interval(Duration::from_millis(250));
     let mut automation = Automation::new();
+    let mut recruitment = RecruitmentAutomation::new();
     heartbeat.tick().await;
     entitlement_check.tick().await;
     loop {
@@ -206,6 +208,7 @@ async fn run_inner(
                     observe_account_packet(store, &account_id, &text).await;
                     record_text(store, Direction::ServerToClient, &text).await;
                     automation.observe(store, &account_id, &text).await;
+                    recruitment.observe(store, &account_id, &text).await;
                     let frames = machine.on_server_text(&text)?;
                     status.write().await.phase = machine.phase();
                     let map_request_count = frames
@@ -278,14 +281,20 @@ async fn run_inner(
             }
             _ = automation_tick.tick() => {
                 if machine.phase() == SessionPhase::SandsReady {
-                    if let Some(packet) = automation
+                    let recruit_packet = if recruitment.holds_transport() || !automation.holds_transport() {
+                        recruitment.next_packet(store, &account_id, &request.settings.server_header).await?
+                    } else { None };
+                    if let Some(packet) = recruit_packet {
+                        record_safe_outbound(store, &account_id, &packet).await;
+                        sink.send(Message::Text(packet.into())).await?;
+                    } else if !recruitment.holds_transport() && let Some(packet) = automation
                             .next_packet(store, &account_id, &request.settings.server_header)
                             .await?
                     {
                         record_safe_outbound(store, &account_id, &packet).await;
                         sink.send(Message::Text(packet.into())).await?;
                     }
-                    let (bot_state, bot_detail) = automation.status();
+                    let (bot_state, bot_detail) = if recruitment.holds_transport() { ("recruiting", recruitment.detail.clone()) } else { automation.status() };
                     let mut current = status.write().await;
                     current.bot_state = bot_state.to_owned();
                     current.bot_detail = Some(bot_detail);
@@ -299,6 +308,363 @@ async fn run_inner(
 const REQUEST_TIMEOUT_MS: i64 = 40_000;
 const TARGET_LEASE_MS: i64 = 12 * 60 * 1_000;
 const COMMANDER_REJECT_HOLD_MS: i64 = 10 * 60 * 1_000;
+
+#[derive(Debug)]
+enum RecruitPhase {
+    Idle {
+        due_ms: i64,
+    },
+    AwaitCastle {
+        target: ActiveRecruitment,
+        deadline_ms: i64,
+    },
+    ReadyOrder {
+        target: ActiveRecruitment,
+        sent: i64,
+        due_ms: i64,
+    },
+    AwaitOrder {
+        target: ActiveRecruitment,
+        sent: i64,
+        deadline_ms: i64,
+    },
+    ReadyHelp {
+        target: ActiveRecruitment,
+        due_ms: i64,
+    },
+    AwaitHelp {
+        target: ActiveRecruitment,
+        deadline_ms: i64,
+    },
+    ReadyMap {
+        target: ActiveRecruitment,
+        due_ms: i64,
+    },
+    AwaitMap {
+        target: ActiveRecruitment,
+        deadline_ms: i64,
+    },
+}
+
+struct RecruitmentAutomation {
+    phase: RecruitPhase,
+    last_castle_switch_ms: i64,
+    rng: Rng,
+    detail: String,
+}
+
+impl RecruitmentAutomation {
+    fn new() -> Self {
+        Self {
+            phase: RecruitPhase::Idle { due_ms: 0 },
+            last_castle_switch_ms: 0,
+            rng: Rng::from_entropy(),
+            detail: "Recruit bot is stopped".to_owned(),
+        }
+    }
+
+    fn holds_transport(&self) -> bool {
+        !matches!(self.phase, RecruitPhase::Idle { .. })
+    }
+
+    async fn next_packet(
+        &mut self,
+        store: &Store,
+        account_id: &str,
+        server_header: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let now = now_ms();
+        let deadline = match &self.phase {
+            RecruitPhase::AwaitCastle { deadline_ms, .. }
+            | RecruitPhase::AwaitOrder { deadline_ms, .. }
+            | RecruitPhase::AwaitHelp { deadline_ms, .. }
+            | RecruitPhase::AwaitMap { deadline_ms, .. } => Some(*deadline_ms),
+            _ => None,
+        };
+        if deadline.is_some_and(|value| now >= value) {
+            self.detail = "Recruitment response timed out; retrying later".to_owned();
+            self.phase = RecruitPhase::Idle {
+                due_ms: now + 30_000,
+            };
+            return Ok(None);
+        }
+        match &self.phase {
+            RecruitPhase::ReadyOrder {
+                target,
+                sent,
+                due_ms,
+            } if now >= *due_ms => {
+                let packet = encode_client_xt(
+                    server_header,
+                    "bup",
+                    "1",
+                    &json!({
+                        "LID": target.lane_id, "WID": target.troop_id, "AMT": target.quantity,
+                        "PO": -1, "PWR": 0, "SK": target.skill_id,
+                        "SID": target.kingdom_id, "AID": target.castle_id
+                    }),
+                )?;
+                self.detail = format!(
+                    "Recruiting slot {} of {} at castle {}",
+                    sent + 1,
+                    target.slot_count,
+                    target.castle_id
+                );
+                self.phase = RecruitPhase::AwaitOrder {
+                    target: target.clone(),
+                    sent: *sent,
+                    deadline_ms: now + REQUEST_TIMEOUT_MS,
+                };
+                return Ok(Some(packet));
+            }
+            RecruitPhase::ReadyHelp { target, due_ms } if now >= *due_ms => {
+                let packet = encode_client_xt(
+                    server_header,
+                    "ahr",
+                    "1",
+                    &json!({"ID": target.lane_id, "T": 6}),
+                )?;
+                self.detail = format!("Requesting alliance help for castle {}", target.castle_id);
+                self.phase = RecruitPhase::AwaitHelp {
+                    target: target.clone(),
+                    deadline_ms: now + REQUEST_TIMEOUT_MS,
+                };
+                return Ok(Some(packet));
+            }
+            RecruitPhase::ReadyMap { target, due_ms } if now >= *due_ms => {
+                let ax1 = target.castle_x.div_euclid(13) * 13;
+                let ay1 = target.castle_y.div_euclid(13) * 13;
+                let packet = encode_client_xt(
+                    server_header,
+                    "gaa",
+                    "1",
+                    &json!({"KID": target.kingdom_id, "AX1": ax1, "AY1": ay1, "AX2": ax1 + 12, "AY2": ay1 + 12}),
+                )?;
+                self.detail = format!(
+                    "Restoring {} map context before attacks resume",
+                    target.kingdom_id
+                );
+                self.phase = RecruitPhase::AwaitMap {
+                    target: target.clone(),
+                    deadline_ms: now + REQUEST_TIMEOUT_MS,
+                };
+                return Ok(Some(packet));
+            }
+            RecruitPhase::ReadyOrder { .. }
+            | RecruitPhase::ReadyHelp { .. }
+            | RecruitPhase::ReadyMap { .. }
+            | RecruitPhase::AwaitCastle { .. }
+            | RecruitPhase::AwaitOrder { .. }
+            | RecruitPhase::AwaitHelp { .. }
+            | RecruitPhase::AwaitMap { .. } => return Ok(None),
+            RecruitPhase::Idle { due_ms } if now < *due_ms => return Ok(None),
+            RecruitPhase::Idle { .. } => {}
+        }
+
+        let targets = store.active_recruitments(account_id).await?;
+        if targets.is_empty() {
+            self.detail = "No running recruit bot for this account".to_owned();
+            self.phase = RecruitPhase::Idle {
+                due_ms: now + 2_000,
+            };
+            return Ok(None);
+        }
+        // Which castle to work on is a separate question from how fast to send,
+        // so it does not depend on the chosen cadence: take whichever queue is
+        // free and clears soonest, so no castle sits idle waiting its turn.
+        let Some(target) = targets
+            .iter()
+            .filter(|target| target.queue_clear_at_ms <= now)
+            .min_by_key(|target| (target.queue_clear_at_ms, target.castle_id))
+            .cloned()
+        else {
+            let next = targets
+                .iter()
+                .map(|target| target.queue_clear_at_ms)
+                .min()
+                .unwrap_or(now + 30_000);
+            self.detail = format!(
+                "Recruit queues busy; next estimate {}s",
+                next.saturating_sub(now) / 1_000
+            );
+            self.phase = RecruitPhase::Idle {
+                due_ms: next.max(now + 1_000),
+            };
+            return Ok(None);
+        };
+        let switch_due = (self.last_castle_switch_ms + 3_000).max(now);
+        if switch_due > now {
+            self.phase = RecruitPhase::Idle { due_ms: switch_due };
+            return Ok(None);
+        }
+        let packet = encode_client_xt(
+            server_header,
+            "jca",
+            "1",
+            &json!({"CID": target.castle_id, "KID": target.kingdom_id}),
+        )?;
+        self.last_castle_switch_ms = now;
+        self.detail = format!("Opening castle {} for recruitment", target.castle_id);
+        self.phase = RecruitPhase::AwaitCastle {
+            target,
+            deadline_ms: now + REQUEST_TIMEOUT_MS,
+        };
+        Ok(Some(packet))
+    }
+
+    async fn observe(&mut self, store: &Store, account_id: &str, raw: &str) {
+        let Ok(packet) = parse_xt_packet(raw) else {
+            return;
+        };
+        let now = now_ms();
+        if packet.status.as_deref().is_some_and(|status| status != "0") {
+            if self.holds_transport() {
+                self.detail = format!("Recruitment command {} rejected; retrying", packet.command);
+                self.phase = RecruitPhase::Idle {
+                    due_ms: now + 30_000,
+                };
+            }
+            return;
+        }
+        match packet.command.as_str() {
+            "jaa" => {
+                let RecruitPhase::AwaitCastle { target, .. } = std::mem::replace(
+                    &mut self.phase,
+                    RecruitPhase::Idle {
+                        due_ms: now + 30_000,
+                    },
+                ) else {
+                    return;
+                };
+                self.phase = RecruitPhase::ReadyOrder {
+                    target,
+                    sent: 0,
+                    due_ms: now + 1_500,
+                };
+            }
+            "bup" => {
+                let RecruitPhase::AwaitOrder { target, sent, .. } = std::mem::replace(
+                    &mut self.phase,
+                    RecruitPhase::Idle {
+                        due_ms: now + 30_000,
+                    },
+                ) else {
+                    return;
+                };
+                let spl = packet.payload.get("spl").unwrap_or(&packet.payload);
+                let total = spl
+                    .get("TCT")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(0)
+                    .max(0);
+                let active = spl
+                    .get("PS")
+                    .and_then(|v| v.get("TUA"))
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(0);
+                let queued = spl
+                    .get("QS")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|v| {
+                                v.get("P")
+                                    .and_then(|p| p.get("TUA"))
+                                    .and_then(serde_json::Value::as_i64)
+                            })
+                            .sum()
+                    })
+                    .unwrap_or(0);
+                let next_sent = sent + 1;
+                let queue_clear_at_ms = now + (total + 10) * 1_000;
+                let state = RecruitCastleState {
+                    account_id: account_id.to_owned(),
+                    castle_id: target.castle_id,
+                    task_id: Some(target.recruitment_id.clone()),
+                    queue_clear_at_ms,
+                    last_duration_s: total,
+                    last_request_at_ms: now,
+                    active_quantity: active,
+                    queued_quantity: queued,
+                    help_active: false,
+                    last_status: if next_sent >= target.slot_count {
+                        "queued"
+                    } else {
+                        "filling"
+                    }
+                    .to_owned(),
+                };
+                let _ = store.set_recruit_state(&state, now).await;
+                if next_sent < target.slot_count {
+                    // The gap between two slots is the operator's chosen cadence;
+                    // `advanced` reproduces the recorded client (bounded Gaussian).
+                    let tempo = RecruitTempo::from_name(&target.algorithm);
+                    let delay = pacing::recruit_request_delay(tempo, &mut self.rng);
+                    self.phase = RecruitPhase::ReadyOrder {
+                        target,
+                        sent: next_sent,
+                        due_ms: now + (delay * 1_000.0) as i64,
+                    };
+                } else if target.ask_alliance_help {
+                    self.phase = RecruitPhase::ReadyHelp {
+                        target,
+                        due_ms: now + 1_000,
+                    };
+                } else {
+                    self.phase = RecruitPhase::ReadyMap {
+                        target,
+                        due_ms: now + 1_000,
+                    };
+                }
+            }
+            "ahr" => {
+                let RecruitPhase::AwaitHelp { target, .. } = std::mem::replace(
+                    &mut self.phase,
+                    RecruitPhase::Idle {
+                        due_ms: now + 30_000,
+                    },
+                ) else {
+                    return;
+                };
+                if let Ok(mut states) = store.recruit_states(account_id).await
+                    && let Some(state) = states
+                        .iter_mut()
+                        .find(|state| state.castle_id == target.castle_id)
+                {
+                    state.help_active = true;
+                    state.last_status = "help_requested".to_owned();
+                    let _ = store.set_recruit_state(state, now).await;
+                }
+                self.phase = RecruitPhase::ReadyMap {
+                    target,
+                    due_ms: now + 1_000,
+                };
+            }
+            "gaa" => {
+                let RecruitPhase::AwaitMap { target, .. } = std::mem::replace(
+                    &mut self.phase,
+                    RecruitPhase::Idle {
+                        due_ms: now + 30_000,
+                    },
+                ) else {
+                    return;
+                };
+                // Same cadence, widened: a castle change is a bigger step than the
+                // next slot in the same queue.
+                let extra = pacing::recruit_turn_delay(
+                    RecruitTempo::from_name(&target.algorithm),
+                    &mut self.rng,
+                );
+                self.detail = format!("Castle {} queued; attacks may resume", target.castle_id);
+                self.phase = RecruitPhase::Idle {
+                    due_ms: now + (extra * 1_000.0) as i64,
+                };
+            }
+            _ => {}
+        }
+    }
+}
 
 #[derive(Debug)]
 enum AutomationPhase {
@@ -353,6 +719,10 @@ impl Automation {
             AutomationPhase::AwaitCra { .. } => "awaiting_attack_ack",
         };
         (state, self.detail.clone())
+    }
+
+    fn holds_transport(&self) -> bool {
+        !matches!(self.phase, AutomationPhase::Idle { .. })
     }
 
     async fn next_packet(
@@ -577,7 +947,9 @@ impl Automation {
                 };
                 let march_id = hunt::march_id_from_ack(&packet.payload).unwrap_or(now);
                 let travel = hunt::travel_seconds_from_ack(&packet.payload);
-                let available_after_ms = now + travel.unwrap_or(300).saturating_mul(2_000) + 45_000;
+                let available_after_ms = now
+                    + (Waits::provisional_commander_hold(travel.unwrap_or(300), &mut self.rng)
+                        * 1_000.0) as i64;
                 let march = MarchRecord {
                     account_id: account_id.to_owned(),
                     march_id,
@@ -641,6 +1013,22 @@ impl Automation {
                         now,
                     )
                     .await;
+                if let Some(seconds) = return_seconds {
+                    let available_after_ms = now
+                        + ((seconds.max(0) as f64 + Waits::commander_return_hold(&mut self.rng))
+                            * 1_000.0) as i64;
+                    let state = CommanderState {
+                        account_id: account_id.to_owned(),
+                        lord_id,
+                        status: COMMANDER_OUTBOUND.to_owned(),
+                        available_after_ms,
+                        march_id: None,
+                        target_key: Some(format!("{kingdom_id}:{x}:{y}")),
+                    };
+                    let _ = store.set_commander_state(&state, now).await;
+                    self.detail =
+                        format!("Commander {lord_id} returning for about {seconds}s before reuse");
+                }
             }
             _ => {}
         }

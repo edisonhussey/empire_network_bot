@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{Store, schema};
+use super::{Store, canonical_account_id, schema};
 
 /// Row count for one table.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -121,15 +121,17 @@ impl Store {
     /// Forgets everything learned about one account, keeping the account itself
     /// so it can simply be signed in again.
     pub async fn reset_account(&self, account_id: &str) -> Result<(), sqlx::Error> {
+        // Identity is case-insensitive; see `canonical_account_id`.
+        let account_id = canonical_account_id(account_id);
         let mut tx = self.pool.begin().await?;
         for table in ACCOUNT_TABLES {
             sqlx::query(&format!("DELETE FROM {table} WHERE account_id = ?"))
-                .bind(account_id)
+                .bind(&account_id)
                 .execute(&mut *tx)
                 .await?;
         }
         sqlx::query("UPDATE account_profile SET initialized_at_ms = NULL WHERE account_id = ?")
-            .bind(account_id)
+            .bind(&account_id)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;

@@ -13,11 +13,11 @@ pub mod attack;
 pub mod generated;
 
 pub use attack::{
-    Attack, AttackError, FlankSlots, LEFT_SLOTS, MIDDLE_SLOTS, RIGHT_SLOTS, Side, Slot, Wave,
-    EMPTY_SLOT,
+    Attack, AttackError, EMPTY_SLOT, FlankSlots, LEFT_SLOTS, MIDDLE_SLOTS, RIGHT_SLOTS, Side, Slot,
+    Wave,
 };
 pub use generated::kingdoms::{
-    BERIMOND_KINGDOM_ID, FIRE_KINGDOM_ID, GREEN_KINGDOM_ID, ICE_KINGDOM_ID, Kingdom, KINGDOMS,
+    BERIMOND_KINGDOM_ID, FIRE_KINGDOM_ID, GREEN_KINGDOM_ID, ICE_KINGDOM_ID, KINGDOMS, Kingdom,
     SAND_KINGDOM_ID, STORM_KINGDOM_ID, kingdom_by_id,
 };
 pub use generated::tools::{TOOLS, ToolStats, tool_by_id, tool_by_name};

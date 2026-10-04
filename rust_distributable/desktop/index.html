@@ -31,7 +31,9 @@
           <button data-view="attacks"><span class="nav-icon">⌁</span>Create attack</button>
           <button data-view="tasks"><span class="nav-icon">◇</span>Create task</button>
           <button data-view="modes"><span class="nav-icon">▦</span>Create mode</button>
-          <button data-view="accounts"><span class="nav-icon">●</span>Accounts</button>
+          <button data-view="recruitments"><span class="nav-icon">＋</span>Create recruitment</button>
+          <button data-view="recruit-bots"><span class="nav-icon">⌘</span>Create recruit bot</button>
+          <button data-view="accounts"><span class="nav-icon">●</span>Start</button>
           <button data-view="logs"><span class="nav-icon">≡</span>Logs</button>
         </nav>
         <div class="side-footer">
@@ -105,6 +107,31 @@
           <section class="card library-card"><div class="card-title"><div><p class="eyebrow">Mode library</p><h2>Saved modes</h2></div></div><div id="mode-library" class="library-list"></div></section>
         </section>
 
+        <section id="view-recruitments" class="view" hidden>
+          <section class="welcome-card compact-welcome"><div class="welcome-copy"><p class="eyebrow">Reusable recruitment</p><h2>Define an order once</h2><p>This object has no castle attached. A recruit bot decides which castles subscribe to it.</p></div></section>
+          <form id="recruitment-form" class="card task-form">
+            <div class="field wide"><label for="recruitment-name">Recruitment name</label><input id="recruitment-name" placeholder="e.g. Crossbow refill" required /></div>
+            <div class="field wide"><label for="recruitment-troop">Troop</label><div class="select-wrap"><select id="recruitment-troop" required></select></div></div>
+            <div class="field"><label for="recruitment-quantity">Quantity per slot</label><input id="recruitment-quantity" type="number" min="1" value="170" required /></div>
+            <div class="field"><label for="recruitment-slots">Queue slots</label><input id="recruitment-slots" type="number" min="1" max="5" value="5" required /></div>
+            <label class="source-default wide"><input id="recruitment-help" type="checkbox" checked /><span>Ask alliance for recruitment help</span></label>
+            <p class="field-hint wide">Each slot is sent separately and confirmed before the next. Queue completion comes from the server’s cumulative time estimate.</p>
+            <div class="form-actions wide"><output id="recruitment-result"></output><button class="primary-action" type="submit">Save recruitment</button></div>
+          </form>
+          <section class="card library-card"><div class="card-title"><div><p class="eyebrow">Recruitment library</p><h2>Saved recruitments</h2></div></div><div id="recruitment-library" class="library-list"></div></section>
+        </section>
+
+        <section id="view-recruit-bots" class="view" hidden>
+          <section class="welcome-card compact-welcome"><div class="welcome-copy"><p class="eyebrow">Castle subscriptions</p><h2>Build a recruit bot</h2><p>Each selected castle subscribes to exactly one reusable recruitment. Queue timing stays independent per castle.</p></div></section>
+          <form id="recruit-bot-form" class="card mode-builder">
+            <div class="builder-name"><label for="recruit-bot-name">Recruit bot name</label><input id="recruit-bot-name" placeholder="e.g. All castles crossbows" required /></div>
+            <div class="field wide"><label for="recruit-algorithm">Request timing</label><div class="select-wrap"><select id="recruit-algorithm"><option value="advanced">Advanced — randomised gaps, like the real client (default)</option><option value="sporadic">Sporadic — flat random gaps, occasional long pauses</option><option value="greedy">Greedy — as fast as the safe floor allows</option></select></div><p class="field-hint">Sets the gap between recruitment requests, so the cadence is not a fixed beat.</p></div>
+            <div><p class="list-label">Castle subscriptions</p><div id="recruit-castles" class="castle-subscriptions"></div></div>
+            <div class="form-actions"><output id="recruit-bot-result"></output><button class="primary-action" type="submit">Save recruit bot</button></div>
+          </form>
+          <section class="card library-card"><div class="card-title"><div><p class="eyebrow">Recruit bot library</p><h2>Saved recruit bots</h2></div></div><div id="recruit-bot-library" class="library-list"></div></section>
+        </section>
+
         <section id="view-accounts" class="view" hidden>
           <div id="account-onboarding">
           <section class="welcome-card"><div class="welcome-copy"><p class="eyebrow">Account setup</p><h2>Connect your kingdom</h2><p>Choose your server and sign in. OpenAuto discovers your castles and prepares everything automatically.</p></div><div class="readiness"><span>Setup status</span><strong id="phase">Ready to connect</strong></div></section>
@@ -113,7 +140,7 @@
             <section class="card progress-card"><p class="eyebrow">Automatic setup</p><h2>OpenAuto handles the rest</h2><div class="progress-list"><div><i>1</i><span><b>Sign in securely</b><small>Connect to your selected server</small></span></div><div><i>2</i><span><b>Discover your account</b><small>Find castles and available commanders</small></span></div><div><i>3</i><span><b>Prepare your map</b><small>Open Burning Sands and learn nearby targets</small></span></div></div></section>
           </div>
           </div>
-          <section class="card accounts-card"><div class="card-title"><div><p class="eyebrow">Your workspace</p><h2>Saved accounts</h2></div><button id="refresh-accounts" class="icon-button" type="button" aria-label="Refresh accounts">↻</button></div><div id="accounts" class="account-grid"><div class="empty-state"><i>＋</i><p>Your saved accounts will appear here.</p></div></div></section>
+          <section class="card accounts-card"><div class="card-title"><div><p class="eyebrow">Connection and automation</p><h2>Start</h2></div><button id="refresh-accounts" class="icon-button" type="button" aria-label="Refresh accounts">↻</button></div><div id="accounts" class="account-grid"><div class="empty-state"><i>＋</i><p>Your saved accounts will appear here.</p></div></div></section>
         </section>
 
         <section id="view-logs" class="view" hidden>

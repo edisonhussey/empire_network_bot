@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
-use super::Store;
+use super::{Store, canonical_account_id};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NavigationState {
@@ -84,12 +84,14 @@ impl Store {
         &self,
         account_id: &str,
     ) -> Result<Option<NavigationState>, sqlx::Error> {
+        // Identity is case-insensitive; see `canonical_account_id`.
+        let account_id = canonical_account_id(account_id);
         let row = sqlx::query(
             "SELECT account_id, current_kingdom_id, current_castle_id, map_mode,
                     recruit_page, last_castle_switch_at_ms
              FROM account_navigation WHERE account_id = ?",
         )
-        .bind(account_id)
+        .bind(&account_id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(|row| NavigationState {
@@ -163,12 +165,14 @@ impl Store {
         account_id: &str,
         castle_id: i64,
     ) -> Result<Vec<CastleUnit>, sqlx::Error> {
+        // Identity is case-insensitive; see `canonical_account_id`.
+        let account_id = canonical_account_id(account_id);
         let rows = sqlx::query(
             "SELECT account_id, castle_id, unit_id, quantity, source_command, observed_at_ms
              FROM account_castle_unit WHERE account_id = ? AND castle_id = ?
              ORDER BY unit_id",
         )
-        .bind(account_id)
+        .bind(&account_id)
         .bind(castle_id)
         .fetch_all(&self.pool)
         .await?;
@@ -189,13 +193,15 @@ impl Store {
         &self,
         account_id: &str,
     ) -> Result<Vec<RecruitCastleState>, sqlx::Error> {
+        // Identity is case-insensitive; see `canonical_account_id`.
+        let account_id = canonical_account_id(account_id);
         let rows = sqlx::query(
             "SELECT account_id, castle_id, task_id, queue_clear_at_ms, last_duration_s,
                     last_request_at_ms, active_quantity, queued_quantity, help_active,
                     last_status
              FROM recruit_castle_state WHERE account_id = ? ORDER BY castle_id",
         )
-        .bind(account_id)
+        .bind(&account_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(row_to_recruit_state).collect())

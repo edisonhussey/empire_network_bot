@@ -121,7 +121,10 @@ async fn run(config: Config) -> anyhow::Result<()> {
     let store = Store::open(&config.database_url)
         .await
         .context("failed to open the ledger database")?;
-    let account_id = config.credentials.player_name.clone();
+    // The account id is a shared key, not a label: using the name as typed here
+    // while the desktop used its lowercase form created a second copy of the
+    // account, with every castle and commander listed twice.
+    let account_id = empire_core::store::canonical_account_id(&config.credentials.player_name);
     store
         .set_app_state("hunt.label", &serde_json::json!(config.label), now_ms())
         .await
@@ -270,10 +273,7 @@ async fn handshake(
     stream: &mut Stream,
     config: &Config,
 ) -> anyhow::Result<((i64, i64), Vec<i64>)> {
-    let mut machine = SessionMachine::new(
-        config.credentials.clone(),
-        config.settings.clone(),
-    );
+    let mut machine = SessionMachine::new(config.credentials.clone(), config.settings.clone());
     for frame in machine.on_connected() {
         sink.send(Message::Text(frame.into())).await?;
     }
@@ -285,17 +285,17 @@ async fn handshake(
 
     while machine.phase() != SessionPhase::SandsReady {
         if Instant::now() >= deadline {
-            bail!(
-                "handshake timed out at phase {:?}",
-                machine.phase()
-            );
+            bail!("handshake timed out at phase {:?}", machine.phase());
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         let Some(text) = tokio::time::timeout(remaining, read_frame(stream))
             .await
             .unwrap_or(None)
         else {
-            bail!("socket closed during handshake at phase {:?}", machine.phase());
+            bail!(
+                "socket closed during handshake at phase {:?}",
+                machine.phase()
+            );
         };
 
         if let Ok(packet) = parse_xt_packet(&text) {
@@ -380,7 +380,9 @@ async fn restore_busy_commanders(store: &Store) -> HashMap<i64, f64> {
         Err(_) => return busy,
     };
     for march in open {
-        let Some(lord_id) = march.lord_id else { continue };
+        let Some(lord_id) = march.lord_id else {
+            continue;
+        };
         if march.status != MARCH_SENT {
             // A returning march has already resolved, so the lord is nearly free.
             continue;
@@ -388,7 +390,8 @@ async fn restore_busy_commanders(store: &Store) -> HashMap<i64, f64> {
         let travel = march
             .duration_s
             .map_or(ASSUMED_TRAVEL_SECONDS, |seconds| seconds as f64);
-        let expected_back = march.sent_at_ms as f64 / 1000.0 + travel * 2.0 + COMMANDER_RETURN_SLACK;
+        let expected_back =
+            march.sent_at_ms as f64 / 1000.0 + travel * 2.0 + COMMANDER_RETURN_SLACK;
         if expected_back > now {
             busy.insert(lord_id, expected_back);
         }
@@ -440,7 +443,10 @@ async fn hunt_loop(
     println!(
         "SCAN_DONE targets={} levels={:?}",
         targets.len(),
-        targets.iter().filter_map(|target| target.level).collect::<Vec<_>>()
+        targets
+            .iter()
+            .filter_map(|target| target.level)
+            .collect::<Vec<_>>()
     );
 
     loop {
@@ -600,7 +606,16 @@ async fn hunt_loop(
         // 3. Respect the pacing floor, then commit.
         let payload = task_payload(task.definition.attack, &watch)?;
         let due = policy.cra_due_at(now_seconds(), last_cra_at, &mut rng);
-        collect_until(stream, store, account_id, &mut busy_at, &mut rng, &mut targets, due).await?;
+        collect_until(
+            stream,
+            store,
+            account_id,
+            &mut busy_at,
+            &mut rng,
+            &mut targets,
+            due,
+        )
+        .await?;
         let now = now_seconds();
         if now < policy.hard_cra_due_at(last_cra_at) {
             bail!("refusing to send cra inside the floor window");
@@ -677,8 +692,10 @@ async fn hunt_loop(
             target.key()
         );
         // Held for the round trip, plus a margin for the return to be processed.
-        let round_trip = travel.map(|seconds| seconds as f64 * 2.0).unwrap_or(600.0);
-        busy_at.insert(lord_id, now_seconds() + round_trip + 45.0);
+        let hold = travel.map_or(600.0, |seconds| {
+            pacing::Waits::provisional_commander_hold(seconds, &mut rng)
+        });
+        busy_at.insert(lord_id, now_seconds() + hold);
         store
             .record_march(&MarchRecord {
                 account_id: account_id.to_owned(),
@@ -709,7 +726,16 @@ async fn hunt_loop(
         // 5. Let the return arrive while staying responsive.
         let settle = policy.after_cra_ack(&mut rng);
         let hold = now_seconds() + settle + pacing::Waits::attack_send(&mut rng);
-        collect_until(stream, store, account_id, &mut busy_at, &mut rng, &mut targets, hold).await?;
+        collect_until(
+            stream,
+            store,
+            account_id,
+            &mut busy_at,
+            &mut rng,
+            &mut targets,
+            hold,
+        )
+        .await?;
     }
 }
 
@@ -731,8 +757,12 @@ async fn scan(
     for batch in tiles.chunks(6) {
         for origin in batch {
             sink.send(Message::Text(
-                hunt::gaa_packet(&config.settings.server_header, config.level_kingdom(), *origin)?
-                    .into(),
+                hunt::gaa_packet(
+                    &config.settings.server_header,
+                    config.level_kingdom(),
+                    *origin,
+                )?
+                .into(),
             ))
             .await?;
         }
@@ -810,9 +840,7 @@ impl Inbound {
     fn matches(&self, expecting: &str) -> bool {
         matches!(
             (expecting, self),
-            ("adi", Inbound::Adi(_))
-                | ("cra", Inbound::CraAck { .. })
-                | (_, Inbound::Rejected(_))
+            ("adi", Inbound::Adi(_)) | ("cra", Inbound::CraAck { .. }) | (_, Inbound::Rejected(_))
         )
     }
 }
@@ -1062,9 +1090,8 @@ fn task_payload(shape: hunt::AttackShape, watch: &Watch) -> anyhow::Result<Value
                 };
                 Ok(Side::new(tools, vec![Slot::new(unit_id, count)?]))
             };
-            let wave = || -> anyhow::Result<Wave> {
-                Ok(Wave::new(Some(flank()?), None, Some(flank()?)))
-            };
+            let wave =
+                || -> anyhow::Result<Wave> { Ok(Wave::new(Some(flank()?), None, Some(flank()?))) };
             let attack = Attack::new(wave()?, Some(wave()?), Some(wave()?), Some(wave()?));
             Ok(serde_json::to_value(attack.to_payload()?)?)
         }
@@ -1112,7 +1139,8 @@ impl Config {
             .map(|pair| pair[1].clone())
             .or_else(|| value("HUNT_LABEL", "hunt_label"))
             .unwrap_or_else(|| "default".to_owned());
-        let password = value("GGE_PASSWORD", "password");        let login_token = value("GGE_LOGIN_TOKEN", "login_token");
+        let password = value("GGE_PASSWORD", "password");
+        let login_token = value("GGE_LOGIN_TOKEN", "login_token");
         if password.is_none() && login_token.is_none() {
             bail!("set GGE_PASSWORD or GGE_LOGIN_TOKEN");
         }
@@ -1161,7 +1189,11 @@ fn read_ini(path: &str) -> anyhow::Result<HashMap<String, String>> {
             continue;
         }
         if let Some((key, raw_value)) = line.split_once('=') {
-            let value = raw_value.split(['#', ';']).next().unwrap_or_default().trim();
+            let value = raw_value
+                .split(['#', ';'])
+                .next()
+                .unwrap_or_default()
+                .trim();
             if !value.is_empty() {
                 values.insert(key.trim().to_ascii_lowercase(), value.to_owned());
             }

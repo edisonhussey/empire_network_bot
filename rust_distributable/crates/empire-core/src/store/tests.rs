@@ -1046,3 +1046,115 @@ async fn a_running_mode_compiles_tasks_and_reserves_each_target_once() {
     store.stop_account_mode("Ventrilo", NOW + 1).await.unwrap();
     assert!(!store.account_mode_running("ventrilo").await.unwrap());
 }
+
+// ---------------------------------------------------------------------------
+// account identity
+// ---------------------------------------------------------------------------
+
+/// An account id is a key shared by castles, commanders, targets and the ledger.
+/// Two casings of the same name used to produce two accounts, which is why every
+/// castle appeared twice in the app.
+#[tokio::test]
+async fn the_same_account_written_with_two_casings_stays_one_account() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    store
+        .upsert_account_profile("Ventrilo", "Ventrilo", "wss://example/", "EmpireEx_21", NOW + 1)
+        .await
+        .unwrap();
+    store
+        .replace_account_bootstrap(
+            "Ventrilo",
+            &[OwnedCastle {
+                kingdom_id: 0,
+                castle_id: 16_011_862,
+                area_type: 1,
+                x: 509,
+                y: 405,
+                name: "._.".to_owned(),
+            }],
+            &[7, 8],
+            NOW + 1,
+        )
+        .await
+        .unwrap();
+
+    let summaries = store.account_summaries().await.unwrap();
+    assert_eq!(summaries.len(), 1, "one account, not one per casing");
+    assert_eq!(summaries[0].account_id, "ventrilo");
+    assert_eq!(
+        summaries[0].player_name, "Ventrilo",
+        "the player's own spelling is still kept for display"
+    );
+
+    // The second bootstrap replaced the first, rather than adding a parallel set.
+    let castles: Vec<i64> = store
+        .owned_castles()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|castle| castle.account_id == "ventrilo")
+        .map(|castle| castle.castle_id)
+        .collect();
+    assert_eq!(castles, vec![16_011_862]);
+    assert_eq!(store.commander_lids("ventrilo").await.unwrap(), vec![7, 8]);
+}
+
+/// The migration has to repair a database that already has both spellings,
+/// without losing ledger history.
+#[tokio::test]
+async fn the_identity_migration_folds_existing_duplicate_rows() {
+    let db = TempDb::new("identity-migration");
+    let store = db.open().await;
+    // The lowercase account is the one the session maintains, and it is set up.
+    seed_account(&store, "legacy").await;
+    let path = db.path.clone();
+    drop(store);
+
+    let pool = SqlitePoolOptions::new()
+        .connect(&db.url)
+        .await
+        .unwrap();
+    // Now add what the old hunter wrote: a second profile, a second copy of the
+    // same castle, and a ledger row that has no lowercase twin and must survive.
+    for sql in [
+        "INSERT INTO account_profile (account_id, player_name, endpoint, server_header, updated_at_ms, initialized_at_ms) VALUES ('Legacy', 'Legacy', 'wss://example/', 'EmpireEx_21', 1, 1)",
+        "INSERT INTO owned_castle (account_id, castle_id, kingdom_id, area_type, x, y, name, observed_at_ms) VALUES ('Legacy', 100, 1, 1, 572, 598, 'main', 1)",
+        "INSERT INTO attack_ledger (account_id, march_id, kingdom_id, x, y, status, sent_at_ms) VALUES ('Legacy', 5, 1, 2, 2, 'sent', 1)",
+    ] {
+        sqlx::query(sql).execute(&pool).await.unwrap();
+    }
+    // Rewind the recorded version so only the identity migration runs again, the
+    // way it will for a database that predates it.
+    sqlx::query("UPDATE schema_version SET version = 6 WHERE singleton = 1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+
+    let repaired = Store::open(&format!("sqlite://{}?mode=rwc", path.display()))
+        .await
+        .unwrap();
+    let summaries = repaired.account_summaries().await.unwrap();
+    assert_eq!(summaries.len(), 1, "the duplicate account is folded away");
+    assert_eq!(summaries[0].account_id, "legacy");
+    let castles: Vec<i64> = repaired
+        .owned_castles()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|castle| castle.castle_id)
+        .collect();
+    assert_eq!(
+        castles,
+        vec![100],
+        "the castle is listed once, not once per casing"
+    );
+    let marches = repaired.recent_marches_all(10).await.unwrap();
+    assert_eq!(
+        marches.len(),
+        1,
+        "history written under the other casing survives"
+    );
+    assert_eq!(marches[0].account_id, "legacy");
+}

@@ -3,7 +3,7 @@ const $ = (selector) => document.querySelector(selector);
 const activation = $("#activation");
 const appShell = $("#app-shell");
 let currentLicence = null;
-let library = { catalog: [], kingdoms: [], attacks: [], tasks: [], task_runtimes: [], subscriptions: [], modes: [], account_modes: [] };
+let library = { catalog: [], kingdoms: [], attacks: [], tasks: [], task_runtimes: [], subscriptions: [], modes: [], account_modes: [], recruitments: [], recruit_bots: [], account_recruit_bots: [], castles: [] };
 let connectedAccounts = [];
 let activeWave = 0;
 let priority = "medium";
@@ -81,7 +81,7 @@ async function refreshLicence() {
 function switchView(name) {
   document.querySelectorAll(".view").forEach((view) => { view.hidden = view.id !== `view-${name}`; });
   document.querySelectorAll("nav [data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === name));
-  const titles = { dashboard: ["Overview", "Dashboard"], attacks: ["Plan builder", "Create attack"], tasks: ["Plan builder", "Create task"], modes: ["Plan builder", "Create mode"], accounts: ["Workspace", "Accounts"], logs: ["Diagnostics", "Logs"] };
+  const titles = { dashboard: ["Overview", "Dashboard"], attacks: ["Plan builder", "Create attack"], tasks: ["Plan builder", "Create task"], modes: ["Plan builder", "Create mode"], recruitments: ["Recruitment", "Create recruitment"], "recruit-bots": ["Recruitment", "Create recruit bot"], accounts: ["Workspace", "Start"], logs: ["Diagnostics", "Logs"] };
   [$("#page-eyebrow").textContent, $("#page-title").textContent] = titles[name];
 }
 
@@ -115,6 +115,65 @@ function kingdomName(name) {
     berimond_kingdom: "Berimond",
   };
   return names[name] || humanize(name);
+}
+
+/// A short wait, for "clears in 12m" style copy.
+function humanWait(ms) {
+  if (!ms || ms <= 0) return "now";
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 90) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+/// Age of a timestamp, for "last used 2h ago".
+function relativeTime(ms) {
+  if (!ms) return "never";
+  const seconds = Math.max(0, (Date.now() - ms) / 1000);
+  if (seconds < 90) return "just now";
+  const minutes = seconds / 60;
+  if (minutes < 90) return `${Math.round(minutes)}m ago`;
+  const hours = minutes / 60;
+  if (hours < 36) return `${Math.round(hours)}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+/// The cadence names are about request timing, so say that rather than echoing
+/// the stored word.
+function tempoLabel(value) {
+  const names = { greedy: "fast gaps", sporadic: "sporadic gaps", advanced: "randomised gaps" };
+  return names[value] || humanize(value);
+}
+
+/// The server's own estimate for one castle's recruitment queue.
+function recruitStateFor(accountId, castleId) {
+  return (library.recruit_states || []).find(
+    (value) => value.account_id.toLowerCase() === String(accountId).toLowerCase() && value.castle_id === castleId,
+  );
+}
+
+/// What a castle's queue is doing, in the server's own terms. `TCT` is already
+/// cumulative, so it is used directly rather than multiplied by slot count.
+function recruitStateLabel(state) {
+  const busy = state && (state.queue_clear_at_ms || state.active_quantity || state.queued_quantity);
+  if (!busy) return "Queue empty — nothing recruited yet";
+  const parts = [`${(state.active_quantity || 0) + (state.queued_quantity || 0)} queued`];
+  const wait = state.queue_clear_at_ms - Date.now();
+  parts.push(wait > 0 ? `clears in ${humanWait(wait)}` : "ready to refill");
+  if (state.help_active) parts.push("alliance helping");
+  return parts.join(" · ");
+}
+
+/// The soonest moment any castle in this recruit bot becomes free again.
+function soonestCastleClear(bot) {
+  const waits = bot.castles
+    .map((subscription) => recruitStateFor(subscription.account_id, subscription.castle_id))
+    .filter(Boolean)
+    .map((state) => state.queue_clear_at_ms - Date.now())
+    .filter((wait) => wait > 0);
+  return waits.length ? Math.min(...waits) : 0;
 }
 
 function renderKingdoms() {
@@ -434,15 +493,73 @@ function renderModes() {
   if (!library.modes.length) container.append(element("p", "empty-copy", "No modes saved yet."));
 }
 
+function renderRecruitmentBuilder() {
+  const select = $("#recruitment-troop");
+  const previous = select.value;
+  const troops = library.catalog.filter((item) => item.kind === "troop").sort((a, b) => a.name.localeCompare(b.name));
+  select.replaceChildren(...troops.map((troop) => { const option = element("option", "", humanize(troop.name)); option.value = troop.id; return option; }));
+  if (troops.some((item) => String(item.id) === previous)) select.value = previous;
+
+  const list = $("#recruitment-library");
+  list.replaceChildren(...library.recruitments.map((value) => {
+    const row = element("article", "library-row");
+    const identity = element("div"); identity.append(element("b", "", value.name), element("small", "", `${itemName(value.troop_id)} · ${value.quantity} × ${value.slot_count} slots${value.ask_alliance_help ? " · alliance help" : ""}`));
+    const actions = element("span", "row-actions"); actions.append(actionButton("Delete", async () => { await fetch(`${API}/plans/recruitments/${value.recruitment_id}`, { method: "DELETE" }); await loadLibrary(); }, true));
+    row.append(identity, actions); return row;
+  }));
+  if (!library.recruitments.length) list.append(element("p", "empty-copy", "No recruitment objects saved yet."));
+
+  const castles = $("#recruit-castles"); castles.replaceChildren();
+  for (const account of connectedAccounts) {
+    const heading = element("p", "castle-account-label", account.player_name);
+    castles.append(heading);
+    for (const castle of library.castles.filter((value) => value.account_id.toLowerCase() === account.account_id.toLowerCase())) {
+      const row = element("label", "castle-subscription");
+      const enabled = document.createElement("input"); enabled.type = "checkbox"; enabled.dataset.castleId = castle.castle_id; enabled.dataset.accountId = account.account_id;
+      const name = element("span"); name.append(
+        element("b", "", castle.name || `Castle ${castle.castle_id}`),
+        element("small", "", `${kingdomName((library.kingdoms.find((value) => value.id === castle.kingdom_id) || fallbackKingdoms.find((value) => value.id === castle.kingdom_id))?.name || `Kingdom ${castle.kingdom_id}`)} · ${castle.x}:${castle.y}`),
+        element("small", "castle-queue", recruitStateLabel(recruitStateFor(account.account_id, castle.castle_id))),
+      );
+      const assignment = document.createElement("select"); assignment.disabled = true; assignment.dataset.assignmentFor = castle.castle_id;
+      assignment.append(...library.recruitments.map((value) => { const option = element("option", "", value.name); option.value = value.recruitment_id; return option; }));
+      enabled.addEventListener("change", () => { assignment.disabled = !enabled.checked; });
+      row.append(enabled, name, assignment); castles.append(row);
+    }
+  }
+  if (!connectedAccounts.length) castles.append(element("p", "empty-copy", "Initialize an account before assigning its castles."));
+  else if (!library.recruitments.length) castles.append(element("p", "empty-copy", "Create a recruitment object first."));
+
+  const botList = $("#recruit-bot-library"); botList.replaceChildren(...library.recruit_bots.map((bot) => {
+    const row = element("article", "library-row");
+    const identity = element("div");
+    const soonest = soonestCastleClear(bot);
+    identity.append(
+      element("b", "", bot.name),
+      element("small", "", `${tempoLabel(bot.algorithm)} · ${bot.castles.length} castle${bot.castles.length === 1 ? "" : "s"}`),
+      element("small", "castle-queue", soonest ? `Next castle free in ${humanWait(soonest)}` : "Every subscribed castle is free"),
+    );
+    const actions = element("span", "row-actions"); actions.append(actionButton("Delete", async () => { await fetch(`${API}/plans/recruit-bots/${bot.recruit_bot_id}`, { method: "DELETE" }); await loadLibrary(); }, true));
+    row.append(identity, actions); return row;
+  }));
+  if (!library.recruit_bots.length) botList.append(element("p", "empty-copy", "No recruit bots saved yet."));
+}
+
 async function loadLibrary() {
   library = await api("/plans");
   library.subscriptions ||= [];
   library.account_modes ||= [];
+  library.recruitments ||= [];
+  library.recruit_bots ||= [];
+  library.account_recruit_bots ||= [];
+  library.recruit_states ||= [];
+  library.castles ||= [];
   library.kingdoms ||= fallbackKingdoms;
   renderKingdoms();
   renderWave();
   renderPicker();
   renderLibrary();
+  renderRecruitmentBuilder();
 }
 
 function emptyAccounts() {
@@ -481,50 +598,89 @@ async function refreshAccounts(knownDirect = null) {
       discovery.append(line);
     }
     if (!(account.kingdom_health || []).length) discovery.append(element("p", "empty-copy", "No main-castle map data learned yet."));
+    // Step 1 — the socket. Kept separate from automation so it is obvious that
+    // signing in and starting a bot are two different decisions.
     const connection = element("div", "account-connection-control");
-    connection.append(element("p", "list-label", "Game connection"));
+    connection.append(element("p", "list-label", "Step 1 · Connection"));
     const password = document.createElement("input"); password.type = "password"; password.placeholder = "Password"; password.autocomplete = "current-password";
     const radius = document.createElement("input"); radius.type = "number"; radius.min = "0"; radius.max = "500"; radius.value = "50"; radius.title = "Sands scan radius"; radius.setAttribute("aria-label", "Additional Sands scan radius");
-    const connectionResult = element("span", "connection-result", isConnected ? "Socket active. Cached map data is being used." : "Log in without repeating the saved map scan.");
-    const login = actionButton("Log in", async () => {
+    const connectionResult = element("span", "connection-result", isConnected ? "Connected. Cached map data is being used." : "Not connected. Your castles and targets are still shown from the last visit.");
+    const login = actionButton("Start connection", async () => {
       try { await connectSavedAccount(account, password.value, 0, true, connectionResult); password.value = ""; }
       catch (error) { password.value = ""; connectionResult.textContent = error.message; }
     });
     login.disabled = isConnected;
-    const scan = actionButton("Scan more", async () => {
-      try { await connectSavedAccount(account, password.value, Number(radius.value) || 0, false, connectionResult); password.value = ""; }
-      catch (error) { password.value = ""; connectionResult.textContent = error.message; }
-    });
     const close = actionButton("Close connection", async () => {
       await api("/direct", { method: "DELETE" });
       await loadLibrary(); await refreshAccounts(); await refreshDashboard();
     });
     close.classList.add("danger-outline"); close.disabled = !isConnected;
-    connection.append(password, login, radius, scan, close, connectionResult);
+    const scan = actionButton("Rescan map", async () => {
+      try { await connectSavedAccount(account, password.value, Number(radius.value) || 0, false, connectionResult); password.value = ""; }
+      catch (error) { password.value = ""; connectionResult.textContent = error.message; }
+    });
+    const scanRow = element("div", "connection-scan");
+    scanRow.append(close, radius, scan);
+    connection.append(password, login, scanRow, connectionResult);
 
+    // Step 2 — automation. One attack bot, plus at most one recruit bot.
     const assignment = element("div", "account-mode-control");
-    const current = library.account_modes.find((value) => value.account_id === account.account_id);
-    assignment.append(element("p", "list-label", "Bots"));
-    for (const mode of library.modes) {
-      const row = element("div", "bot-row");
-      const running = Boolean(current?.running && current.mode_id === mode.mode_id && isConnected);
-      const configured = Boolean(current?.mode_id === mode.mode_id);
-      const copy = element("div"); copy.append(element("b", "", mode.name), element("span", running ? "bot-state running" : "bot-state", running ? "Running in background" : configured ? "Stopped" : `${mode.commander_count} commanders`));
-      const button = actionButton(running ? "Stop bot" : "Run bot", async () => {
-        try {
-          await api("/plans/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: account.account_id, mode_id: mode.mode_id, running: !running }) });
-          await loadLibrary(); await refreshAccounts(); await refreshDashboard();
-        } catch (error) { connectionResult.textContent = error.message; }
-      });
-      button.disabled = !isReady && !running;
-      row.append(copy, button); assignment.append(row);
-    }
-    if (!library.modes.length) assignment.append(element("p", "empty-copy", "Create a mode before running a bot."));
+    const current = library.account_modes.find((value) => value.account_id.toLowerCase() === account.account_id.toLowerCase());
+    const currentRecruit = library.account_recruit_bots.find((value) => value.account_id.toLowerCase() === account.account_id.toLowerCase());
+    const running = Boolean(current?.running && isConnected);
+    assignment.append(element("p", "list-label", "Step 2 · Automation"));
+    const attackLabel = document.createElement("label"); attackLabel.textContent = "Attack bot";
+    const attackSelect = document.createElement("select");
+    attackSelect.append(...library.modes.map((mode) => { const option = element("option", "", `${mode.name} · ${mode.commander_count} commanders`); option.value = mode.mode_id; return option; }));
+    if (current) attackSelect.value = current.mode_id;
+    const recruitLabel = document.createElement("label"); recruitLabel.textContent = "Recruit bot (optional)";
+    const recruitSelect = document.createElement("select");
+    const usedAt = (bot) => library.account_recruit_bots.find((value) => value.recruit_bot_id === bot.recruit_bot_id)?.updated_at_ms || 0;
+    // Most recently used first, so the usual choice is the first thing offered.
+    const orderedBots = [...library.recruit_bots].sort((a, b) => usedAt(b) - usedAt(a) || a.name.localeCompare(b.name));
+    const none = element("option", "", "None — attacks only"); none.value = ""; recruitSelect.append(none);
+    recruitSelect.append(...orderedBots.map((bot) => {
+      const used = usedAt(bot);
+      const option = element("option", "", `${bot.name} · ${tempoLabel(bot.algorithm)}${used ? ` · used ${relativeTime(used)}` : ""}`);
+      option.value = bot.recruit_bot_id; return option;
+    }));
+    if (currentRecruit) recruitSelect.value = currentRecruit.recruit_bot_id;
+    const recruitEstimate = element("p", "recruit-estimate");
+    const describeRecruit = () => {
+      const bot = library.recruit_bots.find((value) => String(value.recruit_bot_id) === recruitSelect.value);
+      if (!bot) { recruitEstimate.textContent = "No recruitment will run."; return; }
+      const soonest = soonestCastleClear(bot);
+      recruitEstimate.textContent = `${bot.castles.length} castle${bot.castles.length === 1 ? "" : "s"} · ${tempoLabel(bot.algorithm)} · ${soonest ? `next free in ${humanWait(soonest)}` : "every castle free"}`;
+    };
+    recruitSelect.addEventListener("change", describeRecruit);
+    describeRecruit();
+    const summary = element("span", running ? "bot-state running" : "bot-state", running ? `Running${currentRecruit?.running ? " with recruitment" : ""}` : "Stopped");
+    const controls = element("div", "bot-start-actions");
+    const start = actionButton(running ? "Bot running" : "Start bot", async () => {
+      try {
+        await api("/plans/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: account.account_id, mode_id: Number(attackSelect.value), recruit_bot_id: recruitSelect.value ? Number(recruitSelect.value) : null, running: true }) });
+        await loadLibrary(); await refreshAccounts(); await refreshDashboard();
+      } catch (error) { connectionResult.textContent = error.message; }
+    });
+    start.disabled = !isReady || running || !library.modes.length;
+    const stop = actionButton("End bot", async () => {
+      try {
+        await api("/plans/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: account.account_id, mode_id: Number(attackSelect.value), recruit_bot_id: recruitSelect.value ? Number(recruitSelect.value) : null, running: false }) });
+        await loadLibrary(); await refreshAccounts(); await refreshDashboard();
+      } catch (error) { connectionResult.textContent = error.message; }
+    }, true);
+    stop.disabled = !running;
+    attackSelect.disabled = running; recruitSelect.disabled = running;
+    controls.append(start, stop, summary);
+    assignment.append(attackLabel, attackSelect, recruitLabel, recruitSelect, recruitEstimate, controls);
+    if (!isReady && !running) assignment.append(element("p", "empty-copy", "Start the connection in step 1 to run automation."));
+    if (!library.modes.length) assignment.append(element("p", "empty-copy", "Create an attack mode before starting automation."));
     card.append(avatar, identity, facts, discovery, connection, assignment); return card;
   }));
   renderedConnectionKey = `${direct.connected}:${direct.account_id || ""}:${direct.phase === "sands_ready"}`;
   updateSourceCoordinates();
   renderModes();
+  renderRecruitmentBuilder();
 }
 
 function dashboardStat(value, label) {
@@ -736,6 +892,21 @@ $("#mode-form").addEventListener("submit", async (event) => { event.preventDefau
 $("#copy-mode").addEventListener("click", () => copyJson(bundleForMode($("#mode-name").value.trim(), selectedModeTasks), $("#mode-result")));
 $("#load-example").addEventListener("click", async () => { $("#mode-json").value = JSON.stringify(await api("/plans/example"), null, 2); });
 $("#import-mode").addEventListener("click", async () => { try { const bundle = JSON.parse($("#mode-json").value); await api("/plans/import", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(bundle) }); $("#import-result").textContent = "Mode imported with new attack and task IDs."; await loadLibrary(); } catch (error) { $("#import-result").textContent = error.message; } });
+
+$("#recruitment-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const draft = { name: $("#recruitment-name").value.trim(), troop_id: Number($("#recruitment-troop").value), quantity: Number($("#recruitment-quantity").value), slot_count: Number($("#recruitment-slots").value), ask_alliance_help: $("#recruitment-help").checked };
+  try { await api("/plans/recruitments", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(draft) }); $("#recruitment-result").textContent = "Recruitment saved."; $("#recruitment-name").value = ""; await loadLibrary(); }
+  catch (error) { $("#recruitment-result").textContent = error.message; }
+});
+
+$("#recruit-bot-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const castles = [...document.querySelectorAll("#recruit-castles .castle-subscription")].filter((row) => row.querySelector("input").checked).map((row, position) => ({ account_id: row.querySelector("input").dataset.accountId, castle_id: Number(row.querySelector("input").dataset.castleId), recruitment_id: row.querySelector("select").value, position }));
+  const draft = { name: $("#recruit-bot-name").value.trim(), algorithm: $("#recruit-algorithm").value, castles };
+  try { await api("/plans/recruit-bots", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(draft) }); $("#recruit-bot-result").textContent = "Recruit bot saved."; $("#recruit-bot-name").value = ""; await loadLibrary(); }
+  catch (error) { $("#recruit-bot-result").textContent = error.message; }
+});
 
 $("#licence-form").addEventListener("submit", async (event) => { event.preventDefault(); $("#licence-result").textContent = "Checking your token…"; try { const licence = await api("/licence", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: $("#licence-token").value.trim() }) }); $("#licence-token").value = ""; showApplication(licence); await loadLibrary(); await refreshAccounts(); await refresh(); } catch (error) { $("#licence-result").textContent = error.message; } });
 $("#add-credits").addEventListener("click", () => showActivation(true));

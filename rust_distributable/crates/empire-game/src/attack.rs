@@ -184,10 +184,7 @@ fn padded(items: &[Slot], total: usize) -> Result<Value, AttackError> {
     let mut slots: Vec<Value> = items.iter().map(|slot| slot.to_value()).collect();
     slots.resize(
         total,
-        Value::Array(vec![
-            Value::from(EMPTY_SLOT[0]),
-            Value::from(EMPTY_SLOT[1]),
-        ]),
+        Value::Array(vec![Value::from(EMPTY_SLOT[0]), Value::from(EMPTY_SLOT[1])]),
     );
     Ok(Value::Array(slots))
 }
@@ -252,7 +249,12 @@ mod tests {
                 slot(9, 1),
             ],
         ));
-        let outer = || Some(Side::new(vec![slot(1, 1), slot(2, 2)], vec![slot(4, 1), slot(5, 1)]));
+        let outer = || {
+            Some(Side::new(
+                vec![slot(1, 1), slot(2, 2)],
+                vec![slot(4, 1), slot(5, 1)],
+            ))
+        };
         let attack = Attack::single_wave(Wave::new(outer(), middle, outer()));
         let payload = attack.to_payload().unwrap();
         assert_eq!(payload[0]["M"]["T"].as_array().unwrap().len(), 3);
@@ -295,7 +297,9 @@ mod tests {
 
     #[test]
     fn attack_part_wraps_the_payload_under_a() {
-        let part = Attack::single_wave(Wave::default()).to_attack_part().unwrap();
+        let part = Attack::single_wave(Wave::default())
+            .to_attack_part()
+            .unwrap();
         assert!(part.get("A").and_then(Value::as_array).is_some());
     }
 }

@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
-use super::Store;
+use super::{Store, canonical_account_id};
 
 /// Commander availability states, matching the vocabulary the Python bot used.
 pub const COMMANDER_AVAILABLE: &str = "available";
@@ -125,6 +125,8 @@ impl Store {
         ruby_loot: Option<i64>,
         result_at_ms: i64,
     ) -> Result<(), sqlx::Error> {
+        // Identity is case-insensitive; see `canonical_account_id`.
+        let account_id = canonical_account_id(account_id);
         sqlx::query(
             "UPDATE attack_ledger
              SET status = ?, result_flag = ?, coin_loot = COALESCE(?, coin_loot),
@@ -136,7 +138,7 @@ impl Store {
         .bind(coin_loot)
         .bind(ruby_loot)
         .bind(result_at_ms)
-        .bind(account_id)
+        .bind(&account_id)
         .bind(march_id)
         .execute(&self.pool)
         .await?;
@@ -166,6 +168,8 @@ impl Store {
         result_flag: Option<i64>,
         result_at_ms: i64,
     ) -> Result<u64, sqlx::Error> {
+        // Identity is case-insensitive; see `canonical_account_id`.
+        let account_id = canonical_account_id(account_id);
         let result = sqlx::query(
             "UPDATE attack_ledger
              SET status = ?, landed_at_ms = ?, result_at_ms = ?,
@@ -189,8 +193,8 @@ impl Store {
         .bind(coin_loot)
         .bind(ruby_loot)
         .bind(result_flag)
-        .bind(account_id)
-        .bind(account_id)
+        .bind(&account_id)
+        .bind(&account_id)
         .bind(kingdom_id)
         .bind(x)
         .bind(y)
@@ -207,6 +211,8 @@ impl Store {
         account_id: &str,
         limit: i64,
     ) -> Result<Vec<MarchRecord>, sqlx::Error> {
+        // Identity is case-insensitive; see `canonical_account_id`.
+        let account_id = canonical_account_id(account_id);
         let rows = sqlx::query(
             "SELECT account_id, march_id, kingdom_id, x, y, task_id, profile_id, level,
                     lord_id, commander_number, troop_count, duration_s, coin_loot,
@@ -215,7 +221,7 @@ impl Store {
              FROM attack_ledger WHERE account_id = ?
              ORDER BY sent_at_ms DESC LIMIT ?",
         )
-        .bind(account_id)
+        .bind(&account_id)
         .bind(limit.max(1))
         .fetch_all(&self.pool)
         .await?;
@@ -271,11 +277,13 @@ impl Store {
         &self,
         account_id: &str,
     ) -> Result<Vec<CommanderState>, sqlx::Error> {
+        // Identity is case-insensitive; see `canonical_account_id`.
+        let account_id = canonical_account_id(account_id);
         let rows = sqlx::query(
             "SELECT account_id, lord_id, status, available_after_ms, march_id, target_key
              FROM commander_state WHERE account_id = ? ORDER BY lord_id",
         )
-        .bind(account_id)
+        .bind(&account_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
@@ -296,11 +304,13 @@ impl Store {
     /// This replaces the Python module-level global that had to be rebound per
     /// account; here it is simply a query.
     pub async fn commander_lids(&self, account_id: &str) -> Result<Vec<i64>, sqlx::Error> {
+        // Identity is case-insensitive; see `canonical_account_id`.
+        let account_id = canonical_account_id(account_id);
         let rows = sqlx::query(
             "SELECT lord_id FROM account_commander WHERE lower(account_id) = lower(?)
              GROUP BY lord_id ORDER BY MIN(ordinal)",
         )
-        .bind(account_id)
+        .bind(&account_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|row| row.get("lord_id")).collect())

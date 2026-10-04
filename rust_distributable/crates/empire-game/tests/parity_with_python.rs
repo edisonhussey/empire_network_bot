@@ -43,12 +43,7 @@ fn flanked_wave(unit_id: i64, ladders: i64) -> Wave {
     } else {
         Vec::new()
     };
-    let flank = || {
-        Side::new(
-            tools.clone(),
-            vec![slot(unit_id, TROOPS_PER_FLANK)],
-        )
-    };
+    let flank = || Side::new(tools.clone(), vec![slot(unit_id, TROOPS_PER_FLANK)]);
     Wave::new(Some(flank()), None, Some(flank()))
 }
 
@@ -176,7 +171,9 @@ fn scaling_ladder_keeps_its_wall_reduction_and_has_no_wave_limit() {
 #[test]
 fn at_least_one_tool_declares_a_per_wave_limit() {
     assert!(
-        TOOLS.iter().any(|tool| tool.tool_limit_per_wave().is_some()),
+        TOOLS
+            .iter()
+            .any(|tool| tool.tool_limit_per_wave().is_some()),
         "tool_limit_per_wave was present in 54 tools in the Python data"
     );
 }

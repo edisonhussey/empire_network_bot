@@ -98,3 +98,8 @@ webview has visually changed.
 - Network logs can continue to show stored history while disconnected, but
   they are live only while the direct game socket is connected. Closing or
   losing that socket stops the account's running mode.
+- A successful `cra` supplies the outbound duration. Until a battle result is
+  observed, commander availability uses `1.2 × outbound + 5–10 seconds`; this
+  is the restart-safe fallback if the socket closes before the result arrives.
+  A matched `cat` replaces that estimate with its exact remaining return
+  duration plus a randomized 5–10 second reuse hold.

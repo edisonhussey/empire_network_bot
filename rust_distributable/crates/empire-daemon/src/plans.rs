@@ -9,7 +9,9 @@ use empire_core::{
         VENTRILO_SANDS_HBW, catalog, kingdoms, ventrilo_sands_bundle,
     },
     store::{
-        AccountModeRecord, AttackProfile, ModeRecord, SubscriptionRecord, TaskRecord, TaskRuntime,
+        AccountModeRecord, AccountRecruitBot, AttackProfile, ModeRecord, OwnedCastleRecord,
+        RecruitBot, RecruitBotCastle, RecruitCastleState, RecruitmentTemplate, SubscriptionRecord,
+        TaskRecord, TaskRuntime,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -28,11 +30,25 @@ pub struct PlanLibrary {
     subscriptions: Vec<SubscriptionRecord>,
     modes: Vec<ModeRecord>,
     account_modes: Vec<AccountModeRecord>,
+    recruitments: Vec<RecruitmentTemplate>,
+    recruit_bots: Vec<RecruitBot>,
+    account_recruit_bots: Vec<AccountRecruitBot>,
+    recruit_states: Vec<RecruitCastleState>,
+    castles: Vec<OwnedCastleRecord>,
 }
 
 #[derive(Serialize)]
 pub struct CreatedId {
     id: String,
+}
+
+/// Names are unique, so a repeat is a mistake the operator can fix rather than a
+/// database fault worth showing them raw.
+fn duplicate_name_error(error: sqlx::Error) -> ApiError {
+    if error.to_string().contains("UNIQUE constraint failed") {
+        return ApiError::bad_request("that name is already used — pick another");
+    }
+    ApiError::internal(error)
 }
 
 #[derive(Serialize)]
@@ -45,6 +61,33 @@ pub struct AccountModeRequest {
     account_id: String,
     mode_id: i64,
     #[serde(default)]
+    running: bool,
+}
+
+#[derive(Deserialize)]
+pub struct RecruitmentDraft {
+    name: String,
+    troop_id: i64,
+    quantity: i64,
+    slot_count: i64,
+    #[serde(default)]
+    ask_alliance_help: bool,
+}
+
+#[derive(Deserialize)]
+pub struct RecruitBotDraft {
+    name: String,
+    /// Request cadence. Optional, so leaving it out selects `advanced`.
+    #[serde(default)]
+    algorithm: String,
+    castles: Vec<RecruitBotCastle>,
+}
+
+#[derive(Deserialize)]
+pub struct StartBotsRequest {
+    account_id: String,
+    mode_id: i64,
+    recruit_bot_id: Option<i64>,
     running: bool,
 }
 
@@ -75,7 +118,188 @@ pub async fn library(State(state): State<AppState>) -> Result<Json<PlanLibrary>,
             .account_modes()
             .await
             .map_err(ApiError::internal)?,
+        recruitments: state
+            .store
+            .recruitments()
+            .await
+            .map_err(ApiError::internal)?,
+        recruit_bots: state
+            .store
+            .recruit_bots()
+            .await
+            .map_err(ApiError::internal)?,
+        account_recruit_bots: state
+            .store
+            .account_recruit_bots()
+            .await
+            .map_err(ApiError::internal)?,
+        recruit_states: state
+            .store
+            .all_recruit_states()
+            .await
+            .map_err(ApiError::internal)?,
+        castles: state
+            .store
+            .owned_castles()
+            .await
+            .map_err(ApiError::internal)?,
     }))
+}
+
+pub async fn create_recruitment(
+    State(state): State<AppState>,
+    Json(draft): Json<RecruitmentDraft>,
+) -> Result<(StatusCode, Json<CreatedId>), ApiError> {
+    require_plans(&state).await?;
+    if draft.name.trim().is_empty() || draft.quantity <= 0 || !(1..=5).contains(&draft.slot_count) {
+        return Err(ApiError::bad_request(
+            "name, positive quantity, and 1–5 slots are required",
+        ));
+    }
+    if !catalog().iter().any(|item| {
+        item.id == draft.troop_id && matches!(item.kind, empire_core::planning::CatalogKind::Troop)
+    }) {
+        return Err(ApiError::bad_request(
+            "selected troop is not in the game catalog",
+        ));
+    }
+    let id = format!("recruit-{}", Uuid::new_v4().simple());
+    state
+        .store
+        .upsert_recruitment(
+            &RecruitmentTemplate {
+                recruitment_id: id.clone(),
+                name: draft.name.trim().to_owned(),
+                troop_id: draft.troop_id,
+                quantity: draft.quantity,
+                slot_count: draft.slot_count,
+                ask_alliance_help: draft.ask_alliance_help,
+                lane_id: 0,
+                skill_id: 73,
+            },
+            now_ms(),
+        )
+        .await
+        .map_err(duplicate_name_error)?;
+    Ok((StatusCode::CREATED, Json(CreatedId { id })))
+}
+
+pub async fn create_recruit_bot(
+    State(state): State<AppState>,
+    Json(draft): Json<RecruitBotDraft>,
+) -> Result<(StatusCode, Json<CreatedId>), ApiError> {
+    require_plans(&state).await?;
+    // The cadence is the only choice here; leaving it out selects the default,
+    // which is the recorded client's randomised timing.
+    let algorithm = if draft.algorithm.trim().is_empty() {
+        empire_core::pacing::RecruitTempo::default()
+    } else {
+        match draft.algorithm.trim().to_ascii_lowercase().as_str() {
+            "greedy" => empire_core::pacing::RecruitTempo::Greedy,
+            "sporadic" => empire_core::pacing::RecruitTempo::Sporadic,
+            "advanced" => empire_core::pacing::RecruitTempo::Advanced,
+            _ => {
+                return Err(ApiError::bad_request(
+                    "request timing must be greedy, sporadic or advanced",
+                ));
+            }
+        }
+    };
+    if draft.name.trim().is_empty() {
+        return Err(ApiError::bad_request("a name is required"));
+    }
+    if draft.castles.is_empty() {
+        return Err(ApiError::bad_request("subscribe at least one castle"));
+    }
+    let mut unique = std::collections::HashSet::new();
+    if draft
+        .castles
+        .iter()
+        .any(|value| !unique.insert(value.castle_id))
+    {
+        return Err(ApiError::bad_request(
+            "each castle can subscribe to only one recruitment",
+        ));
+    }
+    let id = state
+        .store
+        .create_recruit_bot(
+            draft.name.trim(),
+            algorithm.name(),
+            &draft.castles,
+            now_ms(),
+        )
+        .await
+        .map_err(duplicate_name_error)?;
+    Ok((StatusCode::CREATED, Json(CreatedId { id: id.to_string() })))
+}
+
+pub async fn start_bots(
+    State(state): State<AppState>,
+    Json(request): Json<StartBotsRequest>,
+) -> Result<StatusCode, ApiError> {
+    require_plans(&state).await?;
+    if request.running {
+        let direct = state.direct_status.read().await;
+        if !direct.connected
+            || direct.phase != empire_core::session::SessionPhase::SandsReady
+            || !direct
+                .account_id
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(request.account_id.trim()))
+        {
+            return Err(ApiError::bad_request(
+                "start the connection and wait until the account is ready",
+            ));
+        }
+    }
+    state
+        .store
+        .subscribe_account_mode(
+            request.account_id.trim(),
+            request.mode_id,
+            request.running,
+            now_ms(),
+        )
+        .await
+        .map_err(ApiError::bad_request)?;
+    state
+        .store
+        .subscribe_account_recruit_bot(
+            request.account_id.trim(),
+            request.recruit_bot_id,
+            request.running && request.recruit_bot_id.is_some(),
+            now_ms(),
+        )
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn delete_recruitment(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    require_plans(&state).await?;
+    state
+        .store
+        .delete_recruitment(&id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn delete_recruit_bot(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, ApiError> {
+    require_plans(&state).await?;
+    state
+        .store
+        .delete_recruit_bot(id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn example(State(state): State<AppState>) -> Result<Json<ModeBundle>, ApiError> {
