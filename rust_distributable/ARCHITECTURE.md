@@ -76,3 +76,46 @@ data mapping task IDs to castle IDs. The timing gate is shared across task types
 it enforces the strict global `cra` floor, adds a castle-switch floor, and applies
 smaller bounded variance to background traffic. Socket code does not decide
 which castles subscribe to a recruit or attack event.
+
+## Module map and ownership
+
+One concern, one owner. If a rule exists in two places, one of them is a bug.
+
+| Layer | Owns | Must not |
+| --- | --- | --- |
+| `crates/empire-game` | Static game data (troops, tools, kingdoms), attack encoding | Do I/O, touch SQLite, or know about the network |
+| `crates/empire-core` | Domain rules, pacing, planning, licence, SQLite `store` (**single source of truth**) | Open sockets or know about HTTP |
+| `crates/empire-daemon` | Axum API (`lib.rs`, `plans.rs`), game transport (`direct/`, `relay.rs`) | Invent rules; it applies the ones in `empire-core` |
+| `desktop/src-tauri` | Window and service lifecycle only | Contain business logic |
+| `desktop/src` | Presentation: a projection of the API plus forms that submit intent | Compute cooldowns, pick targets, or keep its own state machine |
+
+### `crates/empire-daemon/src/direct/`
+
+| File | Responsibility |
+| --- | --- |
+| `mod.rs` | Request/status types, `run` / `run_inner` connection loop, shared constants |
+| `automation.rs` | Attack automation state machine |
+| `recruitment.rs` | Recruitment automation state machine |
+| `fortress_discovery.rs` | Fortress boundary discovery walk and its pacing |
+| `base_scan.rs` | Outward map-scan pacing and pending-scan record |
+| `packets.rs` | Pure builders for outbound `gaa` / heartbeat frames |
+| `observe.rs` | Inbound packet observation and diagnostic persistence |
+| `tests.rs` | Unit tests for the above |
+
+### `desktop/src/`
+
+| File | Responsibility |
+| --- | --- |
+| `api.js` | The only HTTP client for the daemon |
+| `dom.js` | `$` and `element` helpers |
+| `format.js` | Pure string formatting (no DOM, no state) |
+| `views/ruby-chart.js` | Dashboard chart renderer |
+| `main.js` | Remaining shared state and views, still to be split view by view |
+
+## Working rules
+
+1. **Contract first.** Agree the types and the API shape before any implementation.
+2. **Move, then change.** Refactors move code verbatim; behaviour changes are separate commits.
+3. **Verify every step.** `cargo check --workspace --tests`, `cargo test --workspace`, and `npx vite build` in `desktop/` must pass before moving on.
+4. **Bump `API_VERSION`** whenever behaviour the window depends on changes.
+5. **New responsibility, new module.** If an edit adds a concern to a file, it belongs in its own file.

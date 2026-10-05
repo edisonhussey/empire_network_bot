@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# One entry point for everyday project tasks, runnable from any directory.
+#
+#   oa build              build the DMG for the version in VERSION, install it
+#   oa build --no-build   collect an already-built version
+#   oa bump               0.1.38 -> 0.1.39   (patch)
+#   oa bump 0.2.0         set an explicit version
+#   oa version            print the current version
+#   oa test               cargo test + frontend build
+#   oa check              fast cargo check
+#
+# Works through a symlink, so it can live on your PATH.
+
+set -euo pipefail
+
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do
+    LINK="$(readlink "$SELF")"
+    case "$LINK" in
+        /*) SELF="$LINK" ;;
+        *) SELF="$(dirname "$SELF")/$LINK" ;;
+    esac
+done
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+
+current() { tr -d '[:space:]' < "$ROOT/VERSION"; }
+
+case "${1:-help}" in
+    build)
+        shift
+        exec "$ROOT/scripts/release.sh" "$@"
+        ;;
+    bump)
+        if [ -n "${2:-}" ]; then
+            next="$2"
+        else
+            IFS=. read -r major minor patch <<< "$(current)"
+            next="$major.$minor.$((patch + 1))"
+        fi
+        echo "$next" > "$ROOT/VERSION"
+        "$ROOT/scripts/sync-version.sh"
+        ;;
+    version)
+        current
+        ;;
+    test)
+        (cd "$ROOT" && cargo test --workspace)
+        (cd "$ROOT/desktop" && npx vite build)
+        ;;
+    check)
+        (cd "$ROOT" && cargo check --workspace --tests)
+        ;;
+    *)
+        sed -n '2,13p' "$SELF" | sed 's/^# \{0,1\}//'
+        ;;
+esac

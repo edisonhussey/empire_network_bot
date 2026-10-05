@@ -1,0 +1,336 @@
+    use super::*;
+
+    fn awaiting_fortress_info() -> Automation {
+        let mut automation = Automation::new();
+        automation.phase = AutomationPhase::AwaitAdi {
+            task: ActiveModeTask {
+                mode_id: 1,
+                task_id: "fortress".into(),
+                name: "Sands fortress".into(),
+                profile_id: "attack".into(),
+                payload: json!([]),
+                kingdom_id: 1,
+                level_min: None,
+                level_max: None,
+                source_x: 593,
+                source_y: 613,
+                travel_mode: empire_core::planning::TravelMode::Coin,
+                algorithm: "closest".into(),
+                target_kind: "fortress".into(),
+                commander_lids: vec![7],
+            },
+            target: ReservedTarget {
+                kingdom_id: 1,
+                x: 516,
+                y: 984,
+                level: Some(45),
+            },
+            deadline_ms: now_ms() + REQUEST_TIMEOUT_MS,
+        };
+        automation
+    }
+
+    #[tokio::test]
+    async fn fortress_abi_reply_advances_and_unrelated_packets_preserve_the_waiter() {
+        let store = Store::open("sqlite::memory:").await.unwrap();
+        let mut automation = awaiting_fortress_info();
+        for raw in [
+            "%xt%adi%1%6%null%",
+            "%xt%adi%1%0%{}%",
+            "%xt%gaa%1%0%{\"KID\":1,\"AI\":[]} %",
+            "%xt%cra%1%0%{}%",
+        ] {
+            automation.observe(&store, "ventrilo", raw).await;
+            assert!(
+                matches!(automation.phase, AutomationPhase::AwaitAdi { .. }),
+                "{raw}"
+            );
+            assert!(automation.operational_errors.is_empty());
+        }
+        automation
+            .observe(
+                &store,
+                "ventrilo",
+                "%xt%abi%1%0%{\"KID\":1,\"SCID\":16366514,\"gli\":{\"C\":[{\"ID\":7}]}}%",
+            )
+            .await;
+        assert!(matches!(
+            automation.phase,
+            AutomationPhase::ReadyCra { lord_id: 7, .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn refused_or_empty_abi_never_commits_an_attack() {
+        let store = Store::open("sqlite::memory:").await.unwrap();
+        for raw in ["%xt%abi%1%6%null%", "%xt%abi%1%0%null%"] {
+            let mut automation = awaiting_fortress_info();
+            automation.observe(&store, "ventrilo", raw).await;
+            assert!(matches!(automation.phase, AutomationPhase::Idle { .. }));
+            assert_eq!(automation.operational_errors.len(), 1);
+            assert_eq!(automation.last_cra_ms, None);
+        }
+    }
+
+    /// One request has to answer eighteen slots, so the window is the smallest
+    /// rectangle spanning three slots on each residue family.
+    #[test]
+    fn a_fortress_probe_asks_for_a_whole_block() {
+        let packet =
+            fortress_gaa_packet("EmpireEx_21", 1, FortressBlock { x: 633, y: 633 }).unwrap();
+        assert!(packet.contains("\"AX1\":632"), "{packet}");
+        assert!(packet.contains("\"AX2\":732"), "{packet}");
+        assert!(packet.contains("\"AY1\":632"), "{packet}");
+        assert!(packet.contains("\"AY2\":732"), "{packet}");
+    }
+
+    #[test]
+    fn the_discovery_walk_measures_a_rectangle_without_a_map_size() {
+        // The shape the live arms produced: a 7x8 block band, no map size given
+        // to the walk anywhere. It has to find the extent on its own.
+        let origins_x = [243_i64, 360, 477, 594, 711, 828, 945];
+        let origins_y = [126_i64, 243, 360, 477, 594, 711, 828, 945];
+        let band = origins_x
+            .iter()
+            .flat_map(|x| origins_y.iter().map(move |y| (*x, *y)))
+            .collect::<Vec<_>>();
+
+        let base = block_origin((593, 613));
+        let mut walk = FortressDiscovery::new(7, base);
+        let mut probes = 0_u32;
+        while let Some(block) = walk.next() {
+            probes += 1;
+            assert!(probes < 200, "the walk never terminated");
+            let holds = band
+                .iter()
+                .any(|(x, y)| block_origin((*x, *y)) == (block.x, block.y));
+            walk.observe(holds);
+        }
+
+        let bounds = walk.bounds().expect("a band with fortresses in it");
+        assert_eq!(
+            (bounds.left, bounds.top, bounds.right, bounds.bottom),
+            (243, 126, 1_043, 1_043)
+        );
+        // Every fortress the band holds is inside the measured rectangle, and
+        // measuring plus filling beats the flat 121-cell sweep.
+        let missed = band
+            .iter()
+            .filter(|(x, y)| {
+                *x < bounds.left || *x > bounds.right || *y < bounds.top || *y > bounds.bottom
+            })
+            .count();
+        assert_eq!(missed, 0);
+        let fill = empire_core::fortress::align_bounds(bounds, SWEEP_ALIGNMENT).block_count();
+        assert!((probes as i64) + fill < 121, "{} probes", probes);
+    }
+
+    /// A refused window arrives as an empty payload, so the walk cannot tell it
+    /// apart from ground with nothing on it. Treating it as empty ends the arm
+    /// early: that under-covers, which shows up as a missed fortress. Assuming
+    /// it held something would extend the rectangle over ground never seen,
+    /// which is worse. This pins the conservative direction.
+    #[test]
+    fn a_refused_window_ends_an_arm_rather_than_extending_it() {
+        let base = (477_i64, 594_i64);
+        let mut walk = FortressDiscovery::new(7, base);
+        // The base answers, then every arm window is refused.
+        let mut probes = 0_u32;
+        while let Some(_block) = walk.next() {
+            probes += 1;
+            assert!(probes < 20, "refusals must end the arms, not grow them");
+            walk.observe(false);
+        }
+        // One base plus two refusals per arm, and nothing was ever reached.
+        assert_eq!(probes, 1 + 2 * ARM_STEPS.len() as u32);
+        assert!(walk.bounds().is_none(), "a refused walk measures nothing");
+    }
+
+    #[test]
+    fn fortress_probe_pacing_matches_the_scan_budget() {
+        let mut rng = Rng::seeded(42);
+        let samples = (0..1_000)
+            .map(|_| fortress_probe_delay_seconds(&mut rng))
+            .collect::<Vec<_>>();
+        assert!(samples.iter().all(|delay| (0.70..=1.70).contains(delay)));
+        // The delay alone is about 145 s for a full 121-cell fallback sweep; a measured
+        // rectangle is smaller, and the server's own time is added on top and is
+        // not measurable from here.
+        let mean = samples.iter().sum::<f64>() / samples.len() as f64;
+        let seconds = 121.0 * mean;
+        assert!(
+            (130.0..=160.0).contains(&seconds),
+            "{seconds} s per kingdom"
+        );
+    }
+
+    #[test]
+    fn the_second_error_inside_five_minutes_trips_the_safety_pause() {
+        let mut automation = Automation::new();
+        automation.record_operational_error(1_000_000, "first");
+        assert_eq!(automation.safety_pause_until_ms, 0);
+        automation.record_operational_error(1_299_999, "second");
+        assert_eq!(automation.safety_pause_until_ms, 1_300_000);
+        assert!(automation.detail.contains("Safety pause"));
+    }
+
+    #[test]
+    fn old_errors_age_out_of_the_rolling_window() {
+        let mut automation = Automation::new();
+        automation.record_operational_error(1_000_000, "old");
+        automation.record_operational_error(1_300_000, "new");
+        assert_eq!(automation.operational_errors.len(), 1);
+        assert_eq!(automation.safety_pause_until_ms, 0);
+    }
+
+    #[test]
+    fn large_map_diagnostics_are_compacted_without_losing_counts() {
+        let mut objects = (0..500).map(|x| json!([1, x, 1, -1])).collect::<Vec<_>>();
+        objects.push(json!([2, 600, 610, -1, 50]));
+        objects.push(json!([11, 594, 594, -1, 45, 0, 7, 1]));
+        let compacted = compact_diagnostic_payload("gaa", json!({"KID": 1, "AI": objects}));
+        assert_eq!(compacted.pointer("/map_summary/objects"), Some(&json!(502)));
+        assert_eq!(compacted.pointer("/map_summary/rbcs"), Some(&json!(1)));
+        assert_eq!(
+            compacted.pointer("/map_summary/fortresses"),
+            Some(&json!(1))
+        );
+        assert!(compacted.get("AI").is_none());
+    }
+
+    #[test]
+    fn the_outward_scan_is_wide_rather_than_uniform() {
+        let mut rng = Rng::seeded(11);
+        let samples = (0..2_000)
+            .map(|_| base_scan_delay_seconds(&mut rng))
+            .collect::<Vec<_>>();
+        assert!(samples.iter().all(|delay| (0.7..=1.7).contains(delay)));
+        let mean = samples.iter().sum::<f64>() / samples.len() as f64;
+        assert!((1.15..=1.25).contains(&mean), "mean {mean}");
+        let low = samples.iter().copied().fold(f64::MAX, f64::min);
+        let high = samples.iter().copied().fold(f64::MIN, f64::max);
+        assert!(high - low > 0.95, "spread {}", high - low);
+    }
+
+    #[test]
+    fn a_kingdom_switch_pauses_longer_than_a_probe() {
+        let mut rng = Rng::seeded(7);
+        let switches = (0..1_000)
+            .map(|_| fortress_kingdom_switch_delay_seconds(&mut rng))
+            .collect::<Vec<_>>();
+        assert!(switches.iter().all(|delay| (3.4..=4.8).contains(delay)));
+        assert!(switches[0] > fortress_probe_delay_seconds(&mut Rng::seeded(7)));
+    }
+
+    #[test]
+    fn world_profiles_keep_socket_and_portal_identity_together() {
+        assert_eq!(
+            GameServer::Us1.connection(),
+            (US1_ENDPOINT, US1_SERVER_HEADER, VENTRILO_PORTAL_ACCOUNT_ID)
+        );
+        assert_eq!(
+            GameServer::World2.connection(),
+            (
+                WORLD2_ENDPOINT,
+                WORLD2_SERVER_HEADER,
+                PINGPOKO_PORTAL_ACCOUNT_ID
+            )
+        );
+        assert_ne!(
+            GameServer::Us1.connection().2,
+            GameServer::World2.connection().2
+        );
+        assert_ne!(
+            GameServer::Us1.connection().1,
+            GameServer::World2.connection().1
+        );
+        assert_eq!(
+            trusted_server_name(US1_ENDPOINT, US1_SERVER_HEADER),
+            Some("US1")
+        );
+        assert_eq!(
+            trusted_server_name(WORLD2_ENDPOINT, WORLD2_SERVER_HEADER),
+            Some("WORLD2")
+        );
+        assert_eq!(
+            trusted_server_name("wss://attacker.invalid/", US1_SERVER_HEADER),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn jaa_and_gaa_are_authoritative_castle_and_map_context() {
+        let store = Store::open("sqlite::memory:").await.unwrap();
+        store
+            .upsert_account_profile("ventrilo", "Ventrilo", US1_ENDPOINT, US1_SERVER_HEADER, 1)
+            .await
+            .unwrap();
+        persist_navigation_packet(
+            &store,
+            "ventrilo",
+            "jaa",
+            &json!({
+                "KID": 0,
+                "gca": {"A": [1, 509, 405, 16011862, 16862926, 7, 7, 7, 3, 0]}
+            }),
+            10,
+        )
+        .await
+        .unwrap();
+        let castle = store.navigation("ventrilo").await.unwrap().unwrap();
+        assert!(!castle.map_mode);
+        assert_eq!(castle.current_kingdom_id, Some(0));
+        assert_eq!(castle.current_castle_id, Some(16011862));
+
+        persist_navigation_packet(&store, "ventrilo", "gaa", &json!({"KID": 1, "AI": []}), 20)
+            .await
+            .unwrap();
+        let map = store.navigation("ventrilo").await.unwrap().unwrap();
+        assert!(map.map_mode);
+        assert_eq!(map.current_kingdom_id, Some(1));
+        assert_eq!(map.current_castle_id, None);
+        assert_eq!(map.last_castle_switch_at_ms, 10);
+    }
+
+    #[tokio::test]
+    async fn cooldown_reads_keep_fortresses_but_do_not_expand_the_rbc_catalogue() {
+        let store = Store::open("sqlite::memory:").await.unwrap();
+        store
+            .upsert_account_profile("ventrilo", "Ventrilo", US1_ENDPOINT, US1_SERVER_HEADER, 1)
+            .await
+            .unwrap();
+        let settings = SessionSettings {
+            kingdom_scans: vec![KingdomScan {
+                kingdom_id: 1,
+                enabled: true,
+                radius: 50,
+            }],
+            ..SessionSettings::default()
+        };
+        let bootstrap = json!({
+            "gcl": {"C": [{"KID": 1, "AI": [{"AI": [12, 593, 613, 16366514, 1, 5, 5, 3, 4, 1, "Castle Ventrilo"]}]}]},
+            "gli": {"C": [{"ID": 1}]}
+        });
+        observe_account_packet(
+            &store,
+            "ventrilo",
+            &format!("%xt%gbd%1%0%{bootstrap}%"),
+            &HashMap::new(),
+            &settings,
+            true,
+        )
+        .await;
+        let origins = permanent_scan_origins("ventrilo", &store.owned_castles().await.unwrap());
+        let map = json!({"KID": 1, "AI": [
+            [2, 600, 610, -1, 50],
+            [11, 594, 594, -1, 45, 38421, 17185267, 1]
+        ]});
+        let raw = format!("%xt%gaa%1%0%{map}%");
+
+        observe_account_packet(&store, "ventrilo", &raw, &origins, &settings, false).await;
+        assert!(!store.account_has_targets("ventrilo", 1).await.unwrap());
+        assert!(store.account_has_fortresses("ventrilo", 1).await.unwrap());
+
+        observe_account_packet(&store, "ventrilo", &raw, &origins, &settings, true).await;
+        assert!(store.account_has_targets("ventrilo", 1).await.unwrap());
+    }

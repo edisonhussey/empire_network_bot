@@ -27,11 +27,14 @@ fi
 
 # ------------------------------------------------------------------ version --
 #
-# The version lives in five files and `API_VERSION` in a sixth. A half-finished
-# bump ships a dmg whose filename disagrees with the window inside it, and an
-# unbumped API_VERSION makes a *stale service* serve the new window's requests
-# (the failure mode that once had a fortress task attacking RBCs for a whole
-# run). Check them rather than trust them.
+# `VERSION` at the repo root is the one place to edit. It is copied into the
+# files below first, then they are checked anyway: a half-finished bump ships a
+# dmg whose filename disagrees with the window inside it, and an unbumped
+# API_VERSION makes a *stale service* serve the new window's requests (the
+# failure mode that once had a fortress task attacking RBCs for a whole run).
+# API_VERSION is a separate contract number and is never synced from VERSION.
+"$ROOT/scripts/sync-version.sh"
+
 json_version() {
     python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$1"
 }

@@ -1,5 +1,7 @@
-const API = "http://127.0.0.1:47821/v1";
-const $ = (selector) => document.querySelector(selector);
+import { api } from "./api.js";
+import { $, element } from "./dom.js";
+import { compactNumber, expiryLabel, humanWait, humanize, relativeTime, sessionDuration, tempoLabel } from "./format.js";
+import { renderRubyChart } from "./views/ruby-chart.js";
 const activation = $("#activation");
 const appShell = $("#app-shell");
 let currentLicence = null;
@@ -69,24 +71,6 @@ const phaseCopy = {
   loading_sands: "Scanning permanent kingdoms…", discovering_fortresses: "Finding every fortress…", sands_ready: "Setup complete", failed: "Needs attention",
 };
 
-async function responseJson(response) {
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
-  return body;
-}
-
-async function api(path, options) {
-  return responseJson(await fetch(`${API}${path}`, options));
-}
-
-function expiryLabel(epoch) {
-  if (!epoch) return "Token required";
-  const remaining = Math.max(0, epoch * 1000 - Date.now());
-  const days = Math.floor(remaining / 86400000);
-  const hours = Math.floor((remaining % 86400000) / 3600000);
-  return days > 0 ? `${days}d ${hours}h remaining` : `${hours}h remaining`;
-}
-
 function showActivation(canClose = false) {
   activation.hidden = false;
   $("#close-activation").hidden = !canClose;
@@ -148,21 +132,6 @@ function setNavGroup(group, open) {
   group.querySelector(".nav-sub").hidden = !open;
 }
 
-function compactNumber(value) {
-  return new Intl.NumberFormat(undefined, { notation: Math.abs(value || 0) >= 10000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value || 0);
-}
-
-function element(tag, className, text) {
-  const value = document.createElement(tag);
-  if (className) value.className = className;
-  if (text !== undefined) value.textContent = text;
-  return value;
-}
-
-function humanize(value) {
-  return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
 function itemName(id) {
   const name = library.catalog.find((item) => item.id === id)?.name;
   return name ? humanize(name) : `Item ${id}`;
@@ -188,15 +157,6 @@ function kingdomLabel(kingdomId) {
   return kingdomName(found?.name || `Kingdom ${kingdomId}`);
 }
 
-/// How long a session has been up, as "2h30" or "45m".
-function sessionDuration(ms) {
-  if (!ms) return "";
-  const minutes = Math.floor((Date.now() - ms) / 60000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m`;
-  return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}`;
-}
-
 /// A bot is running when the service holds a live subscription for it, not
 /// merely when a socket is open. The running flags live in the plan tables, so
 /// this reads the same source the runner does.
@@ -215,36 +175,6 @@ function renderLinkState(direct) {
   const running = botIsRunning(direct);
   $("#bot-label").closest(".link-row").classList.toggle("on", running);
   $("#bot-label").textContent = running ? "Bot running" : "Bot stopped";
-}
-
-/// A short wait, for "clears in 12m" style copy.
-function humanWait(ms) {
-  if (!ms || ms <= 0) return "now";
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 90) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  return `${hours}h ${minutes % 60}m`;
-}
-
-/// Age of a timestamp, for "last used 2h ago".
-function relativeTime(ms) {
-  if (!ms) return "never";
-  const seconds = Math.max(0, (Date.now() - ms) / 1000);
-  if (seconds < 90) return "just now";
-  const minutes = seconds / 60;
-  if (minutes < 90) return `${Math.round(minutes)}m ago`;
-  const hours = minutes / 60;
-  if (hours < 36) return `${Math.round(hours)}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
-}
-
-/// The cadence names are about request timing, so say that rather than echoing
-/// the stored word.
-function tempoLabel(value) {
-  const names = { greedy: "fast gaps", sporadic: "sporadic gaps", advanced: "randomised gaps" };
-  return names[value] || humanize(value);
 }
 
 /// The server's own estimate for one castle's recruitment queue.
@@ -1017,52 +947,6 @@ function botActivity(direct) {
     text: botActivityCopy[state] || humanize(state),
     detail: direct.bot_detail || "The runner has not reported a detail yet.",
   };
-}
-
-// STYLE: ruby chart redrawn as a single 1px white line over dashed hairline gridlines.
-// No area fill, no gradient, no colour. Both vertical bounds follow the
-// lifetime data so a large historic total does not flatten recent changes.
-// The viewBox is close to the width it is rendered at - the chart lives in the
-// right-hand dashboard column - so the axis text stays legible instead of being
-// scaled down with the drawing.
-function renderRubyChart(series) {
-  const container = $("#ruby-chart");
-  if (!series?.length) { container.replaceChildren(element("p", "empty-copy", "No ruby returns recorded yet.")); return; }
-  const width = 440; const height = 300; const left = 40; const right = 8; const top = 12; const bottom = 34;
-  const minimumValue = Math.min(...series.map((point) => point.value));
-  const maximumValue = Math.max(1, ...series.map((point) => point.value));
-  const spread = Math.max(1, maximumValue - minimumValue);
-  const rough = spread / 4; const magnitude = 10 ** Math.floor(Math.log10(rough));
-  const step = [1, 2, 5, 10].map((unit) => unit * magnitude).find((value) => value >= rough);
-  const floor = Math.max(0, Math.floor(minimumValue / step) * step);
-  const ceiling = Math.max(floor + step, Math.ceil(maximumValue / step) * step);
-  const plotW = width - left - right; const plotH = height - top - bottom;
-  const px = (index) => left + index * plotW / Math.max(1, series.length - 1);
-  const py = (value) => top + plotH - (value - floor) * plotH / (ceiling - floor);
-  const points = series.map((point, index) => `${px(index).toFixed(1)},${py(point.value).toFixed(1)}`).join(" ");
-  let grid = "";
-  for (let tick = floor; tick <= ceiling; tick += step) {
-    grid += `<line class="grid" x1="${left}" y1="${py(tick)}" x2="${width - right}" y2="${py(tick)}"/><text x="${left - 10}" y="${py(tick) + 4}" text-anchor="end">${tick >= 1000 ? `${tick / 1000}k` : tick}</text>`;
-  }
-  // Only as many date labels as there are distinct points. The old fixed width
-  // of four computed `round(i * (n - 1) / 3)`, which for a one- or two-point
-  // series collapses to the same index and stacks every label on the left edge.
-  const labelCount = Math.min(4, series.length);
-  const labelled = new Set();
-  let axis = "";
-  for (let i = 0; i < labelCount; i += 1) {
-    const index = labelCount === 1 ? 0 : Math.round(i * (series.length - 1) / (labelCount - 1));
-    if (labelled.has(index)) continue;
-    labelled.add(index);
-    const anchor = labelCount === 1 ? "middle" : i === 0 ? "start" : i === labelCount - 1 ? "end" : "middle";
-    axis += `<text x="${px(index)}" y="${height - 8}" text-anchor="${anchor}">${new Date(series[index].at_ms).toLocaleDateString([], { month: "short", day: "numeric" })}</text>`;
-  }
-  // A single sample has no line to draw, so mark the point itself rather than
-  // leaving the plot looking empty.
-  const marker = series.length === 1
-    ? `<circle class="line" cx="${px(0).toFixed(1)}" cy="${py(series[0].value).toFixed(1)}" r="2.5" fill="none"/>`
-    : "";
-  container.innerHTML = `<svg viewBox="0 0 ${width} ${height}">${grid}${axis}<polyline class="line" points="${points}"/>${marker}</svg>`;
 }
 
 async function refreshDashboard(knownDirect = null, force = false) {
