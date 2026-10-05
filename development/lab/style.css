@@ -1,0 +1,130 @@
+/* OpenAuto lab — same visual language as the app: pure black, 1px hairlines,
+   zero radius, no shadows or gradients. */
+
+:root {
+  --ink: #ededed;
+  --ink-2: #a8a8a8;
+  --ink-3: #6f6f6f;
+  --line: #232323;
+  --line-2: #333;
+  --warn: #d8a13a;
+  --hot: #d2645a;
+  --ok: #7fbf7f;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: #000;
+  color: var(--ink);
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px 26px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+h1 { margin: 0; font-size: 20px; font-weight: 400; letter-spacing: 0.02em; }
+h2 { margin: 0 0 8px; font-size: 14px; font-weight: 400; }
+.eyebrow { margin: 0 0 4px; color: var(--ink-3); font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; }
+
+.status { display: flex; gap: 8px; }
+.badge {
+  padding: 4px 9px;
+  border: 1px solid var(--line-2);
+  color: var(--ink-2);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.badge.busy { border-color: var(--warn); color: var(--warn); }
+
+.lede {
+  margin: 0;
+  padding: 14px 26px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-3);
+  max-width: 900px;
+}
+
+main {
+  display: grid;
+  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+  gap: 20px;
+  padding: 20px 26px 60px;
+  align-items: start;
+}
+
+@media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+
+.col { display: grid; gap: 16px; min-width: 0; }
+.col.wide { min-width: 0; }
+
+.card { border: 1px solid var(--line); padding: 16px; min-width: 0; }
+.card.grow { display: flex; flex-direction: column; min-height: 60vh; }
+.card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+
+.hint { margin: 0 0 12px; color: var(--ink-3); font-size: 12px; }
+.hint code, code { color: var(--ink-2); }
+
+label { display: grid; gap: 4px; color: var(--ink-3); font-size: 12px; }
+label.inline { display: inline-flex; align-items: center; gap: 6px; }
+label.check { color: var(--ink-2); }
+
+input, select, textarea, button {
+  font: inherit;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--line-2);
+  border-radius: 0;
+  padding: 7px 9px;
+  min-height: 34px;
+}
+
+textarea { width: 100%; resize: vertical; }
+
+button { cursor: pointer; color: var(--ink-2); }
+button:hover { border-color: var(--ink-3); color: var(--ink); }
+button.primary { color: var(--ink); border-color: var(--ink-3); }
+
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-top: 12px; }
+.row.wrap { align-items: center; }
+
+.ladder { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; }
+.ladder button { min-width: 62px; }
+
+output {
+  display: block;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+pre#state {
+  margin: 12px 0 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  max-height: 320px;
+  overflow: auto;
+  color: var(--ink-2);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.scroll { flex: 1; overflow: auto; border-top: 1px solid var(--line); }
+
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { position: sticky; top: 0; background: #000; color: var(--ink-3); font-weight: 400; font-size: 11px; }
+td { color: var(--ink-2); font-size: 12px; }
+td.payload { color: var(--ink-3); max-width: 640px; word-break: break-all; }
+tbody tr:hover td { color: var(--ink); background: #0a0a0a; }

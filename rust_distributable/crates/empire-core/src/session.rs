@@ -131,7 +131,18 @@ pub struct MapViewport {
     pub top: i64,
     pub columns: u8,
     pub rows: u8,
+    /// Inclusive width and height of each `gaa` window.
+    #[serde(default = "default_map_window_size")]
+    pub window_size: u16,
 }
+
+const fn default_map_window_size() -> u16 {
+    13
+}
+
+/// Largest square `gaa` window accepted by the live server. Its bounds differ
+/// by 100, so the inclusive width is 101 coordinates.
+const INITIAL_SCAN_WINDOW_SIZE: u16 = 101;
 
 impl MapViewport {
     pub const fn sands_default() -> Self {
@@ -141,15 +152,17 @@ impl MapViewport {
             top: 598,
             columns: 3,
             rows: 2,
+            window_size: 13,
         }
     }
 
     pub fn requests(self, server_header: &str) -> Result<Vec<String>, PacketError> {
         let mut packets = Vec::with_capacity(usize::from(self.columns) * usize::from(self.rows));
+        let window_size = i64::from(self.window_size.max(1));
         for row in 0..self.rows {
             for column in 0..self.columns {
-                let ax1 = self.left + i64::from(column) * 13;
-                let ay1 = self.top + i64::from(row) * 13;
+                let ax1 = self.left + i64::from(column) * window_size;
+                let ay1 = self.top + i64::from(row) * window_size;
                 packets.push(encode_client_xt(
                     server_header,
                     "gaa",
@@ -158,8 +171,8 @@ impl MapViewport {
                         "KID": self.kingdom_id,
                         "AX1": ax1,
                         "AY1": ay1,
-                        "AX2": ax1 + 12,
-                        "AY2": ay1 + 12,
+                        "AX2": ax1 + window_size - 1,
+                        "AY2": ay1 + window_size - 1,
                     }),
                 )?);
             }
@@ -439,11 +452,13 @@ fn viewport_from_bootstrap(payload: &Value, kingdom_id: i64) -> Option<MapViewpo
         top: y.saturating_sub(dy),
         columns: 3,
         rows: 2,
+        window_size: 13,
     })
 }
 
 /// A square grid covering `radius` map coordinates around the main castle.
-/// Radius 6 is exactly one 13×13 `gaa`; radius 50 is an 8×8 grid.
+/// The server accepts an inclusive 101×101 window, so radius 50 is exactly one
+/// `gaa`; larger configured radii are tiled with the same accepted size.
 fn radius_viewport_from_bootstrap(
     payload: &Value,
     kingdom_id: i64,
@@ -451,13 +466,14 @@ fn radius_viewport_from_bootstrap(
 ) -> Option<MapViewport> {
     let (x, y) = main_castle_coordinate(payload, kingdom_id)?;
     let diameter = u32::from(radius).saturating_mul(2).saturating_add(1);
-    let side = u8::try_from(diameter.div_ceil(13)).ok()?;
+    let side = u8::try_from(diameter.div_ceil(u32::from(INITIAL_SCAN_WINDOW_SIZE))).ok()?;
     Some(MapViewport {
         kingdom_id,
         left: x.saturating_sub(i64::from(radius)),
         top: y.saturating_sub(i64::from(radius)),
         columns: side,
         rows: side,
+        window_size: INITIAL_SCAN_WINDOW_SIZE,
     })
 }
 
@@ -573,9 +589,14 @@ mod tests {
         let fifty = radius_viewport_from_bootstrap(&payload, 1, 50).unwrap();
         assert_eq!(
             (fifty.left, fifty.top, fifty.columns, fifty.rows),
-            (543, 563, 8, 8)
+            (543, 563, 1, 1)
         );
-        assert_eq!(fifty.requests(DEFAULT_SERVER_HEADER).unwrap().len(), 64);
+        let packets = fifty.requests(DEFAULT_SERVER_HEADER).unwrap();
+        assert_eq!(packets.len(), 1);
+        assert!(packets[0].contains("\"AX2\":643"), "{}", packets[0]);
+
+        let one_fifty = radius_viewport_from_bootstrap(&payload, 1, 150).unwrap();
+        assert_eq!((one_fifty.columns, one_fifty.rows), (3, 3));
     }
 
     #[test]
@@ -599,14 +620,14 @@ mod tests {
             .unwrap();
 
         let green = session.on_server_text("%xt%jaa%1%0%{}%").unwrap();
-        assert_eq!(green.len(), 66);
+        assert_eq!(green.len(), 3);
         assert!(green[2..].iter().all(|packet| packet.contains("\"KID\":0")));
 
         for (current, next) in [(0, 2), (2, 1), (1, 3)] {
             let frames = session
                 .on_server_text(&format!("%xt%gaa%1%0%{{\"KID\":{current},\"AI\":[]}}%"))
                 .unwrap();
-            assert_eq!(frames.len(), 66);
+            assert_eq!(frames.len(), 3);
             assert!(
                 frames[2..]
                     .iter()
@@ -705,8 +726,8 @@ mod tests {
             vec![0, 2, 1],
             "Ice before Sands, and Fire switched off"
         );
-        // Radius 50 is an 8×8 grid per kingdom.
-        assert!(plan.iter().all(|view| view.columns == 8 && view.rows == 8));
+        // Radius 50 fits one accepted 101×101 window per kingdom.
+        assert!(plan.iter().all(|view| view.columns == 1 && view.rows == 1));
     }
 
     /// The radius is per kingdom, so one kingdom can be learned far and another
@@ -741,7 +762,7 @@ mod tests {
                 .map(|view| (view.columns, view.rows))
         };
         assert_eq!(grid(2), Some((1, 1)));
-        assert_eq!(grid(1), Some((8, 8)));
+        assert_eq!(grid(1), Some((1, 1)));
         assert_eq!(grid(3), Some((3, 2)));
     }
 

@@ -12,14 +12,14 @@
 //! x ≡ y (mod 39)   and   x mod 39 ∈ {9, 29}
 //! ```
 //!
-//! That is two interleaved 39-unit grids offset by `(20, 20)`. So neighbouring
-//! fortresses are 20 and then 19 apart along the shared diagonal, and the same
-//! 39 apart along a row or column. The previous implementation stepped a flat
-//! ±17, which lands between slots and can never hit anything.
+//! That is one lattice with two residue families interleaved: a slot's family is
+//! decided by its residue, the two are 20 apart, and walking a diagonal they
+//! alternate 20 then 19. (Naming this "two grids" is a trap — it invites two
+//! sweeps, and the second one re-probes exactly what the first already answered.)
 //!
-//! What this buys the runner: the slots worth visiting are enumerable. The
-//! runner can cover the observed finite map exactly and resume that walk from
-//! durable completion markers.
+//! What this buys the runner: the slots worth visiting are enumerable. A single
+//! window can span *both* families, so one cursor per kingdom covers the
+//! observed finite map exactly once and resumes from durable completion markers.
 
 /// Distance between two slots on the same grid.
 pub const LATTICE_STEP: i64 = 39;
@@ -81,15 +81,80 @@ pub fn all_outer_kingdom_slots() -> Vec<(i64, i64)> {
     slots_in(0, 0, OUTER_MAP_MAX_COORD, OUTER_MAP_MAX_COORD)
 }
 
-/// Distance between two blocks on one grid: two lattice steps.
-pub const BLOCK_STEP: i64 = LATTICE_STEP * 2;
+/// Slots of each residue family one request answers along an axis.
+///
+/// Three is the widest setting the server honours. Four was measured and is
+/// **refused** — the reply comes back with an empty payload, the same tell as a
+/// rejected `adi` — so this is the ceiling, not a preference. At three the window
+/// spans three slots on each family, so one request answers 18 slots and a
+/// kingdom is covered in 121 requests instead of 289.
+///
+/// Measured ladder at 2026-10-05: 23 and 62 and 101 cells honoured, 138 refused.
+pub const SLOTS_PER_FAMILY_PER_AXIS: i64 = 3;
 
-/// Slack added around a block so none of its slots sits on a window edge.
+/// Distance between the two residue families: `9 + 20 = 29`.
+const FAMILY_GAP: i64 = LATTICE_OFFSETS[1] - LATTICE_OFFSETS[0];
+
+/// Distance between neighbouring blocks of a sweep.
+pub const BLOCK_STEP: i64 = LATTICE_STEP * SLOTS_PER_FAMILY_PER_AXIS;
+
+/// Distance from a block's origin to the furthest slot it answers.
+pub const BLOCK_SPAN: i64 = LATTICE_STEP * (SLOTS_PER_FAMILY_PER_AXIS - 1) + FAMILY_GAP;
+
+/// Alignment the combined sweep is anchored on.
+///
+/// The window reaches far enough to answer the other family as well, so a
+/// kingdom needs one cursor, not one per family.
+pub const SWEEP_ALIGNMENT: i64 = LATTICE_OFFSETS[0];
+
+/// The four directions the discovery arms walk, as block steps.
+pub const ARM_STEPS: [(i64, i64); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+
+/// Empty windows in a row that end an arm.
+///
+/// One is not enough: a band of fortresses can have a gap, and stopping at the
+/// first empty window would end the walk early and silently miss everything
+/// beyond it. Two costs four extra requests in total and rules that out.
+pub const ARM_EMPTY_LIMIT: u8 = 2;
+
+/// A hard ceiling on one arm, so a nonsense reply cannot walk forever.
+///
+/// Far larger than any observed kingdom: the widest measured band spans eight
+/// blocks, so 32 blocks is ~4x margin and still bounded.
+pub const ARM_MAX_STEPS: u8 = 32;
+
+/// The block origin whose window covers this coordinate.
+pub fn block_origin(point: (i64, i64)) -> (i64, i64) {
+    (
+        point.0 - (point.0 - SWEEP_ALIGNMENT).rem_euclid(BLOCK_STEP),
+        point.1 - (point.1 - SWEEP_ALIGNMENT).rem_euclid(BLOCK_STEP),
+    )
+}
+
+/// The rectangle spanned by a set of block origins, inclusive.
+///
+/// Built from origins rather than coordinates so it always lands on the lattice
+/// and always contains whole blocks — a partially covered block would leave
+/// slots unprobed at the edge.
+pub fn bounds_covering(origins: &[(i64, i64)]) -> Bounds {
+    let left = origins.iter().map(|o| o.0).min().unwrap_or(SWEEP_ALIGNMENT);
+    let top = origins.iter().map(|o| o.1).min().unwrap_or(SWEEP_ALIGNMENT);
+    let right = origins.iter().map(|o| o.0).max().unwrap_or(SWEEP_ALIGNMENT);
+    let bottom = origins.iter().map(|o| o.1).max().unwrap_or(SWEEP_ALIGNMENT);
+    Bounds {
+        left,
+        top,
+        right: right + BLOCK_SPAN,
+        bottom: bottom + BLOCK_SPAN,
+    }
+}
+
+/// Slack added around a block so no slot sits exactly on a window edge.
 ///
 /// A 13×13 tile is what the game client asks for, but that is a client choice,
-/// not a server limit — the same request is accepted with a larger span. One
-/// unit is enough to keep all four slots strictly inside, and the window should
-/// stay as small as that allows.
+/// not a server limit — the same request is accepted with a larger span. Bounds
+/// are inclusive, so zero would be safe; one is kept as cheap insurance and
+/// costs two cells of width.
 pub const GAA_PAD: i64 = 1;
 
 /// A rectangle in map coordinates. Both edges are inclusive.
@@ -141,32 +206,35 @@ pub struct GaaWindow {
     pub bottom: i64,
 }
 
-/// One 2×2 block of lattice slots: the unit a single `gaa` request answers.
+/// One block of lattice slots: the unit a single `gaa` request answers.
+///
+/// The origin sits on the lower residue family. The window spans far enough to
+/// reach the other one, so a block answers slots from each family rather than
+/// the four corners of one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FortressBlock {
-    /// Low slot of the block on its own grid.
+    /// Low slot of the block on the lower residue family.
     pub x: i64,
     pub y: i64,
 }
 
 impl FortressBlock {
-    /// The four slots this block answers.
-    pub const fn slots(self) -> [(i64, i64); 4] {
-        [
-            (self.x, self.y),
-            (self.x + LATTICE_STEP, self.y),
-            (self.x, self.y + LATTICE_STEP),
-            (self.x + LATTICE_STEP, self.y + LATTICE_STEP),
-        ]
+    /// Every slot this block answers.
+    ///
+    /// Derived from the window rather than listed by hand, so it cannot drift
+    /// from [`slots_in`] — the same definition of what a slot is.
+    pub fn slots(self) -> Vec<(i64, i64)> {
+        let window = self.window();
+        slots_in(window.left, window.top, window.right, window.bottom)
     }
 
-    /// Smallest practical `gaa` rectangle containing all four slots.
+    /// The `gaa` rectangle containing all of them.
     pub const fn window(self) -> GaaWindow {
         GaaWindow {
             left: self.x - GAA_PAD,
             top: self.y - GAA_PAD,
-            right: self.x + LATTICE_STEP + GAA_PAD,
-            bottom: self.y + LATTICE_STEP + GAA_PAD,
+            right: self.x + BLOCK_SPAN + GAA_PAD,
+            bottom: self.y + BLOCK_SPAN + GAA_PAD,
         }
     }
 }
@@ -323,14 +391,20 @@ mod tests {
         }));
     }
 
-    /// Four slots per request, which is the whole point of the block.
+    /// Eighteen slots per request, drawn evenly from both families, which is the
+    /// point of the window being wide enough to span them.
     #[test]
-    fn one_request_answers_a_whole_block_of_four_slots() {
-        let block = FortressBlock { x: 29, y: 29 };
+    fn one_request_answers_eighteen_slots_across_both_families() {
+        let block = FortressBlock { x: 9, y: 9 };
         let window = block.window();
-        assert_eq!((window.left, window.top), (28, 28));
-        assert_eq!((window.right, window.bottom), (69, 69));
-        for slot in block.slots() {
+        assert_eq!((window.left, window.top), (8, 8));
+        assert_eq!((window.right, window.bottom), (108, 108));
+        let slots = block.slots();
+        assert_eq!(slots.len(), 18, "{slots:?}");
+        let lower = slots.iter().filter(|(x, _)| x % LATTICE_STEP == 9).count();
+        let upper = slots.iter().filter(|(x, _)| x % LATTICE_STEP == 29).count();
+        assert_eq!((lower, upper), (9, 9), "nine from each family: {slots:?}");
+        for slot in slots {
             assert!(is_slot(slot.0, slot.1), "{slot:?} is not a slot");
             // Strictly inside, never on an edge the server might exclude.
             assert!(window.left < slot.0 && slot.0 < window.right, "{slot:?}");
@@ -339,40 +413,38 @@ mod tests {
     }
 
     #[test]
-    fn aligning_a_sweep_lands_its_origin_on_each_grid() {
+    fn aligning_a_sweep_lands_its_origin_on_the_lattice() {
         let bounds = Bounds::outer_kingdom();
         assert_eq!((bounds.left, bounds.top), (0, 0));
-        for offset in LATTICE_OFFSETS {
-            let aligned = align_bounds(bounds, offset);
-            assert_eq!(aligned.left % LATTICE_STEP, offset);
-            assert_eq!(aligned.top % LATTICE_STEP, offset);
-            assert!(is_slot(aligned.left, aligned.top));
-            // The limits are not moved.
-            assert_eq!((aligned.right, aligned.bottom), (1_285, 1_285));
-            assert_eq!(aligned.block_count(), 289);
-        }
+        let aligned = align_bounds(bounds, SWEEP_ALIGNMENT);
+        assert_eq!(aligned.left % LATTICE_STEP, SWEEP_ALIGNMENT);
+        assert_eq!(aligned.top % LATTICE_STEP, SWEEP_ALIGNMENT);
+        assert!(is_slot(aligned.left, aligned.top));
+        // The limits are not moved.
+        assert_eq!((aligned.right, aligned.bottom), (1_285, 1_285));
+        assert_eq!(aligned.block_count(), 121);
     }
 
     #[test]
-    fn a_cursor_walks_one_grid_in_rows_and_wraps() {
-        let bounds = align_bounds(Bounds::outer_kingdom(), 29);
+    fn a_cursor_walks_the_kingdom_in_rows_and_wraps() {
+        let bounds = align_bounds(Bounds::outer_kingdom(), SWEEP_ALIGNMENT);
         let mut cursor = FortressScanCursor::first(bounds);
         let mut seen = Vec::new();
         while let Some(block) = cursor.block(bounds) {
             seen.push((block.x, block.y));
             cursor.advance(bounds);
         }
-        assert_eq!(seen.len(), 289);
-        assert_eq!(seen[0], (29, 29));
-        // Seventeen 78-unit columns, so the eighteenth block starts row two.
-        assert_eq!(seen[17], (29, 107));
-        assert_eq!(*seen.last().unwrap(), (1_277, 1_277));
+        assert_eq!(seen.len(), 121);
+        assert_eq!(seen[0], (9, 9));
+        // Eleven 117-unit columns, so the twelfth block starts row two.
+        assert_eq!(seen[11], (9, 126));
+        assert_eq!(*seen.last().unwrap(), (1_179, 1_179));
 
         // Reading does not move the cursor: a lost response retries the same
-        // block rather than skipping it.
+        // block rather than skipping eighteen slots.
         let cursor = FortressScanCursor::first(bounds);
-        assert_eq!(cursor.block(bounds), Some(FortressBlock { x: 29, y: 29 }));
-        assert_eq!(cursor.block(bounds), Some(FortressBlock { x: 29, y: 29 }));
+        assert_eq!(cursor.block(bounds), Some(FortressBlock { x: 9, y: 9 }));
+        assert_eq!(cursor.block(bounds), Some(FortressBlock { x: 9, y: 9 }));
     }
 
     #[test]
@@ -389,33 +461,141 @@ mod tests {
         assert_eq!(cursor.block(bounds), None);
     }
 
-    /// The two sweeps are the request count for a kingdom: 578, not 2,178.
+    /// The walk is the request count for a kingdom: 121, not 289 and not 2,178.
     #[test]
-    fn the_two_sweeps_are_578_requests_for_a_kingdom() {
-        let total: i64 = LATTICE_OFFSETS
+    fn one_sweep_is_121_requests_for_a_kingdom() {
+        assert_eq!(
+            align_bounds(Bounds::outer_kingdom(), SWEEP_ALIGNMENT).block_count(),
+            121
+        );
+    }
+
+    /// The discovery base is the block over the kingdom's castle, and the four
+    /// arms walk outward from it until two windows in a row come back empty.
+    ///
+    /// Replays the geometry the live arms actually produced: from a castle at
+    /// 593,613 in Sands they settled on a 7x8 block rectangle at origins
+    /// x 243..945, y 126..945, and that rectangle held all 806 measured
+    /// fortresses. The raw coordinates were in a database that has since been
+    /// wiped, so this reproduces the shape rather than the original rows.
+    #[test]
+    fn the_four_arms_walk_outward_and_stop_two_empties_past_the_edge() {
+        let origins_x = [243_i64, 360, 477, 594, 711, 828, 945];
+        let origins_y = [126_i64, 243, 360, 477, 594, 711, 828, 945];
+        // One fortress on every block of the band, which is what lets the arms
+        // run to its edge instead of stopping inside it.
+        let fortresses: Vec<(i64, i64)> = origins_x
             .iter()
-            .map(|offset| align_bounds(Bounds::outer_kingdom(), *offset).block_count())
-            .sum();
-        assert_eq!(total, 578);
+            .flat_map(|x| origins_y.iter().map(move |y| (*x, *y)))
+            .collect();
+        assert_eq!(fortresses.len(), 56);
+
+        let base = block_origin((593, 613));
+        assert_eq!(base, (477, 594), "the castle's own block");
+
+        let holds = |origin: (i64, i64)| {
+            let window = FortressBlock {
+                x: origin.0,
+                y: origin.1,
+            }
+            .window();
+            fortresses.iter().any(|(x, y)| {
+                window.left <= *x && *x <= window.right && window.top <= *y && *y <= window.bottom
+            })
+        };
+
+        let mut reached = vec![base];
+        for (dx, dy) in ARM_STEPS {
+            let mut origin = base;
+            let mut empties = 0_u8;
+            for _ in 0..ARM_MAX_STEPS {
+                // The arm always advances, empty or not. Re-probing the same
+                // block on an empty reply would "confirm" the same hole twice
+                // and never look past it.
+                origin = (origin.0 + dx * BLOCK_STEP, origin.1 + dy * BLOCK_STEP);
+                if holds(origin) {
+                    reached.push(origin);
+                    empties = 0;
+                } else {
+                    empties += 1;
+                    if empties >= ARM_EMPTY_LIMIT {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let bounds = bounds_covering(&reached);
+        assert_eq!(
+            (bounds.left, bounds.top, bounds.right, bounds.bottom),
+            (243, 126, 1_043, 1_043)
+        );
+        let missed = fortresses
+            .iter()
+            .filter(|(x, y)| {
+                *x < bounds.left || *x > bounds.right || *y < bounds.top || *y > bounds.bottom
+            })
+            .count();
+        assert_eq!(missed, 0, "an arm stopped before the band ended");
+
+        // 7 x 8 blocks, against the flat sweep's 11 x 11.
+        let fill = align_bounds(bounds, SWEEP_ALIGNMENT).block_count();
+        assert_eq!(fill, 56);
+    }
+
+    /// The guard that makes an arm safe. Without it a single empty window inside
+    /// the band ends the walk, and everything past it is silently missed.
+    #[test]
+    fn a_gap_inside_the_band_does_not_end_an_arm() {
+        let base = (477_i64, 594_i64);
+        // A band both sides of the base with one empty block in the middle.
+        let band = [243_i64, 360, 477, 711, 828, 945];
+        let holds = |origin: (i64, i64)| band.contains(&origin.0) && origin.1 == 594;
+
+        let mut origin = base;
+        let mut reached = vec![base];
+        let mut empties = 0_u8;
+        for _ in 0..ARM_MAX_STEPS {
+            origin = (origin.0 + BLOCK_STEP, origin.1);
+            if holds(origin) {
+                reached.push(origin);
+                empties = 0;
+            } else {
+                empties += 1;
+                if empties >= ARM_EMPTY_LIMIT {
+                    break;
+                }
+            }
+        }
+        assert!(
+            reached.contains(&(945, 594)),
+            "the arm must cross a one-block gap: {reached:?}"
+        );
     }
 
     /// Every slot has to be answered by some block, or the walk would leave
-    /// fortresses behind even though it swept the whole rectangle.
+    /// fortresses behind even though it swept the whole rectangle — and no slot
+    /// may be answered twice, or the walk is doing work it has already done.
     #[test]
-    fn the_sweeps_cover_every_slot_in_the_kingdom() {
-        let mut covered = std::collections::HashSet::new();
-        for offset in LATTICE_OFFSETS {
-            let bounds = align_bounds(Bounds::outer_kingdom(), offset);
-            let mut cursor = FortressScanCursor::first(bounds);
-            while let Some(block) = cursor.block(bounds) {
-                for slot in block.slots() {
-                    covered.insert(slot);
-                }
-                cursor.advance(bounds);
+    fn one_sweep_covers_every_slot_exactly_once() {
+        let bounds = align_bounds(Bounds::outer_kingdom(), SWEEP_ALIGNMENT);
+        let mut cursor = FortressScanCursor::first(bounds);
+        let mut visits = std::collections::HashMap::new();
+        while let Some(block) = cursor.block(bounds) {
+            for slot in block.slots() {
+                *visits.entry(slot).or_insert(0_u32) += 1;
             }
+            cursor.advance(bounds);
         }
         for slot in all_outer_kingdom_slots() {
-            assert!(covered.contains(&slot), "{slot:?} is never probed");
+            assert_eq!(
+                visits.get(&slot).copied().unwrap_or(0),
+                1,
+                "{slot:?} is probed the wrong number of times"
+            );
         }
+        // At this width the windows tile the map almost exactly: 121 x 18 = 2,178,
+        // which is every slot, so nothing is requested outside it either.
+        assert_eq!(visits.len(), 2_178);
     }
 }

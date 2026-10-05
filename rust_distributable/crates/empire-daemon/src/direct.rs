@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     sync::Arc,
     time::Duration,
 };
@@ -11,7 +11,10 @@ use empire_core::{
         rbc_targets,
     },
     event::Direction,
-    fortress::{FortressBlock, LATTICE_OFFSETS},
+    fortress::{
+        ARM_EMPTY_LIMIT, ARM_MAX_STEPS, ARM_STEPS, BLOCK_STEP, Bounds, FortressBlock,
+        SWEEP_ALIGNMENT, block_origin, bounds_covering,
+    },
     hunt::{self, MapTarget},
     injection::{InjectionRequest, channel},
     pacing::{self, PacingPolicy, RecruitTempo, Rng, Waits},
@@ -44,17 +47,150 @@ const VENTRILO_PORTAL_ACCOUNT_ID: &str = "1780270034676433896";
 // not the much smaller in-world owner ID, and it is account-specific.
 const PINGPOKO_PORTAL_ACCOUNT_ID: &str = "1782860727866351909";
 
-/// Delay after a confirmed fortress probe. Only one request is in flight at a
-/// time, so this is the whole scan's tempo: about 1.15 s per probe turns a
-/// 578-probe kingdom into the ten minutes a single-kingdom run costs.
+/// How often the runner re-checks which sweeps the running bot still needs.
+const FORTRESS_PLAN_INTERVAL_MS: i64 = 2_000;
+
+/// Delay after a confirmed fortress probe.
+///
+/// One request is in flight at a time, so this is the whole walk's tempo. The
+/// server answers a `gaa` in roughly 0.1-0.5 s (measured, and it varies by
+/// ground rather than by window size). The agreed policy is a 0.7-second floor
+/// plus one uniformly random fractional second.
 fn fortress_probe_delay_seconds(rng: &mut Rng) -> f64 {
-    rng.uniform(1.05, 1.25)
+    0.7 + rng.uniform(0.0, 1.0)
 }
 
 /// Extra pause when the walk moves to the next kingdom, so a kingdom boundary
 /// is not a burst of requests.
 fn fortress_kingdom_switch_delay_seconds(rng: &mut Rng) -> f64 {
     rng.uniform(3.4, 4.8)
+}
+
+/// Measures the rectangle a kingdom's fortresses actually occupy.
+///
+/// The walk used to be a flat sweep of a rectangle hard-coded from one server's
+/// map, which pays 121 requests on every kingdom and is simply wrong on a server
+/// whose map is a different size. This finds the extent instead: start on the
+/// block over the kingdom's own castle and walk four arms outward, one window at
+/// a time, until an arm has seen [`ARM_EMPTY_LIMIT`] empty windows in a row. The
+/// rectangle those stops bound is then filled row by row.
+///
+/// An arm advances on an empty window as well as on a full one. The guard is
+/// meant to survive a hole *inside* the band - a block with no fortress in it
+/// between two that have some - so the walk has to look past the hole to decide,
+/// not re-ask about it.
+struct FortressDiscovery {
+    kingdom_id: i64,
+    /// The block over the kingdom's castle. Its window spans the castle, so it
+    /// is always full and is where every arm starts.
+    base: (i64, i64),
+    /// The block in flight, waiting for its reply.
+    probe: (i64, i64),
+    /// Which of [`ARM_STEPS`] is being walked.
+    arm: usize,
+    /// Consecutive empty windows seen by the current arm.
+    empties: u8,
+    /// Windows asked about by the current arm, so a kingdom with a fortress in
+    /// every direction cannot walk forever.
+    steps: u8,
+    /// Origins whose window held at least one fortress.
+    reached: Vec<(i64, i64)>,
+    /// Set once the base has been answered, after which the arms run.
+    seen_base: bool,
+    /// Answered discovery windows. Before the boundary is known the UI treats
+    /// each answer as one estimated percentage point (capped below complete).
+    probes_answered: u64,
+    done: bool,
+}
+
+impl FortressDiscovery {
+    fn new(kingdom_id: i64, base: (i64, i64)) -> Self {
+        Self {
+            kingdom_id,
+            base,
+            probe: base,
+            arm: 0,
+            empties: 0,
+            steps: 0,
+            reached: Vec::new(),
+            seen_base: false,
+            probes_answered: 0,
+            done: false,
+        }
+    }
+
+    /// The window to ask about next, or `None` once the rectangle is measured.
+    fn next(&self) -> Option<FortressBlock> {
+        (!self.done).then_some(FortressBlock {
+            x: self.probe.0,
+            y: self.probe.1,
+        })
+    }
+
+    /// Record what the window in flight held.
+    ///
+    /// `hit` is false both for a window with no fortress and for a refused one.
+    /// A refusal is a window we did not really look at, so treating it as empty
+    /// ends the arm early and costs coverage, not correctness - the opposite
+    /// choice would extend the rectangle over ground we never saw.
+    fn observe(&mut self, hit: bool) {
+        if self.done {
+            return;
+        }
+        self.probes_answered = self.probes_answered.saturating_add(1);
+        if !self.seen_base {
+            self.seen_base = true;
+            if hit {
+                self.reached.push(self.base);
+            }
+            self.probe = self.base;
+            self.step_arm();
+            return;
+        }
+        if hit {
+            self.reached.push(self.probe);
+            self.empties = 0;
+        } else {
+            self.empties += 1;
+        }
+        self.steps += 1;
+        if self.empties >= ARM_EMPTY_LIMIT || self.steps >= ARM_MAX_STEPS {
+            self.arm += 1;
+            self.empties = 0;
+            self.steps = 0;
+            if self.arm >= ARM_STEPS.len() {
+                self.done = true;
+                return;
+            }
+            self.probe = self.base;
+        }
+        self.step_arm();
+    }
+
+    fn estimated_percent(&self) -> u64 {
+        self.probes_answered.min(99)
+    }
+
+    fn step_arm(&mut self) {
+        let (dx, dy) = ARM_STEPS[self.arm];
+        self.probe = (
+            self.probe.0 + dx * BLOCK_STEP,
+            self.probe.1 + dy * BLOCK_STEP,
+        );
+    }
+
+    /// The measured rectangle, or `None` if no window ever held a fortress.
+    fn bounds(&self) -> Option<Bounds> {
+        (!self.reached.is_empty()).then(|| bounds_covering(&self.reached))
+    }
+}
+
+/// Gap between outward map-scan requests.
+///
+/// The radius scan uses the same response-gated timing as fortress discovery:
+/// a 0.7-second floor plus one random fractional second.
+fn base_scan_delay_seconds(rng: &mut Rng) -> f64 {
+    0.7 + rng.uniform(0.0, 1.0)
 }
 
 #[derive(Debug, Clone)]
@@ -136,16 +272,150 @@ impl InitializeAccountRequest {
 mod server_tests {
     use super::*;
 
-    /// One request has to answer four slots, so the window is the smallest
-    /// rectangle containing a whole lattice block.
+    fn awaiting_fortress_info() -> Automation {
+        let mut automation = Automation::new();
+        automation.phase = AutomationPhase::AwaitAdi {
+            task: ActiveModeTask {
+                mode_id: 1,
+                task_id: "fortress".into(),
+                name: "Sands fortress".into(),
+                profile_id: "attack".into(),
+                payload: json!([]),
+                kingdom_id: 1,
+                level_min: None,
+                level_max: None,
+                source_x: 593,
+                source_y: 613,
+                travel_mode: empire_core::planning::TravelMode::Coin,
+                algorithm: "closest".into(),
+                target_kind: "fortress".into(),
+                commander_lids: vec![7],
+            },
+            target: ReservedTarget {
+                kingdom_id: 1,
+                x: 516,
+                y: 984,
+                level: Some(45),
+            },
+            deadline_ms: now_ms() + REQUEST_TIMEOUT_MS,
+        };
+        automation
+    }
+
+    #[tokio::test]
+    async fn fortress_abi_reply_advances_and_unrelated_packets_preserve_the_waiter() {
+        let store = Store::open("sqlite::memory:").await.unwrap();
+        let mut automation = awaiting_fortress_info();
+        for raw in [
+            "%xt%adi%1%6%null%",
+            "%xt%adi%1%0%{}%",
+            "%xt%gaa%1%0%{\"KID\":1,\"AI\":[]} %",
+            "%xt%cra%1%0%{}%",
+        ] {
+            automation.observe(&store, "ventrilo", raw).await;
+            assert!(
+                matches!(automation.phase, AutomationPhase::AwaitAdi { .. }),
+                "{raw}"
+            );
+            assert!(automation.operational_errors.is_empty());
+        }
+        automation
+            .observe(
+                &store,
+                "ventrilo",
+                "%xt%abi%1%0%{\"KID\":1,\"SCID\":16366514,\"gli\":{\"C\":[{\"ID\":7}]}}%",
+            )
+            .await;
+        assert!(matches!(
+            automation.phase,
+            AutomationPhase::ReadyCra { lord_id: 7, .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn refused_or_empty_abi_never_commits_an_attack() {
+        let store = Store::open("sqlite::memory:").await.unwrap();
+        for raw in ["%xt%abi%1%6%null%", "%xt%abi%1%0%null%"] {
+            let mut automation = awaiting_fortress_info();
+            automation.observe(&store, "ventrilo", raw).await;
+            assert!(matches!(automation.phase, AutomationPhase::Idle { .. }));
+            assert_eq!(automation.operational_errors.len(), 1);
+            assert_eq!(automation.last_cra_ms, None);
+        }
+    }
+
+    /// One request has to answer eighteen slots, so the window is the smallest
+    /// rectangle spanning three slots on each residue family.
     #[test]
     fn a_fortress_probe_asks_for_a_whole_block() {
         let packet =
             fortress_gaa_packet("EmpireEx_21", 1, FortressBlock { x: 633, y: 633 }).unwrap();
         assert!(packet.contains("\"AX1\":632"), "{packet}");
-        assert!(packet.contains("\"AX2\":673"), "{packet}");
+        assert!(packet.contains("\"AX2\":732"), "{packet}");
         assert!(packet.contains("\"AY1\":632"), "{packet}");
-        assert!(packet.contains("\"AY2\":673"), "{packet}");
+        assert!(packet.contains("\"AY2\":732"), "{packet}");
+    }
+
+    #[test]
+    fn the_discovery_walk_measures_a_rectangle_without_a_map_size() {
+        // The shape the live arms produced: a 7x8 block band, no map size given
+        // to the walk anywhere. It has to find the extent on its own.
+        let origins_x = [243_i64, 360, 477, 594, 711, 828, 945];
+        let origins_y = [126_i64, 243, 360, 477, 594, 711, 828, 945];
+        let band = origins_x
+            .iter()
+            .flat_map(|x| origins_y.iter().map(move |y| (*x, *y)))
+            .collect::<Vec<_>>();
+
+        let base = block_origin((593, 613));
+        let mut walk = FortressDiscovery::new(7, base);
+        let mut probes = 0_u32;
+        while let Some(block) = walk.next() {
+            probes += 1;
+            assert!(probes < 200, "the walk never terminated");
+            let holds = band
+                .iter()
+                .any(|(x, y)| block_origin((*x, *y)) == (block.x, block.y));
+            walk.observe(holds);
+        }
+
+        let bounds = walk.bounds().expect("a band with fortresses in it");
+        assert_eq!(
+            (bounds.left, bounds.top, bounds.right, bounds.bottom),
+            (243, 126, 1_043, 1_043)
+        );
+        // Every fortress the band holds is inside the measured rectangle, and
+        // measuring plus filling beats the flat 121-cell sweep.
+        let missed = band
+            .iter()
+            .filter(|(x, y)| {
+                *x < bounds.left || *x > bounds.right || *y < bounds.top || *y > bounds.bottom
+            })
+            .count();
+        assert_eq!(missed, 0);
+        let fill = empire_core::fortress::align_bounds(bounds, SWEEP_ALIGNMENT).block_count();
+        assert!((probes as i64) + fill < 121, "{} probes", probes);
+    }
+
+    /// A refused window arrives as an empty payload, so the walk cannot tell it
+    /// apart from ground with nothing on it. Treating it as empty ends the arm
+    /// early: that under-covers, which shows up as a missed fortress. Assuming
+    /// it held something would extend the rectangle over ground never seen,
+    /// which is worse. This pins the conservative direction.
+    #[test]
+    fn a_refused_window_ends_an_arm_rather_than_extending_it() {
+        let base = (477_i64, 594_i64);
+        let mut walk = FortressDiscovery::new(7, base);
+        // The base answers, then every arm window is refused.
+        let mut probes = 0_u32;
+        while let Some(_block) = walk.next() {
+            probes += 1;
+            assert!(probes < 20, "refusals must end the arms, not grow them");
+            walk.observe(false);
+        }
+        // One base plus two refusals per arm, and nothing was ever reached.
+        assert_eq!(probes, 1 + 2 * ARM_STEPS.len() as u32);
+        assert!(walk.bounds().is_none(), "a refused walk measures nothing");
     }
 
     #[test]
@@ -154,11 +424,64 @@ mod server_tests {
         let samples = (0..1_000)
             .map(|_| fortress_probe_delay_seconds(&mut rng))
             .collect::<Vec<_>>();
-        assert!(samples.iter().all(|delay| (1.05..=1.25).contains(delay)));
-        // 578 probes at this tempo is the ten minutes a kingdom should cost.
+        assert!(samples.iter().all(|delay| (0.70..=1.70).contains(delay)));
+        // The delay alone is about 145 s for a full 121-cell fallback sweep; a measured
+        // rectangle is smaller, and the server's own time is added on top and is
+        // not measurable from here.
         let mean = samples.iter().sum::<f64>() / samples.len() as f64;
-        let minutes = 578.0 * mean / 60.0;
-        assert!((9.5..=12.5).contains(&minutes), "{minutes} min per kingdom");
+        let seconds = 121.0 * mean;
+        assert!(
+            (130.0..=160.0).contains(&seconds),
+            "{seconds} s per kingdom"
+        );
+    }
+
+    #[test]
+    fn the_second_error_inside_five_minutes_trips_the_safety_pause() {
+        let mut automation = Automation::new();
+        automation.record_operational_error(1_000_000, "first");
+        assert_eq!(automation.safety_pause_until_ms, 0);
+        automation.record_operational_error(1_299_999, "second");
+        assert_eq!(automation.safety_pause_until_ms, 1_300_000);
+        assert!(automation.detail.contains("Safety pause"));
+    }
+
+    #[test]
+    fn old_errors_age_out_of_the_rolling_window() {
+        let mut automation = Automation::new();
+        automation.record_operational_error(1_000_000, "old");
+        automation.record_operational_error(1_300_000, "new");
+        assert_eq!(automation.operational_errors.len(), 1);
+        assert_eq!(automation.safety_pause_until_ms, 0);
+    }
+
+    #[test]
+    fn large_map_diagnostics_are_compacted_without_losing_counts() {
+        let mut objects = (0..500).map(|x| json!([1, x, 1, -1])).collect::<Vec<_>>();
+        objects.push(json!([2, 600, 610, -1, 50]));
+        objects.push(json!([11, 594, 594, -1, 45, 0, 7, 1]));
+        let compacted = compact_diagnostic_payload("gaa", json!({"KID": 1, "AI": objects}));
+        assert_eq!(compacted.pointer("/map_summary/objects"), Some(&json!(502)));
+        assert_eq!(compacted.pointer("/map_summary/rbcs"), Some(&json!(1)));
+        assert_eq!(
+            compacted.pointer("/map_summary/fortresses"),
+            Some(&json!(1))
+        );
+        assert!(compacted.get("AI").is_none());
+    }
+
+    #[test]
+    fn the_outward_scan_is_wide_rather_than_uniform() {
+        let mut rng = Rng::seeded(11);
+        let samples = (0..2_000)
+            .map(|_| base_scan_delay_seconds(&mut rng))
+            .collect::<Vec<_>>();
+        assert!(samples.iter().all(|delay| (0.7..=1.7).contains(delay)));
+        let mean = samples.iter().sum::<f64>() / samples.len() as f64;
+        assert!((1.15..=1.25).contains(&mean), "mean {mean}");
+        let low = samples.iter().copied().fold(f64::MAX, f64::min);
+        let high = samples.iter().copied().fold(f64::MIN, f64::max);
+        assert!(high - low > 0.95, "spread {}", high - low);
     }
 
     #[test]
@@ -240,6 +563,49 @@ mod server_tests {
         assert_eq!(map.current_castle_id, None);
         assert_eq!(map.last_castle_switch_at_ms, 10);
     }
+
+    #[tokio::test]
+    async fn cooldown_reads_keep_fortresses_but_do_not_expand_the_rbc_catalogue() {
+        let store = Store::open("sqlite::memory:").await.unwrap();
+        store
+            .upsert_account_profile("ventrilo", "Ventrilo", US1_ENDPOINT, US1_SERVER_HEADER, 1)
+            .await
+            .unwrap();
+        let settings = SessionSettings {
+            kingdom_scans: vec![KingdomScan {
+                kingdom_id: 1,
+                enabled: true,
+                radius: 50,
+            }],
+            ..SessionSettings::default()
+        };
+        let bootstrap = json!({
+            "gcl": {"C": [{"KID": 1, "AI": [{"AI": [12, 593, 613, 16366514, 1, 5, 5, 3, 4, 1, "Castle Ventrilo"]}]}]},
+            "gli": {"C": [{"ID": 1}]}
+        });
+        observe_account_packet(
+            &store,
+            "ventrilo",
+            &format!("%xt%gbd%1%0%{bootstrap}%"),
+            &HashMap::new(),
+            &settings,
+            true,
+        )
+        .await;
+        let origins = permanent_scan_origins("ventrilo", &store.owned_castles().await.unwrap());
+        let map = json!({"KID": 1, "AI": [
+            [2, 600, 610, -1, 50],
+            [11, 594, 594, -1, 45, 38421, 17185267, 1]
+        ]});
+        let raw = format!("%xt%gaa%1%0%{map}%");
+
+        observe_account_packet(&store, "ventrilo", &raw, &origins, &settings, false).await;
+        assert!(!store.account_has_targets("ventrilo", 1).await.unwrap());
+        assert!(store.account_has_fortresses("ventrilo", 1).await.unwrap());
+
+        observe_account_packet(&store, "ventrilo", &raw, &origins, &settings, true).await;
+        assert!(store.account_has_targets("ventrilo", 1).await.unwrap());
+    }
 }
 
 #[derive(Clone, Deserialize)]
@@ -263,6 +629,9 @@ pub struct DirectStatus {
     pub scan_sent: u64,
     pub scan_cached: u64,
     pub scan_kingdom_id: Option<i64>,
+    /// Stable, user-facing phase identifier. This keeps the UI from guessing
+    /// whether 1/1 means the nearby RBC pass or the fortress walk.
+    pub scan_stage: Option<String>,
     pub current_kingdom_id: Option<i64>,
     pub current_castle_id: Option<i64>,
     pub map_mode: bool,
@@ -286,6 +655,7 @@ impl Default for DirectStatus {
             scan_sent: 0,
             scan_cached: 0,
             scan_kingdom_id: None,
+            scan_stage: None,
             current_kingdom_id: None,
             current_castle_id: None,
             map_mode: false,
@@ -363,6 +733,7 @@ async fn run_inner(
         scan_sent: 0,
         scan_cached: 0,
         scan_kingdom_id: None,
+        scan_stage: None,
         current_kingdom_id: None,
         current_castle_id: None,
         map_mode: false,
@@ -386,25 +757,18 @@ async fn run_inner(
     let mut base_scan_due_ms = 0_i64;
     let mut base_scan_requests_sent = 0_u64;
     let mut base_scan_stats = HashMap::<i64, (u64, u64)>::new();
-    let mut fortress_initialization_started = false;
-    let mut fortress_initialization_complete = false;
-    let mut fortress_started = HashSet::new();
+    // Sweeps the running bot still needs, rebuilt whenever the running task set
+    // or the outstanding work changes. Empty means automation is free to run.
+    let mut fortress_sweeps: Vec<(i64, i64)> = Vec::new();
+    let mut fortress_plan_due_ms = 0_i64;
     let mut fortress_initialization_due_ms = 0_i64;
+    let mut fortress_rescan_prepared = false;
     let mut fortress_sweep_index = 0_usize;
-    // One sweep per grid per kingdom, kingdom by kingdom, so a kingdom finishes
-    // before the next one starts costing requests. Ice leads unless the account
-    // asked for a different order.
-    let fortress_sweeps = request
-        .settings
-        .outer_kingdom_scans()
-        .into_iter()
-        .flat_map(|scan| {
-            LATTICE_OFFSETS
-                .into_iter()
-                .map(move |offset| (scan.kingdom_id, offset))
-        })
-        .collect::<Vec<_>>();
+    let mut fortress_phase_shown = false;
     let mut active_fortress_block: Option<(i64, i64, FortressBlock)> = None;
+    // Only one kingdom is measured at a time, and only until its rectangle is
+    // known; the fill below then walks that rectangle from the database.
+    let mut fortress_discovery: Option<FortressDiscovery> = None;
     let mut identity_verified = false;
     let mut active_scan_kingdom = None;
     let mut rbc_scan_origins =
@@ -453,6 +817,8 @@ async fn run_inner(
                         &text,
                         &rbc_scan_origins,
                         &request.settings,
+                        active_base_scan.is_some()
+                            || (!reuse_existing_map && active_fortress_block.is_some()),
                     ).await;
                     if parsed_packet.as_ref().is_some_and(|packet| packet.command == "gbd") {
                         rbc_scan_origins = permanent_scan_origins(
@@ -480,9 +846,36 @@ async fn run_inner(
                         && packet.status.as_deref().is_none_or(|status| status == "0")
                         && packet.payload.get("KID").and_then(Value::as_i64) == Some(*kingdom_id)
                     {
-                        store
-                            .advance_fortress_scan(&account_id, *kingdom_id, *lattice_offset)
-                            .await?;
+                        // A discovery arm reads the window's contents; a cell of
+                        // the fill only needs to know it was answered. A refused
+                        // window comes back as an empty payload and counts as
+                        // empty, which ends an arm early rather than extending it
+                        // over ground nothing has confirmed.
+                        let holds = !fortress_targets(&packet.payload).is_empty();
+                        if let Some(discovery) = fortress_discovery.as_mut()
+                            && discovery.kingdom_id == *kingdom_id
+                        {
+                            discovery.observe(holds);
+                            let mut current = status.write().await;
+                            current.scan_stage = Some("fortress_boundary".to_owned());
+                            current.scan_kingdom_id = Some(*kingdom_id);
+                            current.scan_total = 100;
+                            current.scan_sent = discovery.estimated_percent();
+                            current.scan_cached = 0;
+                        } else {
+                            store
+                                .advance_fortress_scan(&account_id, *kingdom_id, *lattice_offset)
+                                .await?;
+                            let (done, pending) = store
+                                .fortress_probe_progress(&account_id, *kingdom_id)
+                                .await?;
+                            let mut current = status.write().await;
+                            current.scan_stage = Some("fortress_mapping".to_owned());
+                            current.scan_kingdom_id = Some(*kingdom_id);
+                            current.scan_total = done + pending;
+                            current.scan_sent = done;
+                            current.scan_cached = 0;
+                        }
                         active_fortress_block = None;
                         fortress_initialization_due_ms = now_ms()
                             + (fortress_probe_delay_seconds(&mut fortress_rng) * 1_000.0) as i64;
@@ -506,8 +899,7 @@ async fn run_inner(
                         // Keep a single base-map request in flight, then add a
                         // variable quiet period after its successful response.
                         base_scan_due_ms = now_ms()
-                            + (scan_rng.normal(2.6, 0.45).clamp(1.8, 4.0) * 1_000.0)
-                                as i64;
+                            + (base_scan_delay_seconds(&mut scan_rng) * 1_000.0) as i64;
                     }
                     if parsed_packet
                         .as_ref()
@@ -523,11 +915,12 @@ async fn run_inner(
                     automation.observe(store, &account_id, &text).await;
                     recruitment.observe(store, &account_id, &text).await;
                     let frames = machine.on_server_text(&text)?;
-                    if machine.phase() != SessionPhase::SandsReady
-                        || fortress_initialization_complete
-                    {
+                    // While a walk is running the phase shown is the walk's, not
+                    // the machine's: the socket has been ready for a while. Once
+                    // the walk ends the machine's own phase is mirrored again.
+                    if machine.phase() != SessionPhase::SandsReady || !fortress_phase_shown {
                         status.write().await.phase = machine.phase();
-                    } else if fortress_initialization_started {
+                    } else {
                         status.write().await.phase = SessionPhase::DiscoveringFortresses;
                     }
                     let map_request_count = frames
@@ -545,7 +938,7 @@ async fn run_inner(
                     let mut queued_map_requests = 0_u64;
                     let mut cached_map_requests = 0_u64;
                     for frame in frames {
-                        if let Some((kingdom_id, ax1, ay1, _, _)) = map_request(&frame) {
+                        if let Some((kingdom_id, ax1, ay1, ax2, ay2)) = map_request(&frame) {
                             // Cached tiles save discovery traffic, but the first
                             // live GAA is mandatory navigation proof. Without it
                             // a stale scan can falsely label castle mode as a
@@ -560,8 +953,7 @@ async fn run_inner(
                                     .scan_window_is_fresh(
                                         &account_id,
                                         kingdom_id,
-                                        ax1,
-                                        ay1,
+                                        (ax1, ay1, ax2, ay2),
                                         now_ms(),
                                     )
                                     .await?;
@@ -647,6 +1039,7 @@ async fn run_inner(
                             current.scan_sent = 0;
                             current.scan_cached = cached;
                             current.scan_kingdom_id = Some(kingdom_id);
+                            current.scan_stage = Some("rbc".to_owned());
                         }
                         base_scan_requests_sent += 1;
                         status.write().await.scan_sent = base_scan_requests_sent;
@@ -671,69 +1064,232 @@ async fn run_inner(
                 if machine.phase() == SessionPhase::SandsReady
                     && base_scan_queue.is_empty()
                     && active_base_scan.is_none()
-                    && !fortress_initialization_complete
                 {
                     let now = now_ms();
-                    if !fortress_initialization_started {
-                        // Let the final burst of the radius scan settle before
-                        // pairing one response at a time with frontier probes.
-                        fortress_initialization_started = true;
-                        fortress_initialization_due_ms = now + 5_000;
-                        status.write().await.phase = SessionPhase::DiscoveringFortresses;
+                    // Which sweeps the running bot needs. Rebuilt rather than
+                    // fixed at connect, because the bot is chosen *after* the
+                    // socket opens: a session that never starts a fortress bot
+                    // never walks, and starting one mid-session picks the walk
+                    // up. Fortress coordinates never change, so a kingdom covered
+                    // in an earlier session drops out here and is never paid for
+                    // twice.
+                    if now >= fortress_plan_due_ms {
+                        fortress_plan_due_ms = now + FORTRESS_PLAN_INTERVAL_MS;
+                        let kingdoms = if reuse_existing_map {
+                            // A normal connection does no discovery unless the
+                            // running bot actually contains a fortress task.
+                            store.active_fortress_kingdoms(&account_id).await?
+                        } else {
+                            // Explicit initialization discovers fortress
+                            // coordinates in every selected, unlocked outer
+                            // kingdom. This is independent of whether a bot has
+                            // been created yet.
+                            request
+                                .settings
+                                .outer_kingdom_scans()
+                                .into_iter()
+                                .map(|scan| scan.kingdom_id)
+                                .collect()
+                        };
+                        let wanted = request
+                            .settings
+                            .outer_kingdom_scans()
+                            .into_iter()
+                            .filter(|scan| {
+                                kingdoms.contains(&scan.kingdom_id)
+                                    && rbc_scan_origins.contains_key(&scan.kingdom_id)
+                            })
+                            .map(|scan| (scan.kingdom_id, SWEEP_ALIGNMENT))
+                            .collect::<Vec<_>>();
+                        if !reuse_existing_map && !fortress_rescan_prepared {
+                            store.reset_fortress_scans(&account_id, &wanted).await?;
+                            fortress_rescan_prepared = true;
+                        }
+                        let outstanding = store
+                            .outstanding_fortress_sweeps(&account_id, &wanted)
+                            .await?;
+                        if outstanding != fortress_sweeps {
+                            info!(
+                                before = fortress_sweeps.len(),
+                                after = outstanding.len(),
+                                "fortress walk plan changed"
+                            );
+                            fortress_sweeps = outstanding;
+                            fortress_sweep_index = 0;
+                            fortress_initialization_due_ms = 0;
+                        }
                     }
-                    if active_fortress_block.is_none() && now >= fortress_initialization_due_ms {
-                        loop {
-                            let Some(&(kingdom_id, lattice_offset)) =
+                    if active_fortress_block.is_none()
+                        && fortress_sweep_index < fortress_sweeps.len()
+                    {
+                        if !fortress_phase_shown {
+                            // Let the radius scan's last burst settle before
+                            // pairing one response at a time with probes.
+                            fortress_phase_shown = true;
+                            fortress_initialization_due_ms = now + 5_000;
+                            status.write().await.phase = SessionPhase::DiscoveringFortresses;
+                        }
+                        if now >= fortress_initialization_due_ms
+                            && let Some(&(kingdom_id, lattice_offset)) =
                                 fortress_sweeps.get(fortress_sweep_index)
-                            else {
-                                fortress_initialization_complete = true;
-                                let mut current = status.write().await;
-                                current.phase = SessionPhase::SandsReady;
-                                current.scan_kingdom_id = None;
-                                break;
-                            };
-                            if fortress_started.insert((kingdom_id, lattice_offset)) {
-                                store
-                                    .start_fortress_scan(&account_id, kingdom_id, lattice_offset)
-                                    .await?;
-                            }
-                            let (done, pending) = store
-                                .fortress_probe_progress(&account_id, kingdom_id)
+                        {
+                            // A kingdom with no stored bounds has never been
+                            // measured, so its arms run first and the fill waits.
+                            // Once the rectangle is in the database the normal
+                            // row-major path below takes over, and a kingdom
+                            // finished in an earlier session is still free.
+                            let known = store
+                                .fortress_scan_bounds(&account_id, kingdom_id, lattice_offset)
                                 .await?;
+                            let exact_progress = if known.is_some() {
+                                Some(
+                                    store
+                                        .fortress_probe_progress(&account_id, kingdom_id)
+                                        .await?,
+                                )
+                            } else {
+                                None
+                            };
                             {
                                 let mut current = status.write().await;
                                 current.phase = SessionPhase::DiscoveringFortresses;
                                 current.scan_kingdom_id = Some(kingdom_id);
-                                current.scan_total = done + pending;
-                                current.scan_sent = done;
                                 current.scan_cached = 0;
+                                if known.is_none() {
+                                    current.scan_stage = Some("fortress_boundary".to_owned());
+                                    current.scan_total = 100;
+                                    current.scan_sent = fortress_discovery
+                                        .as_ref()
+                                        .filter(|value| value.kingdom_id == kingdom_id)
+                                        .map_or(0, FortressDiscovery::estimated_percent);
+                                } else {
+                                    let (done, pending) = exact_progress.unwrap_or_default();
+                                    current.scan_stage = Some("fortress_mapping".to_owned());
+                                    current.scan_total = done + pending;
+                                    current.scan_sent = done;
+                                }
                             }
-                            let block = store
-                                .next_fortress_block(&account_id, kingdom_id, lattice_offset)
-                                .await?;
-                            let Some(block) = block else {
-                                fortress_sweep_index += 1;
-                                fortress_initialization_due_ms = now_ms()
-                                    + (fortress_kingdom_switch_delay_seconds(&mut fortress_rng)
-                                        * 1_000.0) as i64;
-                                continue;
-                            };
-                            let packet = fortress_gaa_packet(
-                                &request.settings.server_header,
-                                kingdom_id,
-                                block,
-                            )?;
-                            record_safe_outbound(store, &account_id, &packet).await;
-                            sink.send(Message::Text(packet.into())).await?;
-                            active_fortress_block = Some((kingdom_id, lattice_offset, block));
-                            break;
+                            if known.is_none() {
+                                // Only one kingdom is measured at a time; a walk
+                                // left half-finished by a plan change is dropped.
+                                if fortress_discovery
+                                    .as_ref()
+                                    .is_some_and(|discovery| discovery.kingdom_id != kingdom_id)
+                                {
+                                    fortress_discovery = None;
+                                }
+                                if fortress_discovery.is_none() {
+                                    // The base is the block over the kingdom's own
+                                    // castle: the RBC scan origins already hold it,
+                                    // and a window spanning the castle is always
+                                    // full, so every arm starts from a hit.
+                                    let base = rbc_scan_origins
+                                        .get(&kingdom_id)
+                                        .map(|(x, y)| block_origin((*x, *y)))
+                                        .unwrap_or_else(|| {
+                                            block_origin((SWEEP_ALIGNMENT, SWEEP_ALIGNMENT))
+                                        });
+                                    fortress_discovery = Some(FortressDiscovery::new(
+                                        kingdom_id, base,
+                                    ));
+                                }
+                                let measured = fortress_discovery
+                                    .as_ref()
+                                    .is_some_and(|discovery| discovery.done);
+                                if measured {
+                                    // `bounds()` is `None` when not one window
+                                    // held a fortress, which for a tasked kingdom
+                                    // means the walk saw nothing it could trust.
+                                    // The flat rectangle keeps the old behaviour
+                                    // rather than recording a one-block kingdom.
+                                    let bounds = fortress_discovery
+                                        .as_ref()
+                                        .and_then(FortressDiscovery::bounds)
+                                        .unwrap_or_else(|| {
+                                            empire_core::fortress::align_bounds(
+                                                Bounds::outer_kingdom(),
+                                                SWEEP_ALIGNMENT,
+                                            )
+                                        });
+                                    fortress_discovery = None;
+                                    store
+                                        .set_fortress_scan_bounds(
+                                            &account_id,
+                                            kingdom_id,
+                                            lattice_offset,
+                                            bounds,
+                                        )
+                                        .await?;
+                                    info!(
+                                        kingdom_id,
+                                        left = bounds.left,
+                                        top = bounds.top,
+                                        right = bounds.right,
+                                        bottom = bounds.bottom,
+                                        blocks = bounds.block_count(),
+                                        "fortress rectangle measured"
+                                    );
+                                    fortress_initialization_due_ms = now_ms()
+                                        + (fortress_kingdom_switch_delay_seconds(&mut fortress_rng)
+                                            * 1_000.0)
+                                            as i64;
+                                } else if let Some(discovery) = fortress_discovery.as_mut()
+                                    && let Some(block) = discovery.next()
+                                {
+                                    let packet = fortress_gaa_packet(
+                                        &request.settings.server_header,
+                                        kingdom_id,
+                                        block,
+                                    )?;
+                                    record_safe_outbound(store, &account_id, &packet).await;
+                                    sink.send(Message::Text(packet.into())).await?;
+                                    active_fortress_block =
+                                        Some((kingdom_id, lattice_offset, block));
+                                }
+                            } else {
+                                match store
+                                    .next_fortress_block(&account_id, kingdom_id, lattice_offset)
+                                    .await?
+                                {
+                                    None => {
+                                        // Already walked. Pause before the next
+                                        // one, because a kingdom boundary should
+                                        // not be a burst of requests.
+                                        fortress_sweep_index += 1;
+                                        fortress_initialization_due_ms = now_ms()
+                                            + (fortress_kingdom_switch_delay_seconds(
+                                                &mut fortress_rng,
+                                            ) * 1_000.0)
+                                                as i64;
+                                    }
+                                    Some(block) => {
+                                        let packet = fortress_gaa_packet(
+                                            &request.settings.server_header,
+                                            kingdom_id,
+                                            block,
+                                        )?;
+                                        record_safe_outbound(store, &account_id, &packet).await;
+                                        sink.send(Message::Text(packet.into())).await?;
+                                        active_fortress_block =
+                                            Some((kingdom_id, lattice_offset, block));
+                                    }
+                                }
+                            }
                         }
+                    } else if fortress_phase_shown {
+                        fortress_phase_shown = false;
+                        let mut current = status.write().await;
+                        current.phase = SessionPhase::SandsReady;
+                        current.scan_stage = Some("complete".to_owned());
                     }
                 }
             }
             _ = automation_tick.tick() => {
+                // Automation waits only while a walk the running bot asked for is
+                // still in progress. No fortress task means nothing to wait for.
                 if machine.phase() == SessionPhase::SandsReady
-                    && fortress_initialization_complete
+                    && active_fortress_block.is_none()
+                    && fortress_sweep_index >= fortress_sweeps.len()
                 {
                     let recruit_packet = if recruitment.holds_transport() || !automation.holds_transport() {
                         recruitment.next_packet(store, &account_id, &request.settings.server_header).await?
@@ -772,6 +1328,7 @@ const TARGET_LEASE_MS: i64 = 12 * 60 * 1_000;
 // A rejected CRA never launched the commander. Keep only a short backoff so a
 // bad option cannot suppress the whole configured commander pool for minutes.
 const COMMANDER_REJECT_HOLD_MS: i64 = 15_000;
+const ERROR_WINDOW_MS: i64 = 5 * 60 * 1_000;
 
 #[derive(Debug)]
 enum RecruitPhase {
@@ -1169,7 +1726,6 @@ enum AutomationPhase {
     AwaitMap {
         task: ActiveModeTask,
         target: ReservedTarget,
-        requested_at_ms: i64,
         deadline_ms: i64,
     },
     AwaitFortressRefresh {
@@ -1207,6 +1763,16 @@ struct Automation {
     last_heartbeat_ms: i64,
     rng: Rng,
     detail: String,
+    operational_errors: VecDeque<i64>,
+    safety_pause_until_ms: i64,
+}
+
+fn attack_info_kind(task: &ActiveModeTask) -> hunt::AttackInfoKind {
+    if task.target_kind == "fortress" {
+        hunt::AttackInfoKind::Fortress
+    } else {
+        hunt::AttackInfoKind::Dungeon
+    }
 }
 
 impl Automation {
@@ -1218,6 +1784,28 @@ impl Automation {
             last_heartbeat_ms: 0,
             rng: Rng::from_entropy(),
             detail: "Mode is stopped".to_owned(),
+            operational_errors: VecDeque::new(),
+            safety_pause_until_ms: 0,
+        }
+    }
+
+    /// One recoverable operational error is tolerated in a rolling five-minute
+    /// window. A second pauses all attack mutations until the oldest event has
+    /// aged out; stopping/starting a mode cannot bypass the window.
+    fn record_operational_error(&mut self, now: i64, context: &str) {
+        while self
+            .operational_errors
+            .front()
+            .is_some_and(|at| now.saturating_sub(*at) >= ERROR_WINDOW_MS)
+        {
+            self.operational_errors.pop_front();
+        }
+        self.operational_errors.push_back(now);
+        if self.operational_errors.len() > 1 {
+            self.safety_pause_until_ms = self.operational_errors[0] + ERROR_WINDOW_MS;
+            self.detail = format!(
+                "Safety pause after repeated errors: {context}. Resumes when the five-minute window clears"
+            );
         }
     }
 
@@ -1245,6 +1833,9 @@ impl Automation {
         server_header: &str,
     ) -> anyhow::Result<Option<String>> {
         let now = now_ms();
+        if now < self.safety_pause_until_ms {
+            return Ok(None);
+        }
         if now.saturating_sub(self.last_heartbeat_ms) >= 5_000 {
             if store.account_mode_running(account_id).await? {
                 store
@@ -1261,8 +1852,9 @@ impl Automation {
             | AutomationPhase::AwaitCra { deadline_ms, .. }
                 if now >= *deadline_ms =>
             {
+                self.record_operational_error(now, "a game request timed out");
                 self.phase = AutomationPhase::Idle {
-                    due_ms: now + 10_000,
+                    due_ms: self.safety_pause_until_ms.max(now + 10_000),
                 };
                 return Ok(None);
             }
@@ -1285,7 +1877,7 @@ impl Automation {
             {
                 store.release_fortress_target(account_id, target).await?;
                 self.detail =
-                    "Fortress dispatch window expired before ADI; target dropped".to_owned();
+                    "Fortress dispatch window expired before inspection; target dropped".to_owned();
                 self.phase = AutomationPhase::Idle { due_ms: now + 250 };
                 return Ok(None);
             }
@@ -1295,16 +1887,17 @@ impl Automation {
             });
             if !map_ready {
                 self.detail = format!(
-                    "Map context changed before ADI; reopening kingdom {}",
+                    "Map context changed before inspection; reopening kingdom {}",
                     task.kingdom_id
                 );
                 self.phase = AutomationPhase::Idle { due_ms: now + 500 };
                 return Ok(None);
             }
-            let packet = hunt::adi_packet(
+            let packet = hunt::attack_info_packet(
                 server_header,
                 (task.source_x, task.source_y),
                 &as_map_target(target),
+                attack_info_kind(task),
             )?;
             self.detail = format!(
                 "Inspecting {}:{}:{} for task {}",
@@ -1469,11 +2062,9 @@ impl Automation {
             if let Some(target) = target {
                 self.cursor = (index + 1) % tasks.len();
                 let navigation = store.navigation(account_id).await?;
-                if task.target_kind != "fortress"
-                    && navigation.as_ref().is_some_and(|state| {
-                        state.map_mode && state.current_kingdom_id == Some(task.kingdom_id)
-                    })
-                {
+                if navigation.as_ref().is_some_and(|state| {
+                    state.map_mode && state.current_kingdom_id == Some(task.kingdom_id)
+                }) {
                     self.phase = AutomationPhase::ReadyAdi {
                         task: task.clone(),
                         target,
@@ -1481,11 +2072,10 @@ impl Automation {
                     };
                     return Ok(None);
                 }
-                let (map_x, map_y) = if task.target_kind == "fortress" {
-                    (target.x, target.y)
-                } else {
-                    (task.source_x, task.source_y)
-                };
+                // Only establish the kingdom's map context here. Fortress
+                // cooldowns came from the broad scan and are counted down
+                // locally; re-reading each target would be redundant load.
+                let (map_x, map_y) = (task.source_x, task.source_y);
                 let ax1 = map_x.div_euclid(13) * 13;
                 let ay1 = map_y.div_euclid(13) * 13;
                 let packet = encode_client_xt(
@@ -1501,36 +2091,21 @@ impl Automation {
                     }),
                 )?;
                 self.detail = format!(
-                    "Opening kingdom {} map and refreshing {}:{}",
+                    "Opening kingdom {} map before inspecting {}:{}",
                     task.kingdom_id, target.x, target.y
                 );
                 self.phase = AutomationPhase::AwaitMap {
                     task: task.clone(),
                     target,
-                    requested_at_ms: now,
                     deadline_ms: now + REQUEST_TIMEOUT_MS,
                 };
                 return Ok(Some(packet));
             }
         }
 
-        // A failed or unobserved fortress landing is re-read from the server
-        // before ordinary farming work. The due time was randomized 1-30
-        // minutes beyond the expected landing when CRA was acknowledged.
-        //
-        // Before draining that queue, make sure it covers everything known: a
-        // fortress mode builds its cooldown state from the coordinates
-        // initialization discovered rather than learning it by attacking. Rows
-        // already queued are untouched, so this is safe on every pass.
-        for index in rotated
-            .iter()
-            .copied()
-            .filter(|index| tasks[*index].target_kind == "fortress")
-        {
-            store
-                .queue_fortress_recheck(account_id, tasks[index].kingdom_id, now)
-                .await?;
-        }
+        // Failed or unobserved landings already carry an explicit refresh_due
+        // timestamp. Do not turn every known fortress into an individual poll;
+        // routine availability comes from the broad scan.
         for index in rotated
             .iter()
             .copied()
@@ -1603,7 +2178,6 @@ impl Automation {
                 self.phase = AutomationPhase::AwaitMap {
                     task: task.clone(),
                     target,
-                    requested_at_ms: now,
                     deadline_ms: now + REQUEST_TIMEOUT_MS,
                 };
                 return Ok(Some(packet));
@@ -1622,11 +2196,13 @@ impl Automation {
         };
         let now = now_ms();
         if let Some(status) = packet.status.as_deref().filter(|status| *status != "0") {
-            let expected_rejection = matches!(
-                (&self.phase, packet.command.as_str()),
-                (AutomationPhase::AwaitAdi { .. }, "adi")
-                    | (AutomationPhase::AwaitCra { .. }, "cra")
-            );
+            let expected_rejection = match &self.phase {
+                AutomationPhase::AwaitAdi { task, .. } => {
+                    packet.command == attack_info_kind(task).command()
+                }
+                AutomationPhase::AwaitCra { .. } => packet.command == "cra",
+                _ => false,
+            };
             if !expected_rejection {
                 return;
             }
@@ -1640,7 +2216,9 @@ impl Automation {
                 _ => None,
             };
             if let Some(target) = rejected_fortress {
-                let _ = store.release_fortress_target(account_id, &target).await;
+                let _ = store
+                    .defer_fortress_target(account_id, &target, now + ERROR_WINDOW_MS)
+                    .await;
             }
             if let AutomationPhase::AwaitCra { lord_id, .. } = &self.phase {
                 let state = CommanderState {
@@ -1658,8 +2236,14 @@ impl Automation {
                 packet.command
             );
             warn!(%account_id, command = %packet.command, %status, "automation request rejected");
+            self.record_operational_error(
+                now,
+                &format!("{} was rejected with status {status}", packet.command),
+            );
             self.phase = AutomationPhase::Idle {
-                due_ms: now + COMMANDER_REJECT_HOLD_MS,
+                due_ms: self
+                    .safety_pause_until_ms
+                    .max(now + COMMANDER_REJECT_HOLD_MS),
             };
             return;
         }
@@ -1677,18 +2261,19 @@ impl Automation {
                     }
                     return;
                 }
-                let AutomationPhase::AwaitMap {
-                    task,
-                    target,
-                    requested_at_ms,
-                    ..
-                } = std::mem::replace(
+                // Unsolicited map updates must not consume an attack reply
+                // waiter. Only the pending navigation request owns this GAA.
+                if !matches!(&self.phase, AutomationPhase::AwaitMap { task, .. }
+                    if packet.payload.get("KID").and_then(Value::as_i64) == Some(task.kingdom_id))
+                {
+                    return;
+                }
+                let AutomationPhase::AwaitMap { task, target, .. } = std::mem::replace(
                     &mut self.phase,
                     AutomationPhase::Idle {
                         due_ms: now + 10_000,
                     },
-                )
-                else {
+                ) else {
                     return;
                 };
                 if packet.payload.get("KID").and_then(Value::as_i64) != Some(task.kingdom_id) {
@@ -1697,7 +2282,7 @@ impl Automation {
                 }
                 if task.target_kind == "fortress"
                     && !store
-                        .fortress_is_dispatchable(account_id, &target, now, Some(requested_at_ms))
+                        .fortress_is_dispatchable(account_id, &target, now, None)
                         .await
                         .unwrap_or(false)
                 {
@@ -1708,14 +2293,22 @@ impl Automation {
                     self.phase = AutomationPhase::Idle { due_ms: now + 250 };
                     return;
                 }
-                self.detail = format!("Kingdom {} map confirmed; preparing ADI", task.kingdom_id);
+                self.detail = format!(
+                    "Kingdom {} map confirmed; preparing attack details",
+                    task.kingdom_id
+                );
                 self.phase = AutomationPhase::ReadyAdi {
                     task,
                     target,
                     due_ms: now + 500,
                 };
             }
-            "adi" => {
+            "adi" | "abi" => {
+                if !matches!(&self.phase, AutomationPhase::AwaitAdi { task, .. }
+                    if packet.command == attack_info_kind(task).command())
+                {
+                    return;
+                }
                 let AutomationPhase::AwaitAdi { task, target, .. } = std::mem::replace(
                     &mut self.phase,
                     AutomationPhase::Idle {
@@ -1725,10 +2318,18 @@ impl Automation {
                     return;
                 };
                 if packet.payload.is_null() {
-                    self.detail =
-                        "ADI returned no attack data; retrying after map refresh".to_owned();
+                    if task.target_kind == "fortress" {
+                        let _ = store
+                            .defer_fortress_target(account_id, &target, now + ERROR_WINDOW_MS)
+                            .await;
+                    }
+                    self.record_operational_error(now, "attack details were unavailable");
+                    if self.safety_pause_until_ms <= now {
+                        self.detail =
+                            "Attack details were unavailable; target quarantined".to_owned();
+                    }
                     self.phase = AutomationPhase::Idle {
-                        due_ms: now + 10_000,
+                        due_ms: self.safety_pause_until_ms.max(now + 10_000),
                     };
                     return;
                 }
@@ -1746,6 +2347,11 @@ impl Automation {
                     .filter(|lid| offered.is_empty() || offered.contains(lid))
                     .find(|lid| !busy.contains(lid))
                 else {
+                    if task.target_kind == "fortress" {
+                        let _ = store.release_fortress_target(account_id, &target).await;
+                    }
+                    self.detail =
+                        "No allocated commander is currently free; target released".to_owned();
                     return;
                 };
                 let policy = PacingPolicy::default();
@@ -1763,6 +2369,9 @@ impl Automation {
                 self.detail = format!("Commander {lord_id} selected; waiting above CRA floor");
             }
             "cra" => {
+                if !matches!(self.phase, AutomationPhase::AwaitCra { .. }) {
+                    return;
+                }
                 let AutomationPhase::AwaitCra {
                     task,
                     target,
@@ -1959,6 +2568,7 @@ async fn observe_account_packet(
     raw: &str,
     rbc_scan_origins: &HashMap<i64, (i64, i64)>,
     settings: &SessionSettings,
+    learn_rbc: bool,
 ) {
     let Ok(packet) = parse_xt_packet(raw) else {
         return;
@@ -1997,7 +2607,11 @@ async fn observe_account_packet(
             }
         }
         "gaa" => {
-            let mut targets = rbc_targets(&packet.payload);
+            let mut targets = if learn_rbc {
+                rbc_targets(&packet.payload)
+            } else {
+                Vec::new()
+            };
             // The radius is per kingdom, and a kingdom the operator did not ask
             // for is not being scanned at all, so nothing from it is kept.
             targets.retain(|target| {
@@ -2123,15 +2737,58 @@ fn map_request(raw: &str) -> Option<(i64, i64, i64, i64, i64)> {
 async fn record_text(store: &Store, direction: Direction, raw: &str) {
     let parsed = parse_xt_packet(raw).ok();
     let command = parsed.as_ref().map(|packet| packet.command.clone());
-    let payload = parsed
-        .map(|packet| packet.payload)
-        .unwrap_or_else(|| json!({"system_frame": true}));
+    let payload = parsed.map_or_else(
+        || json!({"system_frame": true}),
+        |packet| {
+            if packet.status.as_deref().is_some_and(|status| status != "0") {
+                json!({"status": packet.status, "payload": packet.payload})
+            } else {
+                compact_diagnostic_payload(&packet.command, packet.payload)
+            }
+        },
+    );
     if let Err(error) = store
         .record_message(now_ms(), direction, command.as_deref(), &payload)
         .await
     {
         warn!(%error, "failed to persist direct-session event");
     }
+}
+
+/// Keep the event console useful without serialising and inserting megabytes
+/// of map objects on the socket task. Durable target tables already retain the
+/// RBC/fortress facts; the diagnostic stream only needs a truthful summary.
+fn compact_diagnostic_payload(command: &str, payload: Value) -> Value {
+    if command != "gaa" {
+        return payload;
+    }
+    let Some(items) = payload.get("AI").and_then(Value::as_array) else {
+        return payload;
+    };
+    if items.len() < 500 {
+        return payload;
+    }
+    let mut rbcs = 0_u64;
+    let mut fortresses = 0_u64;
+    for item in items {
+        match item
+            .as_array()
+            .and_then(|fields| fields.first())
+            .and_then(Value::as_i64)
+        {
+            Some(2) => rbcs += 1,
+            Some(11) => fortresses += 1,
+            _ => {}
+        }
+    }
+    json!({
+        "KID": payload.get("KID").cloned().unwrap_or(Value::Null),
+        "map_summary": {
+            "objects": items.len(),
+            "rbcs": rbcs,
+            "fortresses": fortresses
+        }
+    })
 }
 
 fn now_ms() -> i64 {

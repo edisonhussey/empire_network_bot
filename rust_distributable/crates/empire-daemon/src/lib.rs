@@ -124,7 +124,11 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:47821";
 /// lattice steps from the castle.
 /// 27: queued fortress probes far from any known fortress are pruned, so a
 /// historic widening cannot leave thousands of pointless requests queued.
-pub const API_VERSION: u16 = 30;
+/// 37: scan progress distinguishes RBC, boundary estimate, and exact fortress
+/// mapping; failed fortress claims are quarantined behind a rolling error gate.
+/// 38: fortress attack inspection uses ABI, with command-specific response
+/// matching that preserves pending attacks across unrelated map messages.
+pub const API_VERSION: u16 = 38;
 
 /// Is something already listening on the service port?
 ///

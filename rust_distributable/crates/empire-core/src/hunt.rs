@@ -105,6 +105,23 @@ pub fn scan_tiles(centre: (i64, i64), radius: i64) -> Vec<(i64, i64)> {
     tiles
 }
 
+/// The game's attack-information command depends on the map object's type.
+/// Type-2 dungeons use ADI; type-11 boss dungeons (fortresses) use ABI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttackInfoKind {
+    Dungeon,
+    Fortress,
+}
+
+impl AttackInfoKind {
+    pub fn command(self) -> &'static str {
+        match self {
+            Self::Dungeon => "adi",
+            Self::Fortress => "abi",
+        }
+    }
+}
+
 /// "Attack detail" request. The reply carries the target row, the inventory
 /// (`gui.I`) and the commander roster (`gli.C`).
 pub fn adi_packet(
@@ -112,9 +129,18 @@ pub fn adi_packet(
     source: (i64, i64),
     target: &MapTarget,
 ) -> Result<String, PacketError> {
+    attack_info_packet(server_header, source, target, AttackInfoKind::Dungeon)
+}
+
+pub fn attack_info_packet(
+    server_header: &str,
+    source: (i64, i64),
+    target: &MapTarget,
+    kind: AttackInfoKind,
+) -> Result<String, PacketError> {
     encode_client_xt(
         server_header,
-        "adi",
+        kind.command(),
         "1",
         &json!({
             "SX": source.0,
@@ -545,6 +571,24 @@ mod tests {
         assert!(packet.contains("\"AX2\":584"));
         assert!(packet.contains("\"AY1\":598"));
         assert!(packet.contains("\"AY2\":610"));
+    }
+
+    #[test]
+    fn fortress_inspection_uses_abi_with_the_same_source_and_target() {
+        let target = MapTarget {
+            kingdom_id: 1,
+            x: 516,
+            y: 984,
+            level: Some(45),
+        };
+        let raw = attack_info_packet("EmpireEx_21", (593, 613), &target, AttackInfoKind::Fortress)
+            .unwrap();
+        let packet = crate::protocol::parse_xt_packet(&raw).unwrap();
+        assert_eq!(packet.command, "abi");
+        assert_eq!(
+            packet.payload,
+            json!({"KID": 1, "SX": 593, "SY": 613, "TX": 516, "TY": 984})
+        );
     }
 
     #[test]

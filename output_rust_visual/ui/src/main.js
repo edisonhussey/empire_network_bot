@@ -810,7 +810,7 @@ async function connectSavedAccount(account, password, radius, reuseExistingMap, 
     method: "POST",
     headers: { "content-type": "application/json" },
     // The account's own world, so reconnecting never lands on the wrong server.
-    body: JSON.stringify({ server: serverFor(account.endpoint), username: account.player_name, password, scan_radius: radius, reuse_existing_map: reuseExistingMap }),
+    body: JSON.stringify({ server: serverFor(account.endpoint), username: account.player_name, password, scan_radius: radius, kingdom_scans: kingdomScans(radius), reuse_existing_map: reuseExistingMap }),
   });
   await refresh();
 }
@@ -964,6 +964,41 @@ function dashboardStat(value, label) {
 /// counts down to a real time rather than an estimate. While the map walk is
 /// still running it says so, because "none yet" and "still looking" are
 /// different things to be told.
+/// The fortress console: the next few fortresses in the order the server says
+/// they open, with the coordinates the client shows.
+///
+/// Fortress coordinates never change once learned, so this is a schedule rather
+/// than a discovery feed — the only thing that moves between polls is the
+/// countdown. Rows already past their opening time are the ones a run can act on
+/// right now, so only those carry the status colour.
+function renderFortressConsole(summary) {
+  const list = $("#dashboard-fortresses");
+  list.replaceChildren();
+  const rows = summary?.fortress_upcoming || [];
+  const note = $("#fortress-console-note");
+  if (note) note.textContent = rows.length ? `${rows.length} shown` : "By the server's cooldown";
+  if (!rows.length) {
+    list.append(element("p", "empty-copy", summary?.fortress_probes_pending
+      ? "Still mapping — no fortress coordinates yet."
+      : "No fortress observed yet."));
+    return;
+  }
+  const now = Date.now();
+  for (const row of rows) {
+    const line = element("div", "fortress-row");
+    const wait = row.available_at_ms - now;
+    const when = element("span", wait <= 0 ? "fortress-when due" : "fortress-when",
+      wait <= 0 ? "Ready now" : `in ${humanWait(wait)}`);
+    line.append(
+      element("b", "", `${kingdomLabel(row.kingdom_id)} · ${row.x},${row.y}`),
+      element("small", "", `level ${row.level}`),
+      when,
+    );
+    line.title = `Open ${new Date(row.available_at_ms).toLocaleString()}`;
+    list.append(line);
+  }
+}
+
 function nextFortressSummary(summary) {
   const count = summary?.fortress_count || 0;
   const pending = summary?.fortress_probes_pending || 0;
@@ -1086,6 +1121,7 @@ async function refreshDashboard(knownDirect = null, force = false) {
     $("#rate-coins").textContent = compactNumber(summary.coins_last_hour);
     $("#chart-updated").textContent = `Updated ${new Date(summary.generated_at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
     renderRubyChart(summary.ruby_series);
+    renderFortressConsole(summary);
 
     const dashboardAccounts = activeAccountId ? connectedAccounts.filter((account) => account.account_id.toLowerCase() === activeAccountId.toLowerCase()) : connectedAccounts.slice(0, 1);
     const totals = dashboardAccounts.reduce((value, account) => {
@@ -1202,12 +1238,10 @@ async function refreshLogs() {
 
 function updateScanEstimate() {
   const radius = clampRadius($("#scan-radius").value);
-  const areas = scanAreasFor(radius);
-  const side = Math.ceil(Math.sqrt(areas));
-  const minimumMinutes = Math.ceil(areas * 0.7 / 60);
-  const maximumMinutes = Math.ceil(areas * 1.3 / 60);
-  const grid = radius === 0 ? "the observed 3×2 viewport" : `a ${side}×${side} grid`;
-  $("#scan-estimate").textContent = `Radius ${radius} uses ${grid} per available permanent kingdom (${areas} paced requests each) · roughly ${minimumMinutes}–${maximumMinutes} min per kingdom if none are cached.`;
+  const minutes = Math.ceil(scanAreasFor(radius) * 1.15 / 60);
+  $("#scan-estimate").textContent = radius === 0
+    ? "No map learning beyond the sign-in viewport."
+    : `Radius ${radius}: about ${minutes} min per kingdom for the map. Fortress discovery runs separately.`;
 }
 
 /// Map areas a scan has to walk: the client asks in 13-area windows, so the grid
@@ -1222,25 +1256,28 @@ function clampRadius(value) {
   return Math.max(0, Math.min(500, Math.floor(Number(value) || 0)));
 }
 
-const PERMANENT_KINGDOM_IDS = new Set([0, 1, 2, 3]);
+/// The order kingdoms are walked in: Green is the map the sign-in opens on, so
+/// it leads, and the three outer kingdoms follow Ice, Sands, Fire so one
+/// finishes before the next starts costing requests.
+const SCAN_ORDER = [0, 2, 1, 3];
+
+/// What the account asked to initialise, taken from the scan card once it is on
+/// screen and from the setup form's single radius before that.
+function kingdomScans(fallbackRadius) {
+  const rows = [...document.querySelectorAll("#scan-castles .scan-row[data-kingdom]")];
+  if (!rows.length) {
+    return SCAN_ORDER.map((kingdom_id) => ({ kingdom_id, enabled: true, radius: fallbackRadius }));
+  }
+  return rows.map((row) => ({
+    kingdom_id: Number(row.dataset.kingdom),
+    enabled: row.querySelector("input[type=checkbox]").checked,
+    radius: clampRadius(row.querySelector("input[type=number]").value),
+  }));
+}
 
 /// Fortresses exist only in the three outer kingdoms. Green never has one, so
 /// saying so is more useful than an empty count that reads like a failed scan.
 const FORTRESS_KINGDOM_IDS = new Set([1, 2, 3]);
-
-/// What the fortress walk has found in one kingdom.
-///
-/// Phrased so "none" is never confused with "not looked yet": Green having zero
-/// is a fact, a tasked kingdom with nothing found means the walk is still
-/// going, and an untasked kingdom is never walked at all.
-function fortressNote(entry) {
-  if (!FORTRESS_KINGDOM_IDS.has(entry.kingdom_id)) return "no fortresses in this kingdom";
-  const found = entry.fortress_count || 0;
-  const probes = entry.fortress_probes_pending || 0;
-  const left = probes ? ` · ${probes} ${probes === 1 ? "coordinate" : "coordinates"} left to check` : "";
-  if (found) return `${found} fortress${found === 1 ? "" : "es"} found${left}`;
-  return `no fortress found yet${left}`;
-}
 
 /// Account summaries contain the durable per-kingdom fortress totals. Keep
 /// them live during initialization without rebuilding the Control Panel (and
@@ -1266,31 +1303,43 @@ function renderScanPlan() {
   const container = $("#scan-castles");
   if (!container) return;
   const account = activeAccount();
-  const health = account?.kingdom_health || [];
+  const health = [...(account?.kingdom_health || [])].sort((a, b) => SCAN_ORDER.indexOf(a.kingdom_id) - SCAN_ORDER.indexOf(b.kingdom_id));
   container.replaceChildren();
   $("#scan-actions").hidden = !health.length;
-  if (!health.length) { container.append(element("p", "empty-copy", "Initialize an account to set a scan radius per castle.")); return; }
-  container.append(element("p", "scan-account", `Showing ${account?.player_name || "the connected account"} · ${health.length} permanent ${health.length === 1 ? "kingdom" : "kingdoms"}`));
+  if (!health.length) { container.append(element("p", "empty-copy", "Initialize an account to choose what to scan.")); return; }
+  container.append(element("p", "scan-account", `Showing ${account?.player_name || "the connected account"} · walked in the order below`));
   for (const entry of health) {
-    const scannable = PERMANENT_KINGDOM_IDS.has(entry.kingdom_id);
-    const radius = clampRadius($("#scan-radius").value) || 50;
-    const target = scanAreasFor(radius);
-    const learned = entry.scan_window_count || 0;
+    const defaultRadius = clampRadius($("#scan-radius").value) || 50;
+    const pending = entry.fortress_probes_pending || 0;
+    const total = entry.fortress_probes_total || 0;
     const name = entry.castle_name || `Castle ${entry.castle_id}`;
-    const row = element("div", scannable ? "scan-row" : "scan-row read-only");
+    const row = element("div", "scan-row");
+    row.dataset.kingdom = String(entry.kingdom_id);
     const info = element("div");
     info.append(element("b", "", `${name} · ${kingdomLabel(entry.kingdom_id)}`));
-    const coverage = scannable
-      ? `Shared radius ${radius} covers ${target} map areas · ${learned} learned`
-      : `${learned} map areas learned · ${entry.last_scanned_at_ms ? `last scanned ${relativeTime(entry.last_scanned_at_ms)}` : "not scanned yet"}`;
-    info.append(element("small", "", `${coverage} · ${fortressNote(entry)}`));
+    const found = [`${entry.target_count || 0} RBCs`];
+    found.push(FORTRESS_KINGDOM_IDS.has(entry.kingdom_id) ? `${entry.fortress_count || 0} fortresses` : "no fortresses here");
+    const walk = FORTRESS_KINGDOM_IDS.has(entry.kingdom_id) && total
+      ? ` · ${total - pending}/${total} gaa checks`
+      : "";
+    info.append(element("small", "", found.join(" · ") + walk));
     const bar = element("div", "scan-coverage");
     const fill = element("i");
-    fill.style.width = `${Math.round(Math.min(1, learned / target) * 100)}%`;
+    fill.style.width = `${total ? Math.round(Math.min(1, (total - pending) / total) * 100) : 0}%`;
     bar.append(fill);
     info.append(bar);
     const control = element("div", "scan-radius");
-    if (scannable) control.append(element("span", "scan-tag", `radius ${radius}`));
+    const toggle = element("input");
+    toggle.type = "checkbox";
+    toggle.checked = true;
+    toggle.setAttribute("aria-label", `Initialise ${kingdomLabel(entry.kingdom_id)}`);
+    const radius = element("input");
+    radius.type = "number";
+    radius.min = "0";
+    radius.max = "500";
+    radius.value = String(defaultRadius);
+    radius.setAttribute("aria-label", `Map radius in ${kingdomLabel(entry.kingdom_id)}`);
+    control.append(toggle, radius);
     row.append(info, control);
     container.append(row);
   }
@@ -1414,7 +1463,7 @@ $("#licence-form").addEventListener("submit", async (event) => { event.preventDe
 $("#add-credits").addEventListener("click", () => showActivation(true));
 $("#close-activation").addEventListener("click", () => { if (currentLicence?.active) activation.hidden = true; });
 $("#toggle-password").addEventListener("click", (event) => { const password = $("#password"); const showing = password.type === "text"; password.type = showing ? "password" : "text"; event.currentTarget.textContent = showing ? "Show" : "Hide"; });
-$("#direct-form").addEventListener("submit", async (event) => { event.preventDefault(); const button = $("#initialize"); const password = $("#password"); button.disabled = true; button.textContent = "Initializing…"; $("#direct-result").textContent = "OpenAuto is signing in, discovering the account, and preparing its initial map data."; try { await api("/accounts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ server: $("#server").value, username: $("#player-name").value.trim(), password: password.value, scan_radius: Number($("#scan-radius").value) || 0, reuse_existing_map: false }) }); password.value = ""; await refresh(); } catch (error) { password.value = ""; button.disabled = false; button.textContent = "Initialize account"; $("#direct-result").textContent = error.message; } });
+$("#direct-form").addEventListener("submit", async (event) => { event.preventDefault(); const button = $("#initialize"); const password = $("#password"); button.disabled = true; button.textContent = "Initializing…"; $("#direct-result").textContent = "OpenAuto is signing in, discovering the account, and preparing its initial map data."; const radius = Number($("#scan-radius").value) || 0; try { await api("/accounts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ server: $("#server").value, username: $("#player-name").value.trim(), password: password.value, scan_radius: radius, kingdom_scans: kingdomScans(radius), reuse_existing_map: false }) }); password.value = ""; await refresh(); } catch (error) { password.value = ""; button.disabled = false; button.textContent = "Initialize account"; $("#direct-result").textContent = error.message; } });
 $("#refresh-accounts").addEventListener("click", refreshAccounts);
 $("#add-account").addEventListener("click", () => {
   addingAccount = !addingAccount;
@@ -1424,15 +1473,18 @@ $("#add-account").addEventListener("click", () => {
 });
 $("#scan-radius").addEventListener("input", updateScanEstimate);
 $("#scan-now").addEventListener("click", async () => {
-  const account = connectedAccounts[0];
+  const account = activeAccount();
   const output = $("#scan-result");
   if (!account) { output.textContent = "Initialize an account first."; return; }
   const password = $("#scan-password").value;
   if (!password) { output.textContent = "Enter the account password to re-scan."; return; }
-  const radius = clampRadius($("#scan-radius").value) || 50;
-  output.textContent = `Scanning every available permanent kingdom at radius ${radius}…`;
+  const chosen = kingdomScans(clampRadius($("#scan-radius").value) || 50).filter((scan) => scan.enabled);
+  output.textContent = chosen.length
+    ? `Scanning ${chosen.map((scan) => kingdomLabel(scan.kingdom_id)).join(", ")}…`
+    : "Tick at least one kingdom to scan.";
+  if (!chosen.length) return;
   try {
-    await connectSavedAccount(account, password, radius, false, output);
+    await connectSavedAccount(account, password, clampRadius($("#scan-radius").value) || 50, false, output);
     $("#scan-password").value = "";
     renderScanPlan();
   } catch (error) { output.textContent = error.message; }

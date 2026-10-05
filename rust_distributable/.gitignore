@@ -3,6 +3,7 @@
 /desktop/dist/
 /desktop/node_modules/
 /releases/*.dmg
+/output_folder/
 /data/
 /admin/master_key.txt
 /admin/*.token

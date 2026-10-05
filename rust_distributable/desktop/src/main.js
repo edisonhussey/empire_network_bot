@@ -22,6 +22,7 @@ let dashboardAccountId = null;
 let scanHealthFetchedAt = 0;
 let scanHealthRefresh = null;
 let addingAccount = false;
+const scanDrafts = new Map();
 const fallbackKingdoms = [
   { id: 0, name: "green_kingdom" }, { id: 1, name: "sand_kingdom" },
   { id: 2, name: "ice_kingdom" }, { id: 3, name: "fire_kingdom" },
@@ -182,6 +183,7 @@ function kingdomName(name) {
 /// Kingdom display name from an id, so activity rows can say "Burning Sands"
 /// rather than "K1".
 function kingdomLabel(kingdomId) {
+  if (kingdomId === null || kingdomId === undefined) return "Current kingdom";
   const found = library.kingdoms.find((value) => value.id === kingdomId) || fallbackKingdoms.find((value) => value.id === kingdomId);
   return kingdomName(found?.name || `Kingdom ${kingdomId}`);
 }
@@ -872,6 +874,9 @@ async function refreshAccounts(knownDirect = null) {
     connection.append(element("p", "list-label", "Step 1 · Connection"));
     const password = document.createElement("input"); password.type = "password"; password.placeholder = "Password"; password.autocomplete = "current-password";
     const connectionResult = element("span", "connection-result", isConnected ? "Connected. Cached map data is being used." : "Not connected. Your castles and targets are still shown from the last visit.");
+    const scanStatus = element("span", "control-scan-status");
+    scanStatus.dataset.controlScanAccount = account.account_id.toLowerCase();
+    scanStatus.hidden = true;
     const connectionState = element("span", isConnected ? "control-state live" : "control-state", isConnected ? "● Connected" : "● Disconnected");
     const login = actionButton("Start connection", async () => {
       try { await connectSavedAccount(account, password.value, 0, true, connectionResult); password.value = ""; }
@@ -887,7 +892,7 @@ async function refreshAccounts(knownDirect = null) {
     // this step is only about opening and closing the socket.
     const scanRow = element("div", "connection-scan");
     scanRow.append(login, close, connectionState);
-    connection.append(password, scanRow, connectionResult);
+    connection.append(password, scanRow, connectionResult, scanStatus);
     // Only one socket exists, so signing in here ends whoever holds it.
     if (!isConnected && direct.connected) connection.append(element("p", "empty-copy", "Another account holds the connection. Starting this one replaces that session."));
 
@@ -946,6 +951,7 @@ async function refreshAccounts(knownDirect = null) {
     card.append(connection, assignment); return card;
   }));
   renderedConnectionKey = `${direct.connected}:${direct.account_id || ""}:${direct.phase === "sands_ready"}`;
+  updateControlScanIndicators(direct);
   updateSourceCoordinates();
   renderModes();
   renderRecruitmentBuilder();
@@ -964,15 +970,57 @@ function dashboardStat(value, label) {
 /// counts down to a real time rather than an estimate. While the map walk is
 /// still running it says so, because "none yet" and "still looking" are
 /// different things to be told.
+/// The fortress console: the next few fortresses in the order the server says
+/// they open, with the coordinates the client shows.
+///
+/// Fortress coordinates never change once learned, so this is a schedule rather
+/// than a discovery feed — the only thing that moves between polls is the
+/// countdown. Rows already past their opening time are the ones a run can act on
+/// right now, so only those carry the status colour.
+function renderFortressConsole(summary) {
+  const list = $("#dashboard-fortresses");
+  list.replaceChildren();
+  const rows = summary?.fortress_upcoming || [];
+  const note = $("#fortress-console-note");
+  if (note) note.textContent = rows.length ? `${rows.length} shown` : "By the server's cooldown";
+  if (!rows.length) {
+    list.append(element("p", "empty-copy", summary?.fortress_probes_pending
+      ? "Still mapping — no fortress coordinates yet."
+      : summary?.fortress_count
+        ? "No fortress is inside its one-minute claim window."
+        : "No fortress observed yet."));
+    return;
+  }
+  const now = Date.now();
+  for (const row of rows) {
+    const line = element("div", "fortress-row");
+    const wait = row.available_at_ms - now;
+    const when = element("span", wait <= 0 ? "fortress-when due" : "fortress-when",
+      wait <= 0 ? "Ready now" : `in ${humanWait(wait)}`);
+    line.append(
+      element("b", "", `${kingdomLabel(row.kingdom_id)} · ${row.x},${row.y}`),
+      element("small", "", `level ${row.level}`),
+      when,
+    );
+    line.title = `Open ${new Date(row.available_at_ms).toLocaleString()}`;
+    list.append(line);
+  }
+}
+
 function nextFortressSummary(summary) {
   const count = summary?.fortress_count || 0;
   const pending = summary?.fortress_probes_pending || 0;
   const soonest = summary?.fortress_next_available_at_ms ?? null;
-  if (!count || soonest === null) {
+  if (!count) {
     return pending
       ? { text: `Mapping · ${pending} areas left`, imminent: false, detail: "Still walking the map for fortresses." }
       : { text: "None found yet", imminent: false, detail: "No fortress has been observed for this account yet." };
   }
+  if (soonest === null) return {
+    text: "No active window",
+    imminent: false,
+    detail: `${count} fortresses known. Expired one-minute openings are hidden until fresh server state re-arms them.`,
+  };
   const found = `${count} fortress${count === 1 ? "" : "es"} known`;
   const wait = soonest - Date.now();
   if (wait <= 0) return { text: "Ready now", imminent: true, detail: `${found}. The runner sends inside a one-minute window.` };
@@ -1086,6 +1134,7 @@ async function refreshDashboard(knownDirect = null, force = false) {
     $("#rate-coins").textContent = compactNumber(summary.coins_last_hour);
     $("#chart-updated").textContent = `Updated ${new Date(summary.generated_at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
     renderRubyChart(summary.ruby_series);
+    renderFortressConsole(summary);
 
     const dashboardAccounts = activeAccountId ? connectedAccounts.filter((account) => account.account_id.toLowerCase() === activeAccountId.toLowerCase()) : connectedAccounts.slice(0, 1);
     const totals = dashboardAccounts.reduce((value, account) => {
@@ -1208,11 +1257,11 @@ function updateScanEstimate() {
     : `Radius ${radius}: about ${minutes} min per kingdom for the map. Fortress discovery runs separately.`;
 }
 
-/// Map areas a scan has to walk: the client asks in 13-area windows, so the grid
-/// is the radius doubled and rounded up to whole windows.
+/// Map windows a scan has to walk. The live server accepts inclusive 101×101
+/// requests, so the radius diameter is rounded up to those large windows.
 function scanAreasFor(radius) {
-  if (radius <= 0) return 6;
-  const side = Math.ceil((radius * 2 + 1) / 13);
+  if (radius <= 0) return 1;
+  const side = Math.ceil((radius * 2 + 1) / 101);
   return side * side;
 }
 
@@ -1274,6 +1323,8 @@ function renderScanPlan() {
   container.append(element("p", "scan-account", `Showing ${account?.player_name || "the connected account"} · walked in the order below`));
   for (const entry of health) {
     const defaultRadius = clampRadius($("#scan-radius").value) || 50;
+    const draftKey = `${account.account_id.toLowerCase()}:${entry.kingdom_id}`;
+    const draft = scanDrafts.get(draftKey);
     const pending = entry.fortress_probes_pending || 0;
     const total = entry.fortress_probes_total || 0;
     const name = entry.castle_name || `Castle ${entry.castle_id}`;
@@ -1284,7 +1335,7 @@ function renderScanPlan() {
     const found = [`${entry.target_count || 0} RBCs`];
     found.push(FORTRESS_KINGDOM_IDS.has(entry.kingdom_id) ? `${entry.fortress_count || 0} fortresses` : "no fortresses here");
     const walk = FORTRESS_KINGDOM_IDS.has(entry.kingdom_id) && total
-      ? ` · ${total - pending}/${total} gaa checks`
+      ? ` · fortress map ${total - pending}/${total} complete`
       : "";
     info.append(element("small", "", found.join(" · ") + walk));
     const bar = element("div", "scan-coverage");
@@ -1295,14 +1346,20 @@ function renderScanPlan() {
     const control = element("div", "scan-radius");
     const toggle = element("input");
     toggle.type = "checkbox";
-    toggle.checked = true;
+    toggle.checked = draft?.enabled ?? true;
     toggle.setAttribute("aria-label", `Initialise ${kingdomLabel(entry.kingdom_id)}`);
     const radius = element("input");
     radius.type = "number";
     radius.min = "0";
     radius.max = "500";
-    radius.value = String(defaultRadius);
+    radius.value = String(draft?.radius ?? defaultRadius);
     radius.setAttribute("aria-label", `Map radius in ${kingdomLabel(entry.kingdom_id)}`);
+    const remember = () => scanDrafts.set(draftKey, {
+      enabled: toggle.checked,
+      radius: clampRadius(radius.value),
+    });
+    toggle.addEventListener("change", remember);
+    radius.addEventListener("input", remember);
     control.append(toggle, radius);
     row.append(info, control);
     container.append(row);
@@ -1314,18 +1371,61 @@ function renderScanPlan() {
 function renderScanProgress(direct) {
   const total = direct.scan_total || 0;
   const done = (direct.scan_sent || 0) + (direct.scan_cached || 0);
-  // The service reuses these counters for the fortress walk, which answers one
-  // lattice coordinate per request rather than the 13x13 map areas the radius
-  // scan walks. Calling those "map areas" made a normal fortress sweep look like
-  // a runaway map scan.
-  const mapping = direct.phase === "discovering_fortresses" || direct.bot_state === "discovering_fortresses";
-  const unit = mapping ? "fortress coordinates checked" : "map areas processed";
-  const cache = mapping ? "" : ` · ${direct.scan_cached || 0} reused from cache`;
+  const stage = direct.scan_stage || (direct.phase === "discovering_fortresses" ? "fortress_mapping" : "rbc");
+  const remaining = Math.max(0, total - done);
   $("#scan-bar-fill").style.width = total ? `${Math.round(Math.min(1, done / total) * 100)}%` : "0%";
-  $("#scan-state").textContent = !total ? "Idle" : done >= total ? "Complete" : mapping ? "Mapping fortresses" : "Scanning";
-  $("#scan-progress-copy").textContent = total
-    ? `${kingdomLabel(direct.scan_kingdom_id)} · ${done} of ${total} ${unit}${cache}`
-    : "No scan running.";
+  if (!total) {
+    $("#scan-state").textContent = "Idle";
+    $("#scan-progress-copy").textContent = "No scan running.";
+  } else if (stage === "rbc") {
+    $("#scan-state").textContent = done >= total ? "RBC scan complete" : "Scanning nearby RBCs";
+    $("#scan-progress-copy").textContent = `${kingdomLabel(direct.scan_kingdom_id)} · RBC scan ${done}/${total} complete${direct.scan_cached ? ` · ${direct.scan_cached} reused` : ""}`;
+  } else if (stage === "fortress_boundary") {
+    $("#scan-state").textContent = "Finding fortress boundary";
+    $("#scan-progress-copy").textContent = `${kingdomLabel(direct.scan_kingdom_id)} · ${done}% estimated until the boundary is known`;
+  } else {
+    const etaSeconds = Math.ceil(remaining * 1.5);
+    const eta = remaining ? ` · about ${humanWait(etaSeconds * 1000)} remaining` : "";
+    $("#scan-state").textContent = remaining ? "Mapping fortresses" : "Fortress scan complete";
+    $("#scan-progress-copy").textContent = `${kingdomLabel(direct.scan_kingdom_id)} · fortress map ${done}/${total} complete${eta}`;
+  }
+}
+
+function updateControlScanIndicators(direct) {
+  document.querySelectorAll("[data-control-scan-account]").forEach((indicator) => {
+    const active = direct.connected
+      && direct.account_id?.toLowerCase() === indicator.dataset.controlScanAccount
+      && (["loading_sands", "discovering_fortresses"].includes(direct.phase)
+        || direct.bot_state === "refreshing_fortress");
+    indicator.hidden = !active;
+    if (!active) return;
+    const done = (direct.scan_sent || 0) + (direct.scan_cached || 0);
+    const total = direct.scan_total || 0;
+    if (direct.bot_state === "refreshing_fortress") {
+      indicator.textContent = direct.bot_detail || "Refreshing fortress cooldowns";
+      return;
+    }
+    const boundary = direct.scan_stage === "fortress_boundary";
+    const kind = direct.scan_stage === "rbc" ? "RBC scan" : boundary ? "Finding fortress boundary" : "Fortress scan";
+    indicator.textContent = `${kind} · ${kingdomLabel(direct.scan_kingdom_id)}${total ? boundary ? ` · ${done}% estimated` : ` · ${done}/${total}` : ""}`;
+  });
+}
+
+let directProgressRefresh = false;
+async function refreshDirectProgress() {
+  if (directProgressRefresh || !latestDirect.connected
+      || !["loading_sands", "discovering_fortresses"].includes(latestDirect.phase)) return;
+  directProgressRefresh = true;
+  try {
+    const direct = await api("/direct");
+    latestDirect = direct;
+    updateControlScanIndicators(direct);
+    if (!$("#view-initialize").hidden) renderScanProgress(direct);
+  } catch (_) {
+    // The normal connection refresh owns offline/error presentation.
+  } finally {
+    directProgressRefresh = false;
+  }
 }
 
 function updateProgress(currentPhase) {
@@ -1345,6 +1445,7 @@ async function refresh() {
     const scanning = direct.connected && ["loading_sands", "discovering_fortresses"].includes(direct.phase);
     if (scanning && Date.now() - scanHealthFetchedAt >= 4000) await refreshScanHealth();
     renderLinkState(direct);
+    updateControlScanIndicators(direct);
     if (!$("#view-initialize").hidden) renderScanProgress(direct);
     $("#phase").textContent = phaseCopy[direct.phase] || "Getting ready…";
     updateProgress(direct.phase);
@@ -1480,4 +1581,5 @@ refreshLicence().then(async (active) => {
   }
 }).catch(() => showActivation(false));
 setInterval(refresh, 2000);
+setInterval(refreshDirectProgress, 500);
 setInterval(() => { if (!$("#view-logs").hidden && latestDirect.connected) refreshLogs(); }, 1500);

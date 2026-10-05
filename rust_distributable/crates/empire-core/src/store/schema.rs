@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 17;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -527,8 +527,26 @@ pub const V15: Migration = &["CREATE TABLE IF NOT EXISTS fortress_scan_state (
         FOREIGN KEY (account_id) REFERENCES account_profile(account_id) ON DELETE CASCADE
     )"];
 
+/// Fortress discovery stops being two sweeps per kingdom and becomes one.
+///
+/// A window now spans both residue families, so one request answers eight slots
+/// and a cursor no longer means the position it used to: a 2×2 block on a single
+/// family is not a sub-rectangle of the new window grid, so resuming from an old
+/// cursor would silently skip ground. Clearing the rows re-walks each kingdom
+/// once — 289 requests at the new tempo — and is the only correct option, since
+/// the old positions cannot be translated.
+pub const V16: Migration = &["DELETE FROM fortress_scan_state"];
+
+/// Bounds are measured per kingdom now, from the block over that kingdom's own
+/// castle, rather than filled in from one hard-coded map rectangle. Every row
+/// written before V17 therefore holds the wrong rectangle, and `blocks_total`
+/// counts the wrong number of blocks, so a stored cursor cannot be resumed
+/// against them. The rows are dropped and each kingdom is measured again on its
+/// next walk: a few probes per kingdom, once.
+pub const V17: Migration = &["DELETE FROM fortress_scan_state"];
+
 pub const MIGRATIONS: &[Migration] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17,
 ];
 
 /// Every table that holds user data, for the storage report and full wipe.

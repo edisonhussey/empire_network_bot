@@ -1,13 +1,13 @@
 {
   "name": "empire-desktop",
   "private": true,
-  "version": "0.1.30",
+  "version": "0.1.38",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "tauri": "tauri",
-    "release": "tauri build && cp -p src-tauri/target/release/bundle/dmg/OpenAuto_${npm_package_version}_aarch64.dmg ../releases/OpenAuto_${npm_package_version}_aarch64.dmg"
+    "release": "../scripts/release.sh"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.0",

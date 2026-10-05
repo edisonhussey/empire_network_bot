@@ -1,0 +1,33 @@
+{"at": "2026-10-05T09:39:56", "sent": 10, "replies": 10, "matched_to_a_window": 10, "send_seconds": 2.577, "planned_gap_mean": 0.279, "reply_gap_min": 0.697, "reply_gap_mean": 0.977, "reply_gap_max": 1.739, "base": 0.23, "kingdom": 1}
+  {"sequence": 5932, "observed_at_ms": 1791189586579, "window": "window 0", "fortresses": 8, "extent": "x 632..693 y 632..693"}
+  {"sequence": 5938, "observed_at_ms": 1791189588318, "window": "window 1", "fortresses": 8, "extent": "x 632..693 y 554..615"}
+  {"sequence": 5939, "observed_at_ms": 1791189589216, "window": "window 2", "fortresses": 8, "extent": "x 554..615 y 632..693"}
+  {"sequence": 5940, "observed_at_ms": 1791189589913, "window": "window 3", "fortresses": 8, "extent": "x 632..693 y 710..771"}
+  {"sequence": 5941, "observed_at_ms": 1791189590744, "window": "window 4", "fortresses": 8, "extent": "x 710..771 y 632..693"}
+  {"sequence": 5942, "observed_at_ms": 1791189591876, "window": "window 5", "fortresses": 8, "extent": "x 554..615 y 554..615"}
+  {"sequence": 5943, "observed_at_ms": 1791189592712, "window": "window 6", "fortresses": 8, "extent": "x 632..693 y 476..537"}
+  {"sequence": 5944, "observed_at_ms": 1791189593499, "window": "window 7", "fortresses": 8, "extent": "x 476..537 y 632..693"}
+  {"sequence": 5945, "observed_at_ms": 1791189594406, "window": "window 8", "fortresses": 8, "extent": "x 710..771 y 554..615"}
+  {"sequence": 5946, "observed_at_ms": 1791189595368, "window": "window 9", "fortresses": 8, "extent": "x 554..615 y 710..771"}
+{"at": "2026-10-05T09:40:31", "sent": 4, "replies": 4, "matched_to_a_window": 4, "send_seconds": 4.591, "planned_gap_mean": 1.515, "reply_gap_min": 1.363, "reply_gap_mean": 1.478, "reply_gap_max": 1.6, "base": 1.5, "kingdom": 1}
+  {"sequence": 5949, "observed_at_ms": 1791189625968, "window": "window 0", "fortresses": 8, "extent": "x 632..693 y 632..693"}
+  {"sequence": 5951, "observed_at_ms": 1791189627331, "window": "window 1", "fortresses": 8, "extent": "x 632..693 y 554..615"}
+  {"sequence": 5953, "observed_at_ms": 1791189628802, "window": "window 2", "fortresses": 8, "extent": "x 554..615 y 632..693"}
+  {"sequence": 5955, "observed_at_ms": 1791189630402, "window": "window 3", "fortresses": 8, "extent": "x 632..693 y 710..771"}
+{"at": "2026-10-05T09:40:44", "sent": 5, "replies": 5, "matched_to_a_window": 5, "send_seconds": 3.03, "planned_gap_mean": 0.749, "reply_gap_min": 0.639, "reply_gap_mean": 0.82, "reply_gap_max": 1.053, "base": 0.6, "kingdom": 1}
+  {"sequence": 5958, "observed_at_ms": 1791189640438, "window": "window 0", "fortresses": 8, "extent": "x 632..693 y 632..693"}
+  {"sequence": 5960, "observed_at_ms": 1791189641086, "window": "window 1", "fortresses": 8, "extent": "x 632..693 y 554..615"}
+  {"sequence": 5962, "observed_at_ms": 1791189642027, "window": "window 2", "fortresses": 8, "extent": "x 554..615 y 632..693"}
+  {"sequence": 5964, "observed_at_ms": 1791189643080, "window": "window 3", "fortresses": 8, "extent": "x 632..693 y 710..771"}
+  {"sequence": 5966, "observed_at_ms": 1791189643719, "window": "window 4", "fortresses": 8, "extent": "x 710..771 y 632..693"}
+{"at": "2026-10-05T09:48:12", "sent": 10, "replies": 10, "matched_to_a_window": 10, "missing_fortresses": 0, "send_seconds": 2.736, "planned_gap_mean": 0.292, "reply_gap_min": 0.696, "reply_gap_mean": 0.95, "reply_gap_max": 1.242, "base": 0.25, "kingdom": 1}
+  {"sequence": 5991, "observed_at_ms": 1791190083739, "window": "window 0", "fortresses": 8, "extent": "x 632..693 y 632..693"}
+  {"sequence": 5996, "observed_at_ms": 1791190084611, "window": "window 1", "fortresses": 8, "extent": "x 632..693 y 554..615"}
+  {"sequence": 5999, "observed_at_ms": 1791190085682, "window": "window 2", "fortresses": 8, "extent": "x 554..615 y 632..693"}
+  {"sequence": 6000, "observed_at_ms": 1791190086818, "window": "window 3", "fortresses": 8, "extent": "x 632..693 y 710..771"}
+  {"sequence": 6001, "observed_at_ms": 1791190088060, "window": "window 4", "fortresses": 8, "extent": "x 710..771 y 632..693"}
+  {"sequence": 6002, "observed_at_ms": 1791190089064, "window": "window 5", "fortresses": 8, "extent": "x 554..615 y 554..615"}
+  {"sequence": 6003, "observed_at_ms": 1791190089990, "window": "window 6", "fortresses": 8, "extent": "x 632..693 y 476..537"}
+  {"sequence": 6004, "observed_at_ms": 1791190090765, "window": "window 7", "fortresses": 8, "extent": "x 476..537 y 632..693"}
+  {"sequence": 6005, "observed_at_ms": 1791190091592, "window": "window 8", "fortresses": 8, "extent": "x 710..771 y 554..615"}
+  {"sequence": 6006, "observed_at_ms": 1791190092288, "window": "window 9", "fortresses": 8, "extent": "x 554..615 y 710..771"}

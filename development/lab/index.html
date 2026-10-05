@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OpenAuto lab</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<header>
+  <div>
+    <p class="eyebrow">Local workbench</p>
+    <h1>OpenAuto lab</h1>
+  </div>
+  <div class="status">
+    <span id="gate" class="badge">gate …</span>
+    <span id="daemon" class="badge">daemon …</span>
+  </div>
+</header>
+
+<p class="lede">
+  Talks to the running daemon. Every forwarded call waits for a free slot in a
+  two-per-two-seconds gate, so a click here is paced rather than burst.
+  Injections need a connected session.
+</p>
+
+<main>
+  <section class="col">
+    <div class="card">
+      <h2>Window ladder</h2>
+      <p class="hint">
+        Sends one <code>gaa</code> for the chosen span and then reports what came
+        back. This is how the real window ceiling gets measured — one deliberate
+        request at a time.
+      </p>
+      <label>Kingdom <input id="kid" type="number" value="1" min="0" max="3" /></label>
+      <label>Anchor X <input id="ax1" type="number" value="632" /></label>
+      <label>Anchor Y <input id="ay1" type="number" value="632" /></label>
+      <div class="ladder" id="ladder"></div>
+      <div class="row">
+        <label>Custom span <input id="span" type="number" value="62" /></label>
+        <button id="send-custom" class="primary">Send custom span</button>
+      </div>
+      <output id="probe-result"></output>
+    </div>
+
+    <div class="card">
+      <h2>Raw packet</h2>
+      <p class="hint">
+        Anything in the daemon's client framing:
+        <code>%xt%&lt;header&gt;%&lt;command&gt;%1%{json}%</code>. Parsed by the
+        daemon before it is queued, so a malformed packet is refused rather than
+        sent.
+      </p>
+      <textarea id="packet" spellcheck="false" rows="3">%xt%EmpireEx_21%gaa%1%{"KID":1,"AX1":632,"AY1":632,"AX2":673,"AY2":673}%</textarea>
+      <div class="row">
+        <label>TTL ms <input id="ttl" type="number" value="15000" /></label>
+        <button id="send-packet" class="primary">Inject packet</button>
+      </div>
+      <output id="packet-result"></output>
+    </div>
+
+    <div class="card">
+      <h2>State</h2>
+      <div class="row wrap">
+        <button data-read="health">health</button>
+        <button data-read="direct">direct</button>
+        <button data-read="licence">licence</button>
+        <button data-read="dashboard">dashboard</button>
+        <button data-read="accounts">accounts</button>
+      </div>
+      <pre id="state">nothing read yet</pre>
+    </div>
+  </section>
+
+  <section class="col wide">
+    <div class="card grow">
+      <div class="card-head">
+        <h2>Packets</h2>
+        <div class="row">
+          <label class="inline">Command
+            <select id="filter"><option value="">all</option></select>
+          </label>
+          <label class="inline">Direction
+            <select id="direction">
+              <option value="">both</option>
+              <option value="server_to_client">server → client</option>
+              <option value="client_to_server">client → server</option>
+            </select>
+          </label>
+          <label class="inline">Rows
+            <input id="limit" type="number" value="300" min="10" max="2000" />
+          </label>
+          <button id="refresh">Refresh</button>
+          <label class="inline check"><input id="follow" type="checkbox" checked /> follow</label>
+        </div>
+      </div>
+      <p class="hint" id="log-meta">waiting for the first read…</p>
+      <div class="scroll">
+        <table id="log">
+          <thead>
+            <tr><th>#</th><th>time</th><th>dir</th><th>cmd</th><th>payload</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

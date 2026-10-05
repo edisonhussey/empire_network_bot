@@ -202,6 +202,16 @@ header { padding-bottom: 28px; border-bottom: 1px solid var(--line); margin-bott
 /* The fortress window is the one row that can be acted on right now, so it is
    the only place the status colour appears on the dashboard. */
 .assignment-line.due b { color: var(--ok); }
+/* Fortress console: a schedule rather than a discovery feed, so it is a plain
+   list of coordinates and countdowns instead of another stat grid. Capped at
+   eight rows upstream so it stays a summary and never needs its own scrollbar. */
+.fortress-console { grid-area: 4 / 1 / span 1 / span 2; }
+.fortress-row { display: grid; grid-template-columns: 1fr auto auto; gap: 16px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid var(--line); color: var(--ink-2); }
+.fortress-row:last-child { border-bottom: 0; }
+.fortress-row b { font-weight: 400; color: var(--ink); }
+.fortress-row small { color: var(--ink-3); font-size: 12px; }
+.fortress-when { color: var(--ink-2); font-size: 13px; }
+.fortress-when.due { color: var(--ok); }
 .hourly-rates { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 24px; margin-bottom: 26px; }
 .hourly-rates > div { display: grid; gap: 2px; }
 .hourly-rates b { font-size: 26px; }
@@ -367,6 +377,7 @@ legend { padding: 0 16px 0 0; }
 .scan-coverage i { display: block; height: 100%; background: var(--ink); }
 .scan-tag { display: none; }
 .scan-row.read-only .scan-radius input { display: none; }
+.control-scan-status { display: block; margin-top: 8px; color: #2463c7; font-size: 12px; font-weight: 650; }
 .scan-card .form-actions input { width: 240px; }
 
 /* ---- Preset management ----------------------------------------------- */

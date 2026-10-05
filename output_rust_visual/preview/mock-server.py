@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -63,6 +64,29 @@ POST_PREFIXES = (
     "plans/recruitments",
     "plans/recruit-bots",
 )
+
+
+# The dashboard sample carries absolute fortress times, so a file written once
+# would read as long overdue on every later run. Re-anchor the schedule to the
+# moment of the request, keeping the offsets the sample was written with, so the
+# console always previews a live countdown. Only the timestamp and the fortress
+# schedule move; every other field is served exactly as written.
+def live_dashboard(payload: dict) -> dict:
+    base = payload.get("generated_at_ms")
+    upcoming = payload.get("fortress_upcoming")
+    if not isinstance(base, int) or not isinstance(upcoming, list) or not upcoming:
+        return payload
+    now = int(time.time() * 1000)
+    drift = now - base
+    refreshed = dict(payload)
+    refreshed["generated_at_ms"] = now
+    refreshed["fortress_upcoming"] = [
+        {**row, "available_at_ms": row["available_at_ms"] + drift} for row in upcoming
+    ]
+    soonest = payload.get("fortress_next_available_at_ms")
+    if isinstance(soonest, int):
+        refreshed["fortress_next_available_at_ms"] = soonest + drift
+    return refreshed
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -129,6 +153,9 @@ class Handler(BaseHTTPRequestHandler):
             file = SAMPLES / sample
             if not file.exists():
                 self.send_json({"error": f"missing {sample}"}, 500)
+                return
+            if sample == "dashboard.json":
+                self.send_json(live_dashboard(json.loads(file.read_text())))
                 return
             body = file.read_bytes()
             self.send_response(200)

@@ -1,0 +1,11 @@
+Found and fixed a protocol mistake: fortresses need abi for attack details, but we were sending adi, the RBC command.
+Your log shows both fortresses reporting zero cooldown, followed immediately by adi returning status 6. The client-derived protocol definitions identify type-11 fortresses as boss dungeons using abi; status 6 is INVALID_POSITION. This explains why adjusting cooldown scheduling didn’t resolve the refusals. Protocol definitions
+The corrected flow is:
+- Fortress: abi → successful response → paced cra.
+- RBC: adi → successful response → paced cra.
+- Rejected or null responses block the attack.
+- Unrelated map updates no longer discard a pending attack response.
+The one-minute fortress window and four-second minimum between cra packets remain enforced.
+0.1.38 is built from scratch, installed, and running locally as API 38. All 152 core/daemon tests passed, including the new command-selection and response-handling tests; Clippy also passed.
+[Download OpenAuto 0.1.38](/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/rust_distributable/releases/OpenAuto_0.1.38_aarch64.dmg)
+The game connection is currently closed, so I haven’t verified a live abi response or successful fortress attack yet. Reconnect Ventrilo and leave the bot stopped first; that lets us verify the corrected inspection request before running attacks.

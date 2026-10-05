@@ -64,8 +64,10 @@ client emitted `gbl`, `upt`, and groups of `gaa` reads.
 
 - `KID=0` requests and responses were observed for the Green kingdom map.
 - `KID=1` requests and responses were observed after moving to Burning Sands.
-- A map tile is requested as an inclusive 13-by-13 rectangle (`AX1`, `AY1`,
-  `AX2`, `AY2`). Adjacent tiles advance by 13 coordinates.
+- The official client commonly requests an inclusive 13-by-13 rectangle
+  (`AX1`, `AY1`, `AX2`, `AY2`), with adjacent tiles advancing by 13. That is not
+  the server limit: live ladder probes accepted inclusive widths of 23, 62, and
+  101 coordinates; a width of 138 was refused with an empty payload.
 - The captured Sands viewport began at `572:598` and requested three columns by
   two rows. Those coordinates are account/view dependent and are configurable.
 
@@ -81,17 +83,18 @@ network-only client cannot imply that a separate game webview has visually
 changed.
 
 The radius is measured from that kingdom's main castle and applies separately
-to every owned permanent kingdom. A radius of 50 covers an 8-by-8 grid of 64
-13-by-13 `gaa` windows per kingdom. Requests within the grid are paced with
-variance, and kingdom changes have their own short settling interval. Persisted
-windows can suppress redundant discovery reads on a normal reconnect, but one
-live `gaa` per kingdom is still required as navigation proof.
+to every owned permanent kingdom. Because the accepted inclusive width is 101,
+a radius of 50 fits one `gaa` response exactly. Larger radii are tiled in
+101-coordinate windows. Persisted windows can suppress redundant discovery
+reads on a normal reconnect, but one live `gaa` per kingdom is still required
+as navigation proof.
 
 Recruitment is allowed only after a `jaa` whose castle and kingdom match the
 requested subscription. Attack inspection is allowed only after a `gaa` whose
 kingdom matches the attack task, and `cra` rechecks that context before commit.
 After recruiting in a different kingdom, the attack runner must obtain a fresh
-map response for its own kingdom before sending `adi`.
+map response for its own kingdom before requesting attack details (`adi` for
+RBCs, `abi` for fortresses).
 
 ### Fortress rows in `gaa`
 
@@ -125,6 +128,48 @@ targets separately from RBCs, and converts the observed remaining seconds into
 an absolute availability time. The exact human-facing meaning of field 6 is not
 required for classification; it is retained as the raw occupier/player id.
 
+### Fortress dispatch window
+
+The broad scan supplies each fortress's variable remaining cooldown. OpenAuto
+converts it to an absolute time and counts down locally; it does not poll every
+fortress again before attacking. The target is eligible only from that time
+through the following 60 seconds. Once the minute passes it is excluded from
+both dispatch and the active dashboard list until a later scan supplies new
+server state. This is the same scheduling pattern used for RBCs, whose next
+eligibility is tracked from their roughly three-hour cooldown, except fortress
+cooldowns are variable and supplied by `gaa`.
+
+An ordinary reconnect reuses the stored map and does not repeat this work. An
+explicit user-requested map scan reuses the already learned fortress boundary
+but walks its broad windows again, refreshing all cooldowns in batches rather
+than polling coordinates one by one.
+
+Captured successful RBC inspections return a populated `adi` response containing
+the target, troop inventory, and commander roster. Fortresses are type-11 boss
+dungeons and use `abi` for this step; type-2 RBCs use `adi`. The coordinate fields
+are the same (`KID`, `SX`, `SY`, `TX`, `TY`), followed by `cra` after a successful
+response. Response matching must use the selected command: an unrelated map or
+attack-information reply cannot consume the pending request.
+
+Evidence on 2026-10-05: GAA showed Sands fortresses at 516:984 and 575:302 with
+zero cooldown; ADI against both immediately returned status 6 and null. This
+does not prove a cooldown failure. The client-derived protocol definitions in
+[EmpireCore's attack models](https://github.com/eschnitzler/EmpireCore/blob/master/src/empire_core/attack/models/target_info.py)
+map boss-dungeon inspection to ABI; its
+[error definitions](https://github.com/eschnitzler/EmpireCore/blob/master/src/empire_core/protocol/errors.py)
+name status 6 `INVALID_POSITION`. Live ABI acceptance must be checked separately
+from that source evidence. Any rejected or null inspection response blocks CRA
+and temporarily defers the fortress to avoid a repeated refusal loop.
+
+### Rolling operational-error limit
+
+Mutating automation uses a rolling five-minute safety window. The first genuine
+request timeout or server rejection is isolated and backed off. A second such
+error inside the same five minutes pauses further attack mutations until the
+oldest error ages out. Restarting a mode does not erase the timestamps. Normal
+game state—positive cooldowns, expired one-minute windows, no free commander,
+or no eligible target—is not an error and does not spend this allowance.
+
 ### Outer-kingdom map boundary and fortress coverage
 
 Direct `gaa` boundary probes returned ordinary map rows at coordinates through
@@ -132,13 +177,13 @@ Direct `gaa` boundary probes returned ordinary map rows at coordinates through
 other axis, and windows at `1290` and above returned an empty `AI` list. The
 last coordinate on the observed fortress lattice inside that map is `1277`.
 
-The fortress lattice contains two interleaved grids, so the bounded rectangle
-from `0:0` through `1285:1285` contains 2,178 candidate coordinates per outer
-kingdom. Captures also show populated fortress bands separated by empty lattice
-slots. Consequently, an empty ring around the currently known targets does not
-establish that all fortresses have been found; complete discovery requires
-visiting every candidate coordinate in the bounded rectangle. Green has no
-fortress type in the captured game data and is excluded from this traversal.
+The fortress lattice contains two interleaved residue families, so the bounded
+rectangle from `0:0` through `1285:1285` contains 2,178 candidate coordinates
+per outer kingdom. One accepted 101-coordinate square spans three positions on
+each axis in both families—18 candidate coordinates in one response. Captures
+also show populated fortress bands separated by empty lattice slots, so a
+single empty window does not establish the end of a band. Green has no fortress
+type in the captured game data and is excluded from fortress traversal.
 
 ## Stable level and attack travel options
 
@@ -185,7 +230,8 @@ to cause server rejection.
   Explicit castle selection can be added once the castle inventory parser is
   promoted into the direct-session planner.
 - A running account mode is executed by the direct session after Sands is
-  ready. The runner leases a database target, sends `adi`, selects an available
+  ready. The runner leases a database target, sends the target-specific attack
+  information request (`adi` or `abi`), selects an available
   commander from that task's allocation, waits the configured jitter, then
   sends `cra`. It does not depend on the visible client screen.
 - The four-second `cra` separation is a hard transport-level floor. Normal

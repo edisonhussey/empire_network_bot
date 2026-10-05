@@ -402,6 +402,18 @@ pub struct ScanActivity {
     pub windows: i64,
 }
 
+/// One fortress with the opening time the server reported for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FortressUpcoming {
+    pub kingdom_id: i64,
+    pub x: i64,
+    pub y: i64,
+    pub level: i64,
+    /// When the server says this fortress opens, in epoch milliseconds. A value
+    /// already in the past is one whose dispatch window is open now.
+    pub available_at_ms: i64,
+}
+
 /// Minute-cached dashboard aggregates. These queries are intentionally separate
 /// from the live connection status so UI polling cannot make ledger work hot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -421,6 +433,10 @@ pub struct DashboardSummary {
     /// Discovery probes still outstanding. The map walk is long, so the dashboard
     /// can say it is still looking instead of implying there are none.
     pub fortress_probes_pending: i64,
+    /// The next few fortresses in the order they open, for the console beneath
+    /// the countdown. Capped because the dashboard is a summary: the console
+    /// shows what is about to be actionable, not the whole kingdom.
+    pub fortress_upcoming: Vec<FortressUpcoming>,
 }
 
 impl Store {
@@ -538,13 +554,15 @@ impl Store {
         // Ice fortress while only Sands is tasked) must never be presented as
         // the next target.
         let fortress = sqlx::query(
-            "SELECT COUNT(*) observed, MIN(available_at_ms) soonest
+            "SELECT COUNT(*) observed,
+                    MIN(CASE WHEN available_at_ms >= ? THEN available_at_ms END) soonest
              FROM fortress_target
              WHERE (? IS NULL OR account_id = ?)
                AND kingdom_id IN (SELECT t.kingdom_id FROM task_definition t
                                   JOIN task_subscription s ON s.task_id = t.task_id
                                   WHERE s.target_kind = 'fortress' AND t.enabled = 1)",
         )
+        .bind(now - 60_000)
         .bind(account_id.as_deref())
         .bind(account_id.as_deref())
         .fetch_one(&self.pool)
@@ -562,6 +580,37 @@ impl Store {
         .fetch_one(&self.pool)
         .await?;
 
+        // The console under the countdown. Ordered by the server's own opening
+        // times rather than by distance, because the question it answers is
+        // "what becomes attackable next" and not "what is nearest". Ordered by
+        // coordinate as a tie-break so the list does not reshuffle between two
+        // polls that read the same schedule.
+        let fortress_upcoming = sqlx::query(
+            "SELECT kingdom_id, x, y, level, available_at_ms
+             FROM fortress_target
+             WHERE (? IS NULL OR account_id = ?)
+               AND available_at_ms >= ?
+               AND kingdom_id IN (SELECT t.kingdom_id FROM task_definition t
+                                  JOIN task_subscription s ON s.task_id = t.task_id
+                                  WHERE s.target_kind = 'fortress' AND t.enabled = 1)
+             ORDER BY available_at_ms, x, y
+             LIMIT 8",
+        )
+        .bind(account_id.as_deref())
+        .bind(account_id.as_deref())
+        .bind(now - 60_000)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(|row| FortressUpcoming {
+            kingdom_id: row.get("kingdom_id"),
+            x: row.get("x"),
+            y: row.get("y"),
+            level: row.get("level"),
+            available_at_ms: row.get("available_at_ms"),
+        })
+        .collect();
+
         Ok(DashboardSummary {
             generated_at_ms: now,
             attacks_last_hour: hourly.get("attacks"),
@@ -573,6 +622,7 @@ impl Store {
             fortress_next_available_at_ms: fortress.get("soonest"),
             fortress_count: fortress.get("observed"),
             fortress_probes_pending,
+            fortress_upcoming,
         })
     }
 

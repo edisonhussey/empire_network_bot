@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::{Row, SqlitePool, sqlite::SqlitePoolOptions};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, sqlite::SqlitePoolOptions};
 
 use crate::{
     RECENT_MESSAGE_LIMIT,
@@ -297,23 +297,28 @@ impl Store {
         // Identity is case-insensitive; see `canonical_account_id`.
         let account_id = canonical_account_id(account_id);
         let mut tx = self.pool.begin().await?;
-        for target in targets {
-            sqlx::query(
-                "INSERT INTO rbc_target (
-                    account_id, kingdom_id, x, y, level, observed_at_ms
-                 ) VALUES (?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(account_id, kingdom_id, x, y) DO UPDATE SET
+        // A 101x101 map response can contain hundreds of RBC rows. Inserting
+        // each one as a separate SQLite statement held the socket task for
+        // several seconds. Bounded multi-row UPSERTs preserve every row while
+        // reducing that work to a handful of statements.
+        for chunk in targets.chunks(150) {
+            let mut query = QueryBuilder::<Sqlite>::new(
+                "INSERT INTO rbc_target (account_id, kingdom_id, x, y, level, observed_at_ms) ",
+            );
+            query.push_values(chunk, |mut row, target| {
+                row.push_bind(&account_id)
+                    .push_bind(target.kingdom_id)
+                    .push_bind(target.x)
+                    .push_bind(target.y)
+                    .push_bind(target.level)
+                    .push_bind(now_ms);
+            });
+            query.push(
+                " ON CONFLICT(account_id, kingdom_id, x, y) DO UPDATE SET
                     level = excluded.level,
                     observed_at_ms = excluded.observed_at_ms",
-            )
-            .bind(&account_id)
-            .bind(target.kingdom_id)
-            .bind(target.x)
-            .bind(target.y)
-            .bind(target.level)
-            .bind(now_ms)
-            .execute(&mut *tx)
-            .await?;
+            );
+            query.build().execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(())
@@ -373,12 +378,7 @@ impl Store {
                  ON CONFLICT(account_id, kingdom_id, x, y) DO UPDATE SET
                     level = excluded.level,
                     cooldown_remaining_s = excluded.cooldown_remaining_s,
-                    available_at_ms = CASE
-                        WHEN excluded.cooldown_remaining_s = 0
-                         AND fortress_target.available_at_ms <= excluded.observed_at_ms
-                        THEN fortress_target.available_at_ms
-                        ELSE excluded.available_at_ms
-                    END,
+                    available_at_ms = excluded.available_at_ms,
                     occupier_player_id = excluded.occupier_player_id,
                     refresh_due_ms = CASE
                         WHEN excluded.cooldown_remaining_s = 0
@@ -516,24 +516,26 @@ impl Store {
         &self,
         account_id: &str,
         kingdom_id: i64,
-        ax1: i64,
-        ay1: i64,
+        bounds: (i64, i64, i64, i64),
         now_ms: i64,
     ) -> Result<bool, sqlx::Error> {
         // Identity is case-insensitive; see `canonical_account_id`.
         let account_id = canonical_account_id(account_id);
         let scanned_at: Option<i64> = sqlx::query_scalar(
             "SELECT scanned_at_ms FROM map_scan_window
-             WHERE account_id = ? AND kingdom_id = ? AND ax1 = ? AND ay1 = ?",
+             WHERE account_id = ? AND kingdom_id = ?
+               AND ax1 = ? AND ay1 = ? AND ax2 = ? AND ay2 = ?",
         )
         .bind(&account_id)
         .bind(kingdom_id)
-        .bind(ax1)
-        .bind(ay1)
+        .bind(bounds.0)
+        .bind(bounds.1)
+        .bind(bounds.2)
+        .bind(bounds.3)
         .fetch_optional(&self.pool)
         .await?;
         Ok(scanned_at.is_some_and(|timestamp| {
-            now_ms.saturating_sub(timestamp) < scan_refresh_after_ms(kingdom_id, ax1, ay1)
+            now_ms.saturating_sub(timestamp) < scan_refresh_after_ms(kingdom_id, bounds.0, bounds.1)
         }))
     }
 
@@ -802,6 +804,147 @@ impl Store {
         Ok(cursor.block(Self::scan_bounds(&row)))
     }
 
+    /// Which of `sweeps` still have blocks left to visit.
+    ///
+    /// A sweep is outstanding when it has no state row (never started) or its
+    /// cursor has not yet passed the last block. Fortress coordinates never
+    /// change, so a kingdom walked in an earlier session answers empty here and
+    /// the runner can skip the walk instead of pacing a map it has already
+    /// covered. An empty input returns an empty result, so "nothing to do" and
+    /// "nothing asked for" never have to be told apart by the caller.
+    pub async fn outstanding_fortress_sweeps(
+        &self,
+        account_id: &str,
+        sweeps: &[(i64, i64)],
+    ) -> Result<Vec<(i64, i64)>, sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        let mut outstanding = Vec::new();
+        for &(kingdom_id, lattice_offset) in sweeps {
+            let row = self
+                .fortress_scan_row(&account_id, kingdom_id, lattice_offset)
+                .await?;
+            let Some(row) = row else {
+                outstanding.push((kingdom_id, lattice_offset));
+                continue;
+            };
+            let cursor = crate::fortress::FortressScanCursor {
+                x: row.get("next_x"),
+                y: row.get("next_y"),
+            };
+            if cursor.block(Self::scan_bounds(&row)).is_some() {
+                outstanding.push((kingdom_id, lattice_offset));
+            }
+        }
+        Ok(outstanding)
+    }
+
+    /// Kingdoms with a fortress task in the attack bot that is running right now.
+    ///
+    /// Discovery is work done *for* a fortress task, so it waits until such a task
+    /// is actually being run. A robber-baron bot, or a fortress task sitting in a
+    /// bot nobody started, must not cost a walk — and because the walk is
+    /// persisted, each kingdom is paid for once and never again.
+    pub async fn active_fortress_kingdoms(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<i64>, sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        let rows = sqlx::query(
+            "SELECT DISTINCT task.kingdom_id kingdom_id
+             FROM account_mode mode
+             JOIN automation_mode_task assignment ON assignment.mode_id = mode.mode_id
+             JOIN task_definition task ON task.task_id = assignment.task_id
+             JOIN task_subscription subscription ON subscription.task_id = task.task_id
+             WHERE lower(mode.account_id) = lower(?) AND mode.running = 1
+               AND task.enabled = 1 AND subscription.target_kind = 'fortress'
+             ORDER BY task.kingdom_id",
+        )
+        .bind(&account_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|row| row.get("kingdom_id")).collect())
+    }
+
+    /// The bounds of a kingdom's sweep, or `None` when it has not been walked yet.
+    ///
+    /// The discovery walk needs to tell "never started" apart from "started and
+    /// finished", which `next_fortress_block` cannot: it answers `None` for both.
+    pub async fn fortress_scan_bounds(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+        lattice_offset: i64,
+    ) -> Result<Option<crate::fortress::Bounds>, sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        Ok(self
+            .fortress_scan_row(&account_id, kingdom_id, lattice_offset)
+            .await?
+            .map(|row| Self::scan_bounds(&row)))
+    }
+
+    /// Record the rectangle a discovery walk found and begin its row-major fill.
+    ///
+    /// `INSERT OR REPLACE` rather than `INSERT OR IGNORE`: this is called once,
+    /// when the arms have measured the extent, and it has to overwrite the
+    /// placeholder that said the kingdom was merely outstanding. The cursor is
+    /// reset to the rectangle's low corner because that is where the fill starts.
+    pub async fn set_fortress_scan_bounds(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+        lattice_offset: i64,
+        bounds: crate::fortress::Bounds,
+    ) -> Result<(), sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        let bounds = crate::fortress::align_bounds(bounds, lattice_offset);
+        sqlx::query(
+            "INSERT OR REPLACE INTO fortress_scan_state (
+                account_id, kingdom_id, lattice_offset,
+                left_bound, top_bound, right_bound, bottom_bound,
+                next_x, next_y, blocks_total, blocks_done
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+        )
+        .bind(&account_id)
+        .bind(kingdom_id)
+        .bind(lattice_offset)
+        .bind(bounds.left)
+        .bind(bounds.top)
+        .bind(bounds.right)
+        .bind(bounds.bottom)
+        .bind(bounds.left)
+        .bind(bounds.top)
+        .bind(bounds.block_count())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// An explicit user scan reuses known geometry but walks it again to obtain
+    /// fresh variable cooldowns. Ordinary reconnects never call this, so the
+    /// coordinate-discovery cost remains a one-time operation.
+    pub async fn reset_fortress_scans(
+        &self,
+        account_id: &str,
+        sweeps: &[(i64, i64)],
+    ) -> Result<(), sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        let mut tx = self.pool.begin().await?;
+        for (kingdom_id, lattice_offset) in sweeps {
+            sqlx::query(
+                "UPDATE fortress_scan_state
+                 SET next_x = left_bound, next_y = top_bound, blocks_done = 0
+                 WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND lattice_offset = ?",
+            )
+            .bind(&account_id)
+            .bind(kingdom_id)
+            .bind(lattice_offset)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Move the sweep on by one block, after the server has answered.
     pub async fn advance_fortress_scan(
         &self,
@@ -944,8 +1087,7 @@ impl Store {
         Ok(Some(target))
     }
 
-    /// Require a live observation made after the revalidation request and keep
-    /// enforcing the one-minute dispatch window through ADI and CRA.
+    /// Enforce the one-minute dispatch window derived from the last broad scan.
     pub async fn fortress_is_dispatchable(
         &self,
         account_id: &str,
@@ -983,6 +1125,30 @@ impl Store {
             "UPDATE fortress_target SET reserved_until_ms = 0
              WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND x = ? AND y = ?",
         )
+        .bind(&account_id)
+        .bind(target.kingdom_id)
+        .bind(target.x)
+        .bind(target.y)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Quarantine a server-refused fortress without deleting its observed
+    /// cooldown. This prevents one bad opening from consuming the whole
+    /// one-minute dispatch window through immediate retries.
+    pub async fn defer_fortress_target(
+        &self,
+        account_id: &str,
+        target: &ReservedTarget,
+        until_ms: i64,
+    ) -> Result<(), sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        sqlx::query(
+            "UPDATE fortress_target SET reserved_until_ms = MAX(reserved_until_ms, ?)
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND x = ? AND y = ?",
+        )
+        .bind(until_ms)
         .bind(&account_id)
         .bind(target.kingdom_id)
         .bind(target.x)

@@ -1,1 +1,3395 @@
-{"catalog":[{"id":606,"name":"archer","kind":"troop"},{"id":652,"name":"armed_citizen","kind":"troop"},{"id":29,"name":"arrow_rain_ballista","kind":"tool"},{"id":880,"name":"arrow_rain_ballista_lvl_1","kind":"tool"},{"id":624,"name":"arrow_slit","kind":"tool"},{"id":754,"name":"assassin","kind":"troop"},{"id":642,"name":"assault_bridge","kind":"tool"},{"id":391,"name":"assault_flame_thrower_lvl_1","kind":"tool"},{"id":110,"name":"balistraria","kind":"tool"},{"id":56,"name":"ballast_stone","kind":"tool"},{"id":758,"name":"ballista","kind":"tool"},{"id":623,"name":"bamboo_ladder","kind":"tool"},{"id":660,"name":"banner","kind":"tool"},{"id":757,"name":"banner_of_the_demon_slayers","kind":"tool"},{"id":774,"name":"banner_of_the_foreign_invaders","kind":"tool"},{"id":61,"name":"banner_of_the_frost_warriors","kind":"tool"},{"id":71,"name":"banner_of_the_underworld","kind":"tool"},{"id":24,"name":"banner_of_triumph","kind":"tool"},{"id":721,"name":"barbarian","kind":"troop"},{"id":89,"name":"bark_shield","kind":"tool"},{"id":611,"name":"battering_ram","kind":"tool"},{"id":131,"name":"bauble_crossing","kind":"tool"},{"id":482,"name":"bavarian_brewer","kind":"troop"},{"id":711,"name":"bear_bowman","kind":"troop"},{"id":710,"name":"bear_warrior","kind":"troop"},{"id":778,"name":"berimond_shield","kind":"tool"},{"id":22,"name":"berserker","kind":"troop"},{"id":761,"name":"boarding_ladder","kind":"tool"},{"id":731,"name":"bodkin_arrowheads","kind":"tool"},{"id":930,"name":"bodkin_arrowheads_lvl_1","kind":"tool"},{"id":48,"name":"bone_huntress","kind":"troop"},{"id":54,"name":"bone_ladder","kind":"tool"},{"id":118,"name":"bone_rattler","kind":"troop"},{"id":650,"name":"boulders","kind":"tool"},{"id":39,"name":"bow_master","kind":"troop"},{"id":830,"name":"bow_master_1","kind":"troop"},{"id":608,"name":"bowman","kind":"troop"},{"id":649,"name":"breaching_tower","kind":"tool"},{"id":104,"name":"broadhead_arrows","kind":"tool"},{"id":792,"name":"bronze_magmatic_chrono_vial_all_sides","kind":"tool"},{"id":790,"name":"bronze_magmatic_chrono_vial_gate","kind":"tool"},{"id":789,"name":"bronze_magmatic_chrono_vial_left","kind":"tool"},{"id":791,"name":"bronze_magmatic_chrono_vial_right","kind":"tool"},{"id":804,"name":"bronze_magmatic_flintlock_gun","kind":"tool"},{"id":801,"name":"bronze_magmatic_grenade_flask","kind":"tool"},{"id":810,"name":"bronze_obsidian_siege_shield","kind":"tool"},{"id":807,"name":"bronze_obsidian_weighted_net","kind":"tool"},{"id":979,"name":"bronze_sporebane_flintlock_gun","kind":"tool"},{"id":976,"name":"bronze_sporebane_grenade_flask","kind":"tool"},{"id":967,"name":"bronze_sporeguard_chrono_vial_all_sides","kind":"tool"},{"id":965,"name":"bronze_sporeguard_chrono_vial_gate","kind":"tool"},{"id":964,"name":"bronze_sporeguard_chrono_vial_left","kind":"tool"},{"id":966,"name":"bronze_sporeguard_chrono_vial_right","kind":"tool"},{"id":45,"name":"bubbling_cauldron","kind":"tool"},{"id":645,"name":"bulwark","kind":"tool"},{"id":129,"name":"candy_cane_ladder","kind":"tool"},{"id":477,"name":"candy_cane_protector_10","kind":"troop"},{"id":30,"name":"case_of_samurai_tokens","kind":"tool"},{"id":165,"name":"case_of_the_shogun","kind":"tool"},{"id":480,"name":"cask_marksmann","kind":"troop"},{"id":635,"name":"cast_iron_mantlet","kind":"tool"},{"id":626,"name":"castle_gate_reinforcement","kind":"tool"},{"id":74,"name":"cave_hunter_74","kind":"troop"},{"id":8,"name":"cave_hunter_8","kind":"troop"},{"id":69,"name":"cave_ladder","kind":"tool"},{"id":68,"name":"cave_smasher_68","kind":"troop"},{"id":7,"name":"cave_smasher_7","kind":"troop"},{"id":347,"name":"celestial_marksman","kind":"troop"},{"id":31,"name":"chest_of_samurai_tokens","kind":"tool"},{"id":166,"name":"chest_of_the_shogun","kind":"tool"},{"id":495,"name":"christmas_archer","kind":"troop"},{"id":496,"name":"christmas_guardian","kind":"troop"},{"id":497,"name":"christmas_huntress","kind":"troop"},{"id":494,"name":"christmas_warrior","kind":"troop"},{"id":784,"name":"cinder_drake_archer","kind":"troop"},{"id":783,"name":"cinder_drake_sentinel","kind":"troop"},{"id":492,"name":"colossal_nomad_tablet_chest","kind":"tool"},{"id":512,"name":"colossal_samurai_token_chest","kind":"tool"},{"id":722,"name":"composite_bowman","kind":"troop"},{"id":191,"name":"corrupted_assassin","kind":"troop"},{"id":192,"name":"corrupted_crossbowman","kind":"troop"},{"id":504,"name":"corrupted_subject","kind":"troop"},{"id":193,"name":"corrupted_veteran_halberdier","kind":"troop"},{"id":194,"name":"corrupted_veteran_longbowman","kind":"troop"},{"id":698,"name":"cow_berdier","kind":"troop"},{"id":607,"name":"crossbowman","kind":"troop"},{"id":76,"name":"crossbowman_of_the_elite_guard","kind":"troop"},{"id":664,"name":"crossbowman_of_the_kingsguard","kind":"troop"},{"id":244,"name":"crown_of_khan_chest","kind":"tool"},{"id":80,"name":"crystal_ballista","kind":"tool"},{"id":680,"name":"cultist_bowman","kind":"troop"},{"id":183,"name":"cultist_brawler","kind":"troop"},{"id":679,"name":"cultist_fanatic","kind":"troop"},{"id":186,"name":"cultist_hunter","kind":"troop"},{"id":184,"name":"cultist_slingshot","kind":"troop"},{"id":185,"name":"cultist_warrior","kind":"troop"},{"id":598,"name":"cyst_born_sporecaster_1","kind":"troop"},{"id":715,"name":"deathly_horror","kind":"troop"},{"id":505,"name":"decayed_axe_bearer","kind":"troop"},{"id":506,"name":"decayed_bolt_slinger","kind":"troop"},{"id":714,"name":"demon_horror","kind":"troop"},{"id":753,"name":"demon_slayer","kind":"troop"},{"id":676,"name":"desert_bowman","kind":"troop"},{"id":277,"name":"direwolf_277","kind":"troop"},{"id":49,"name":"direwolf_49","kind":"troop"},{"id":785,"name":"dormant_rift_egg_0","kind":"troop"},{"id":786,"name":"dormant_rift_wyrmling_1","kind":"troop"},{"id":597,"name":"dormant_spore_cyst_0","kind":"troop"},{"id":594,"name":"dormant_spore_maw_0","kind":"troop"},{"id":673,"name":"dragon_claws","kind":"troop"},{"id":674,"name":"dragon_fire","kind":"troop"},{"id":639,"name":"dummy_archers","kind":"tool"},{"id":632,"name":"dummy_melee_soldiers","kind":"tool"},{"id":735,"name":"dummy_peasants","kind":"tool"},{"id":633,"name":"dummy_ranged_soldiers","kind":"tool"},{"id":288,"name":"easter_championess","kind":"troop"},{"id":141,"name":"elite_nomad_ram_141","kind":"tool"},{"id":560,"name":"elite_nomad_ram_560","kind":"tool"},{"id":142,"name":"elite_nomad_rope_ladder_142","kind":"tool"},{"id":561,"name":"elite_nomad_rope_ladder_561","kind":"tool"},{"id":143,"name":"elite_nomad_shield_143","kind":"tool"},{"id":562,"name":"elite_nomad_shield_562","kind":"tool"},{"id":116,"name":"elite_spiked_shield","kind":"tool"},{"id":114,"name":"elite_tonnelon_114","kind":"tool"},{"id":565,"name":"elite_tonnelon_565","kind":"tool"},{"id":240,"name":"emperors_banner","kind":"tool"},{"id":491,"name":"enormous_nomad_tablet_chest","kind":"tool"},{"id":511,"name":"enormous_samurai_token_chest","kind":"tool"},{"id":569,"name":"exalted_raid_ladder_250","kind":"tool"},{"id":586,"name":"exalted_raid_ladder_340","kind":"tool"},{"id":587,"name":"exalted_raid_ladder_500","kind":"tool"},{"id":571,"name":"exalted_raid_ram_250","kind":"tool"},{"id":591,"name":"exalted_raid_ram_340","kind":"tool"},{"id":592,"name":"exalted_raid_ram_500","kind":"tool"},{"id":462,"name":"explosive_arrows_lvl_1","kind":"tool"},{"id":777,"name":"fanged_bridge","kind":"tool"},{"id":499,"name":"festive_archer","kind":"troop"},{"id":500,"name":"festive_guardian","kind":"troop"},{"id":501,"name":"festive_huntress","kind":"troop"},{"id":128,"name":"festive_ram","kind":"tool"},{"id":498,"name":"festive_warrior","kind":"troop"},{"id":326,"name":"field_cannon_lvl_1","kind":"tool"},{"id":738,"name":"fire_cart","kind":"tool"},{"id":625,"name":"fire_moat","kind":"tool"},{"id":431,"name":"fire_trap_lvl_1","kind":"tool"},{"id":117,"name":"fire_witch","kind":"troop"},{"id":90,"name":"flag_of_the_forest_guardians","kind":"tool"},{"id":723,"name":"flame_bearer","kind":"troop"},{"id":524,"name":"flamebreath_berserker_0","kind":"troop"},{"id":182,"name":"flaming_arrows_182","kind":"tool"},{"id":629,"name":"flaming_arrows_629","kind":"tool"},{"id":125,"name":"fleet_shield","kind":"tool"},{"id":26,"name":"folding_ladder","kind":"tool"},{"id":86,"name":"forest_bowman","kind":"troop"},{"id":85,"name":"forest_guardian","kind":"troop"},{"id":84,"name":"forest_hunter_84","kind":"troop"},{"id":961,"name":"forest_hunter_961","kind":"troop"},{"id":83,"name":"forest_warrior_83","kind":"troop"},{"id":960,"name":"forest_warrior_960","kind":"troop"},{"id":503,"name":"forlorn_ranger","kind":"troop"},{"id":473,"name":"forlorn_ranger_10_473","kind":"troop"},{"id":484,"name":"forlorn_ranger_10_484","kind":"troop"},{"id":502,"name":"forsaken_maiden","kind":"troop"},{"id":472,"name":"forsaken_maiden_10_472","kind":"troop"},{"id":483,"name":"forsaken_maiden_10_483","kind":"troop"},{"id":245,"name":"fortified_ram_lvl_1","kind":"tool"},{"id":50,"name":"frost_bowman","kind":"troop"},{"id":369,"name":"fruit_breaker","kind":"troop"},{"id":15,"name":"fruit_pirate","kind":"troop"},{"id":593,"name":"fungus_guard","kind":"troop"},{"id":25,"name":"gate_stormer","kind":"tool"},{"id":490,"name":"giant_nomad_tablet_chest","kind":"tool"},{"id":510,"name":"giant_samurai_token_chest","kind":"tool"},{"id":134,"name":"gingerbread_brawler","kind":"troop"},{"id":135,"name":"gingerbread_sniper","kind":"troop"},{"id":486,"name":"glacial_amazon_archer","kind":"troop"},{"id":487,"name":"glacial_amazon_guardian","kind":"troop"},{"id":488,"name":"glacial_amazon_huntress","kind":"troop"},{"id":485,"name":"glacial_amazon_warrior","kind":"troop"},{"id":513,"name":"glasswing_archer_0","kind":"troop"},{"id":256,"name":"glory_tower_lvl_1","kind":"tool"},{"id":133,"name":"gnomad_archer","kind":"troop"},{"id":132,"name":"gnomad_warrior","kind":"troop"},{"id":163,"name":"gold_khan_chest","kind":"tool"},{"id":800,"name":"gold_magmatic_chrono_vial_all_sides","kind":"tool"},{"id":798,"name":"gold_magmatic_chrono_vial_gate","kind":"tool"},{"id":797,"name":"gold_magmatic_chrono_vial_left","kind":"tool"},{"id":799,"name":"gold_magmatic_chrono_vial_right","kind":"tool"},{"id":806,"name":"gold_magmatic_flintlock_gun","kind":"tool"},{"id":803,"name":"gold_magmatic_grenade_flask","kind":"tool"},{"id":812,"name":"gold_obsidian_siege_shield","kind":"tool"},{"id":809,"name":"gold_obsidian_weighted_net","kind":"tool"},{"id":981,"name":"gold_sporebane_flintlock_gun","kind":"tool"},{"id":978,"name":"gold_sporebane_grenade_flask","kind":"tool"},{"id":975,"name":"gold_sporeguard_chrono_vial_all_sides","kind":"tool"},{"id":973,"name":"gold_sporeguard_chrono_vial_gate","kind":"tool"},{"id":972,"name":"gold_sporeguard_chrono_vial_left","kind":"tool"},{"id":974,"name":"gold_sporeguard_chrono_vial_right","kind":"tool"},{"id":73,"name":"golden_piggy_bank","kind":"tool"},{"id":82,"name":"golden_reputation_booster","kind":"tool"},{"id":94,"name":"golden_royal_coin_case","kind":"tool"},{"id":97,"name":"golden_royal_token_chest","kind":"tool"},{"id":72,"name":"granite_ram","kind":"tool"},{"id":733,"name":"grappling_hooks","kind":"tool"},{"id":579,"name":"graveguard_potion","kind":"tool"},{"id":580,"name":"great_graveguard_potion","kind":"tool"},{"id":788,"name":"great_rift_dragon_3","kind":"troop"},{"id":643,"name":"grimacing_shield","kind":"tool"},{"id":124,"name":"grims_crossing","kind":"tool"},{"id":122,"name":"grims_ladder","kind":"tool"},{"id":123,"name":"grims_ram","kind":"tool"},{"id":121,"name":"grims_shield","kind":"tool"},{"id":336,"name":"guardian_of_spring","kind":"troop"},{"id":604,"name":"halberdier","kind":"troop"},{"id":381,"name":"hand_cannon_lvl_1","kind":"tool"},{"id":57,"name":"heavy_ballast_stone","kind":"tool"},{"id":609,"name":"heavy_crossbowman","kind":"troop"},{"id":648,"name":"heavy_ram","kind":"tool"},{"id":77,"name":"heros_banner","kind":"tool"},{"id":475,"name":"high_kings_banner","kind":"tool"},{"id":474,"name":"high_queens_banner","kind":"tool"},{"id":267,"name":"hookshot_cannon_lvl_1","kind":"tool"},{"id":734,"name":"horsetail_standard","kind":"tool"},{"id":405,"name":"huge_nomad_tablet_chest","kind":"tool"},{"id":407,"name":"huge_samurai_token_chest","kind":"tool"},{"id":180,"name":"hurling_rocks_180","kind":"tool"},{"id":637,"name":"hurling_rocks_637","kind":"tool"},{"id":278,"name":"hwacha_lvl_1","kind":"tool"},{"id":19,"name":"imperial_bowman","kind":"troop"},{"id":18,"name":"imperial_guardsman","kind":"troop"},{"id":20,"name":"imperial_knight","kind":"troop"},{"id":21,"name":"imperial_marksman","kind":"troop"},{"id":167,"name":"improved_fire_cart","kind":"tool"},{"id":169,"name":"improved_rolling_shield","kind":"tool"},{"id":168,"name":"improved_tree_ladder","kind":"tool"},{"id":112,"name":"inferno_moat","kind":"tool"},{"id":140,"name":"infinity_shield","kind":"tool"},{"id":179,"name":"insulating_mat_179","kind":"tool"},{"id":644,"name":"insulating_mat_644","kind":"tool"},{"id":772,"name":"invader_bridge","kind":"tool"},{"id":771,"name":"invader_ladder","kind":"tool"},{"id":566,"name":"invader_mask_566","kind":"tool"},{"id":773,"name":"invader_mask_773","kind":"tool"},{"id":770,"name":"invader_ram","kind":"tool"},{"id":139,"name":"invaders_footbridge","kind":"tool"},{"id":641,"name":"iron_ram","kind":"tool"},{"id":87,"name":"ironwood_ram","kind":"tool"},{"id":478,"name":"jolly_gingerbread_sniper_10","kind":"troop"},{"id":32,"name":"karimata_arrowheads","kind":"tool"},{"id":850,"name":"karimata_arrowheads_lvl_1","kind":"tool"},{"id":38,"name":"katana_warrior","kind":"troop"},{"id":820,"name":"katana_warrior_1","kind":"troop"},{"id":1,"name":"khan_chest","kind":"tool"},{"id":725,"name":"khan_guard","kind":"troop"},{"id":153,"name":"kings_banner","kind":"tool"},{"id":159,"name":"kings_bridge","kind":"tool"},{"id":157,"name":"kings_ladder","kind":"tool"},{"id":155,"name":"kings_ram","kind":"tool"},{"id":161,"name":"kings_shield","kind":"tool"},{"id":243,"name":"knight_of_khan_chest","kind":"tool"},{"id":75,"name":"knight_of_the_elite_guard","kind":"troop"},{"id":672,"name":"knight_of_the_kingsguard","kind":"troop"},{"id":146,"name":"knight_of_the_throne_watcher","kind":"troop"},{"id":763,"name":"kraken_banner","kind":"tool"},{"id":719,"name":"kraken_head","kind":"troop"},{"id":870,"name":"kunai_thrower_1","kind":"troop"},{"id":171,"name":"ladder_of_the_shogun_171","kind":"tool"},{"id":559,"name":"ladder_of_the_shogun_559","kind":"tool"},{"id":743,"name":"lancer","kind":"troop"},{"id":900,"name":"lancer_1","kind":"troop"},{"id":669,"name":"large_ballista","kind":"tool"},{"id":404,"name":"large_nomad_tablet_chest","kind":"tool"},{"id":406,"name":"large_samurai_token_chest","kind":"tool"},{"id":787,"name":"lesser_rift_dragon_2","kind":"troop"},{"id":730,"name":"lime_powder_bomb","kind":"tool"},{"id":920,"name":"lime_powder_bomb_lvl_1","kind":"tool"},{"id":713,"name":"lion_bowman","kind":"troop"},{"id":712,"name":"lion_warrior","kind":"troop"},{"id":699,"name":"longbow_ox","kind":"troop"},{"id":610,"name":"longbowman","kind":"troop"},{"id":654,"name":"loot_cart","kind":"tool"},{"id":653,"name":"loot_sack","kind":"tool"},{"id":603,"name":"maceman","kind":"troop"},{"id":620,"name":"mantlet","kind":"tool"},{"id":684,"name":"marauder","kind":"troop"},{"id":14,"name":"marksman","kind":"troop"},{"id":147,"name":"marksman_of_the_throne_watcher","kind":"troop"},{"id":782,"name":"master_archer","kind":"troop"},{"id":51,"name":"master_bone_huntress","kind":"troop"},{"id":578,"name":"master_dominator_banner","kind":"tool"},{"id":52,"name":"master_frost_bowman","kind":"troop"},{"id":573,"name":"master_rift_dominator_ladder","kind":"tool"},{"id":575,"name":"master_rift_dominator_ram","kind":"tool"},{"id":781,"name":"master_swordsman","kind":"troop"},{"id":746,"name":"militia","kind":"troop"},{"id":451,"name":"mobile_cauldron_lvl_1","kind":"tool"},{"id":638,"name":"moon_storm_banner","kind":"tool"},{"id":627,"name":"murder_hole","kind":"tool"},{"id":13,"name":"muscle_man","kind":"troop"},{"id":764,"name":"nautical_ballista","kind":"tool"},{"id":62,"name":"nomad_piggy_bank","kind":"tool"},{"id":109,"name":"nomadic_murder_hole","kind":"tool"},{"id":670,"name":"norseman_with_axe_670","kind":"troop"},{"id":677,"name":"norseman_with_axe_677","kind":"troop"},{"id":671,"name":"norseman_with_bow_671","kind":"troop"},{"id":678,"name":"norseman_with_bow_678","kind":"troop"},{"id":115,"name":"onslaught_bridge","kind":"tool"},{"id":370,"name":"organ_cannon_lvl_1","kind":"tool"},{"id":776,"name":"paw_ladder","kind":"tool"},{"id":107,"name":"plunderers_chest","kind":"tool"},{"id":108,"name":"plunderers_trunk","kind":"tool"},{"id":742,"name":"poison_arrows","kind":"tool"},{"id":622,"name":"portcullis","kind":"tool"},{"id":581,"name":"premium_graveguard_potion","kind":"tool"},{"id":67,"name":"premium_piggy_bank","kind":"tool"},{"id":66,"name":"premium_royal_coin_case","kind":"tool"},{"id":96,"name":"premium_royal_token_chest","kind":"tool"},{"id":481,"name":"pretzel_guardian","kind":"troop"},{"id":659,"name":"prince","kind":"troop"},{"id":217,"name":"protector_of_the_north_0","kind":"troop"},{"id":42,"name":"pumpkin_butcher","kind":"troop"},{"id":685,"name":"pyromaniac","kind":"troop"},{"id":105,"name":"quicklime_bomb","kind":"tool"},{"id":106,"name":"rage_banner_106","kind":"tool"},{"id":563,"name":"rage_banner_563","kind":"tool"},{"id":576,"name":"raid_dominator_banner","kind":"tool"},{"id":572,"name":"raid_dominator_ladder","kind":"tool"},{"id":574,"name":"raid_dominator_ram","kind":"tool"},{"id":584,"name":"raid_ladder_125","kind":"tool"},{"id":585,"name":"raid_ladder_200","kind":"tool"},{"id":568,"name":"raid_ladder_60","kind":"tool"},{"id":583,"name":"raid_ladder_80","kind":"tool"},{"id":589,"name":"raid_ram_125","kind":"tool"},{"id":590,"name":"raid_ram_200","kind":"tool"},{"id":570,"name":"raid_ram_60","kind":"tool"},{"id":588,"name":"raid_ram_80","kind":"tool"},{"id":170,"name":"ram_of_the_shogun_170","kind":"tool"},{"id":557,"name":"ram_of_the_shogun_557","kind":"tool"},{"id":43,"name":"raven_chomper","kind":"troop"},{"id":111,"name":"reinforced_portcullis","kind":"tool"},{"id":148,"name":"relic_axeman_0","kind":"troop"},{"id":150,"name":"relic_hammerman_0","kind":"troop"},{"id":151,"name":"relic_longbowman_0","kind":"troop"},{"id":149,"name":"relic_shortbowman_0","kind":"troop"},{"id":37,"name":"renegade_bow_master","kind":"troop"},{"id":79,"name":"renegade_cave_hunter","kind":"troop"},{"id":78,"name":"renegade_cave_smasher","kind":"troop"},{"id":693,"name":"renegade_cultist_bowman","kind":"troop"},{"id":692,"name":"renegade_cultist_warrior","kind":"troop"},{"id":689,"name":"renegade_desert_bowman","kind":"troop"},{"id":36,"name":"renegade_katana_warrior","kind":"troop"},{"id":35,"name":"renegade_kunai_thrower","kind":"troop"},{"id":728,"name":"renegade_lancer","kind":"troop"},{"id":691,"name":"renegade_norseman_bowman","kind":"troop"},{"id":690,"name":"renegade_norseman_warrior","kind":"troop"},{"id":688,"name":"renegade_saber_warrior","kind":"troop"},{"id":34,"name":"renegade_sai_warrior","kind":"troop"},{"id":963,"name":"renegade_sail_ripper","kind":"troop"},{"id":760,"name":"renegade_sail_ripper_0","kind":"troop"},{"id":767,"name":"renegade_shark_tooth_warrior","kind":"troop"},{"id":729,"name":"renegade_spear_thrower","kind":"troop"},{"id":768,"name":"renegade_stone_smasher","kind":"troop"},{"id":962,"name":"renegade_swashbuckler","kind":"troop"},{"id":759,"name":"renegade_swashbuckler_0","kind":"troop"},{"id":81,"name":"reputation_booster","kind":"tool"},{"id":739,"name":"rolling_shield","kind":"tool"},{"id":152,"name":"royal_banner","kind":"tool"},{"id":158,"name":"royal_bridge","kind":"tool"},{"id":65,"name":"royal_coin_case","kind":"tool"},{"id":164,"name":"royal_khan_chest","kind":"tool"},{"id":156,"name":"royal_ladder","kind":"tool"},{"id":154,"name":"royal_ram","kind":"tool"},{"id":160,"name":"royal_shield","kind":"tool"},{"id":95,"name":"royal_token_chest","kind":"tool"},{"id":137,"name":"rune_ram","kind":"tool"},{"id":726,"name":"saber_cleaver","kind":"troop"},{"id":675,"name":"saber_warrior","kind":"troop"},{"id":860,"name":"sai_warrior_1","kind":"troop"},{"id":717,"name":"sail_ripper_0","kind":"troop"},{"id":63,"name":"samurai_piggy_bank","kind":"tool"},{"id":535,"name":"scalebound_guardian_0","kind":"troop"},{"id":546,"name":"scaleshard_marksman_0","kind":"troop"},{"id":614,"name":"scaling_ladder","kind":"tool"},{"id":687,"name":"scout_of_the_kingsguard","kind":"troop"},{"id":686,"name":"sentinel_of_the_kingsguard","kind":"troop"},{"id":101,"name":"shamrock_assassin","kind":"troop"},{"id":100,"name":"shamrock_huntsman","kind":"troop"},{"id":126,"name":"shapeshifter_legionnaire","kind":"troop"},{"id":127,"name":"shapeshifter_sharpshooter","kind":"troop"},{"id":762,"name":"shark_shield","kind":"tool"},{"id":657,"name":"shark_tooth_warrior","kind":"troop"},{"id":181,"name":"sharpened_stakes_181","kind":"tool"},{"id":634,"name":"sharpened_stakes_634","kind":"tool"},{"id":195,"name":"shield_maiden_0","kind":"troop"},{"id":196,"name":"shield_maiden_1","kind":"troop"},{"id":197,"name":"shield_maiden_2","kind":"troop"},{"id":198,"name":"shield_maiden_3","kind":"troop"},{"id":199,"name":"shield_maiden_4","kind":"troop"},{"id":200,"name":"shield_maiden_5","kind":"troop"},{"id":201,"name":"shield_maiden_6","kind":"troop"},{"id":202,"name":"shield_maiden_7","kind":"troop"},{"id":203,"name":"shield_maiden_8","kind":"troop"},{"id":204,"name":"shield_maiden_9","kind":"troop"},{"id":172,"name":"shield_of_the_shogun_172","kind":"tool"},{"id":558,"name":"shield_of_the_shogun_558","kind":"tool"},{"id":55,"name":"shield_sled","kind":"tool"},{"id":651,"name":"shield_wall","kind":"tool"},{"id":359,"name":"shrapnel_bomb_lvl_1","kind":"tool"},{"id":289,"name":"siege_mortar_lvl_1","kind":"tool"},{"id":640,"name":"siege_tower","kind":"tool"},{"id":162,"name":"silver_khan_chest","kind":"tool"},{"id":796,"name":"silver_magmatic_chrono_vial_all_sides","kind":"tool"},{"id":794,"name":"silver_magmatic_chrono_vial_gate","kind":"tool"},{"id":793,"name":"silver_magmatic_chrono_vial_left","kind":"tool"},{"id":795,"name":"silver_magmatic_chrono_vial_right","kind":"tool"},{"id":805,"name":"silver_magmatic_flintlock_gun","kind":"tool"},{"id":802,"name":"silver_magmatic_grenade_flask","kind":"tool"},{"id":811,"name":"silver_obsidian_siege_shield","kind":"tool"},{"id":808,"name":"silver_obsidian_weighted_net","kind":"tool"},{"id":980,"name":"silver_sporebane_flintlock_gun","kind":"tool"},{"id":977,"name":"silver_sporebane_grenade_flask","kind":"tool"},{"id":971,"name":"silver_sporeguard_chrono_vial_all_sides","kind":"tool"},{"id":969,"name":"silver_sporeguard_chrono_vial_gate","kind":"tool"},{"id":968,"name":"silver_sporeguard_chrono_vial_left","kind":"tool"},{"id":970,"name":"silver_sporeguard_chrono_vial_right","kind":"tool"},{"id":119,"name":"skeletal_hunter","kind":"troop"},{"id":120,"name":"skeletal_scytheman","kind":"troop"},{"id":41,"name":"skeleton_bowman_41","kind":"troop"},{"id":663,"name":"skeleton_bowman_663","kind":"troop"},{"id":40,"name":"skeleton_warrior_40","kind":"troop"},{"id":662,"name":"skeleton_warrior_662","kind":"troop"},{"id":727,"name":"slingshot","kind":"troop"},{"id":28,"name":"smoke_bomb","kind":"tool"},{"id":890,"name":"smoke_bomb_lvl_1","kind":"tool"},{"id":91,"name":"soldiers_banner","kind":"tool"},{"id":744,"name":"spear_thrower","kind":"troop"},{"id":910,"name":"spear_thrower_1","kind":"troop"},{"id":421,"name":"spear_trap_lvl_1","kind":"tool"},{"id":23,"name":"spear_woman","kind":"troop"},{"id":602,"name":"spearman","kind":"troop"},{"id":348,"name":"spike_board_lvl_1","kind":"tool"},{"id":2,"name":"spiked_shield","kind":"tool"},{"id":595,"name":"spore_gnasher_1","kind":"troop"},{"id":596,"name":"spore_slinger","kind":"troop"},{"id":103,"name":"spring_footsoldier","kind":"troop"},{"id":102,"name":"spring_huntress","kind":"troop"},{"id":408,"name":"star_spangled_banner_408","kind":"tool"},{"id":60,"name":"star_spangled_banner_60","kind":"tool"},{"id":59,"name":"star_spangled_crossbowman","kind":"troop"},{"id":58,"name":"star_spangled_knight","kind":"troop"},{"id":410,"name":"star_spangled_veteran_deathly_horror","kind":"troop"},{"id":409,"name":"star_spangled_veteran_demon_horror","kind":"troop"},{"id":479,"name":"stein_smasher","kind":"troop"},{"id":70,"name":"stone_shield","kind":"tool"},{"id":658,"name":"stone_smasher","kind":"troop"},{"id":358,"name":"summer_huntress","kind":"troop"},{"id":461,"name":"summer_marksman","kind":"troop"},{"id":476,"name":"supreme_monarchs_banner","kind":"tool"},{"id":646,"name":"swamp_snapper","kind":"tool"},{"id":716,"name":"swashbuckler_0","kind":"troop"},{"id":27,"name":"swiveling_shield","kind":"tool"},{"id":601,"name":"swordsman","kind":"troop"},{"id":647,"name":"tar_pitch_kettle","kind":"tool"},{"id":718,"name":"tentacle","kind":"troop"},{"id":775,"name":"the_claw","kind":"tool"},{"id":178,"name":"the_dignity_of_berimond","kind":"tool"},{"id":779,"name":"the_glory_of_berimond","kind":"tool"},{"id":780,"name":"the_pride_of_berimond","kind":"tool"},{"id":241,"name":"the_rise_of_berimond","kind":"tool"},{"id":242,"name":"the_savior_of_berimond","kind":"tool"},{"id":16,"name":"the_splendor_of_berimond","kind":"tool"},{"id":17,"name":"the_treasure_of_berimond","kind":"tool"},{"id":64,"name":"the_winter_kings_banner","kind":"tool"},{"id":3,"name":"the_wolfs_howl","kind":"tool"},{"id":755,"name":"thorn_ladder","kind":"tool"},{"id":33,"name":"throwing_nails","kind":"tool"},{"id":840,"name":"throwing_nails_lvl_1","kind":"tool"},{"id":300,"name":"thunder_crash_bomb_lvl_1","kind":"tool"},{"id":4,"name":"tonnelon","kind":"tool"},{"id":741,"name":"torches","kind":"tool"},{"id":736,"name":"transport_yak","kind":"tool"},{"id":656,"name":"traveling_crossbowman","kind":"troop"},{"id":655,"name":"traveling_knight","kind":"troop"},{"id":315,"name":"trebuchet_lvl_1","kind":"tool"},{"id":740,"name":"tree_trunk_ladder","kind":"tool"},{"id":732,"name":"turtle_ram","kind":"tool"},{"id":605,"name":"two_handed_swordsman","kind":"troop"},{"id":299,"name":"valkyrie_huntress","kind":"troop"},{"id":205,"name":"valkyrie_ranger_0","kind":"troop"},{"id":206,"name":"valkyrie_ranger_1","kind":"troop"},{"id":216,"name":"valkyrie_ranger_10","kind":"troop"},{"id":207,"name":"valkyrie_ranger_2","kind":"troop"},{"id":208,"name":"valkyrie_ranger_3","kind":"troop"},{"id":209,"name":"valkyrie_ranger_4","kind":"troop"},{"id":210,"name":"valkyrie_ranger_5","kind":"troop"},{"id":211,"name":"valkyrie_ranger_6","kind":"troop"},{"id":212,"name":"valkyrie_ranger_7","kind":"troop"},{"id":213,"name":"valkyrie_ranger_8","kind":"troop"},{"id":214,"name":"valkyrie_ranger_9","kind":"troop"},{"id":228,"name":"valkyrie_sniper_0","kind":"troop"},{"id":229,"name":"valkyrie_sniper_1","kind":"troop"},{"id":238,"name":"valkyrie_sniper_10","kind":"troop"},{"id":230,"name":"valkyrie_sniper_2","kind":"troop"},{"id":231,"name":"valkyrie_sniper_3","kind":"troop"},{"id":232,"name":"valkyrie_sniper_4","kind":"troop"},{"id":233,"name":"valkyrie_sniper_5","kind":"troop"},{"id":234,"name":"valkyrie_sniper_6","kind":"troop"},{"id":235,"name":"valkyrie_sniper_7","kind":"troop"},{"id":236,"name":"valkyrie_sniper_8","kind":"troop"},{"id":237,"name":"valkyrie_sniper_9","kind":"troop"},{"id":44,"name":"vampire_bats","kind":"tool"},{"id":138,"name":"vertical_assault_apparatus","kind":"tool"},{"id":745,"name":"veteran_banner","kind":"tool"},{"id":631,"name":"veteran_bowman","kind":"troop"},{"id":12,"name":"veteran_composite_bowman","kind":"troop"},{"id":636,"name":"veteran_crossbowman","kind":"troop"},{"id":10,"name":"veteran_deathly_horror","kind":"troop"},{"id":9,"name":"veteran_demon_horror","kind":"troop"},{"id":577,"name":"veteran_dominator_banner","kind":"tool"},{"id":11,"name":"veteran_flame_bearer","kind":"troop"},{"id":308,"name":"veteran_halberdier_0","kind":"troop"},{"id":312,"name":"veteran_heavy_crossbowman_0","kind":"troop"},{"id":311,"name":"veteran_longbowman_0","kind":"troop"},{"id":630,"name":"veteran_maceman","kind":"troop"},{"id":765,"name":"veteran_marauder","kind":"troop"},{"id":766,"name":"veteran_pyromaniac","kind":"troop"},{"id":5,"name":"veteran_saber_cleaver","kind":"troop"},{"id":940,"name":"veteran_saber_cleaver_1","kind":"troop"},{"id":6,"name":"veteran_slingshot","kind":"troop"},{"id":950,"name":"veteran_slingshot_1","kind":"troop"},{"id":628,"name":"veteran_spearman","kind":"troop"},{"id":724,"name":"veteran_swordsman","kind":"troop"},{"id":309,"name":"veteran_two_handed_swordsman_0","kind":"troop"},{"id":88,"name":"vine_ladder","kind":"tool"},{"id":239,"name":"viscounts_banner","kind":"tool"},{"id":661,"name":"war_banner","kind":"tool"},{"id":737,"name":"war_horn","kind":"tool"},{"id":401,"name":"warwagon_lvl_1","kind":"tool"},{"id":337,"name":"water_mine_lvl_1","kind":"tool"},{"id":756,"name":"wedge_shield","kind":"tool"},{"id":53,"name":"whalebone_ram","kind":"tool"},{"id":187,"name":"wilderness_brawler","kind":"troop"},{"id":190,"name":"wilderness_hunter","kind":"troop"},{"id":188,"name":"wilderness_slingshot","kind":"troop"},{"id":189,"name":"wilderness_warrior","kind":"troop"},{"id":720,"name":"wolfhound","kind":"troop"},{"id":113,"name":"wolverine_ram_113","kind":"tool"},{"id":564,"name":"wolverine_ram_564","kind":"tool"},{"id":617,"name":"wood_bundle","kind":"tool"},{"id":441,"name":"wooden_hoarding_lvl_1","kind":"tool"},{"id":130,"name":"yule_shield","kind":"tool"}],"kingdoms":[{"id":0,"name":"green_kingdom"},{"id":1,"name":"sand_kingdom"},{"id":2,"name":"ice_kingdom"},{"id":3,"name":"fire_kingdom"},{"id":4,"name":"storm_kingdom"},{"id":10,"name":"berimond_kingdom"}],"attacks":[{"profile_id":"attack-df3c42e1373a40f998f5abe5b2f65b3d","name":"crossbowman","payload":[{"L":{"T":[[-1,0],[-1,0]],"U":[[607,50],[-1,0]]},"M":{"T":[[-1,0],[-1,0],[-1,0]],"U":[[-1,0],[-1,0],[-1,0],[-1,0],[-1,0],[-1,0]]},"R":{"T":[[-1,0],[-1,0]],"U":[[-1,0],[-1,0]]}},{"L":{"T":[[-1,0],[-1,0]],"U":[[-1,0],[-1,0]]},"M":{"T":[[-1,0],[-1,0],[-1,0]],"U":[[-1,0],[-1,0],[-1,0],[-1,0],[-1,0],[-1,0]]},"R":{"T":[[-1,0],[-1,0]],"U":[[-1,0],[-1,0]]}},{"L":{"T":[[-1,0],[-1,0]],"U":[[-1,0],[-1,0]]},"M":{"T":[[-1,0],[-1,0],[-1,0]],"U":[[-1,0],[-1,0],[-1,0],[-1,0],[-1,0],[-1,0]]},"R":{"T":[[-1,0],[-1,0]],"U":[[-1,0],[-1,0]]}},{"L":{"T":[[-1,0],[-1,0]],"U":[[-1,0],[-1,0]]},"M":{"T":[[-1,0],[-1,0],[-1,0]],"U":[[-1,0],[-1,0],[-1,0],[-1,0],[-1,0],[-1,0]]},"R":{"T":[[-1,0],[-1,0]],"U":[[-1,0],[-1,0]]}}],"notes":""}],"tasks":[{"task_id":"task-675621e332b34f039640266d97a97610","name":"ff","kind":"attack","kingdom_id":1,"profile_id":"attack-05594fe2dc3741c599007eec655a176c","target_level_min":null,"target_level_max":null,"commander_count":1,"max_active":1,"priority":10,"enabled":true,"tags":["user"],"notes":""},{"task_id":"task-6ef21ff5b2fa46ca89f5d4b5a4e19843","name":"latest sands","kind":"attack","kingdom_id":1,"profile_id":"attack-df3c42e1373a40f998f5abe5b2f65b3d","target_level_min":61,"target_level_max":61,"commander_count":1,"max_active":1,"priority":30,"enabled":true,"tags":["user","rbc"],"notes":""},{"task_id":"task-25b98364030e41458d51f59f0268d44f","name":"sands 61","kind":"attack","kingdom_id":1,"profile_id":"attack-df3c42e1373a40f998f5abe5b2f65b3d","target_level_min":61,"target_level_max":61,"commander_count":1,"max_active":1,"priority":30,"enabled":true,"tags":["user","rbc"],"notes":""}],"task_runtimes":[{"task_id":"task-25b98364030e41458d51f59f0268d44f","source_kingdom_id":1,"source_x":593,"source_y":613,"source_kind":"main_castle","target_kingdom_id":1,"target_x":0,"target_y":0,"travel_mode":"coin","hbw":1007},{"task_id":"task-675621e332b34f039640266d97a97610","source_kingdom_id":1,"source_x":593,"source_y":613,"source_kind":"coordinate","target_kingdom_id":1,"target_x":3,"target_y":4,"travel_mode":"coin","hbw":1007},{"task_id":"task-6ef21ff5b2fa46ca89f5d4b5a4e19843","source_kingdom_id":1,"source_x":593,"source_y":613,"source_kind":"main_castle","target_kingdom_id":1,"target_x":0,"target_y":0,"travel_mode":"coin","hbw":1007}],"subscriptions":[{"task_id":"task-25b98364030e41458d51f59f0268d44f","target_kind":"rbc","filter":{"algorithm":"advanced","kingdom_id":1,"level_max":61,"level_min":61}},{"task_id":"task-675621e332b34f039640266d97a97610","target_kind":"coordinate","filter":{"kingdom_id":1,"x":3,"y":4}},{"task_id":"task-6ef21ff5b2fa46ca89f5d4b5a4e19843","target_kind":"rbc","filter":{"algorithm":"advanced","kingdom_id":1,"level_max":61,"level_min":61}}],"modes":[{"mode_id":4,"name":"sand crossbow","task_ids":["task-25b98364030e41458d51f59f0268d44f"],"allocations":[{"task_id":"task-25b98364030e41458d51f59f0268d44f","commander_count":17}],"commander_count":17},{"mode_id":3,"name":"ss","task_ids":["task-6ef21ff5b2fa46ca89f5d4b5a4e19843"],"allocations":[{"task_id":"task-6ef21ff5b2fa46ca89f5d4b5a4e19843","commander_count":1}],"commander_count":1},{"mode_id":1,"name":"v sands","task_ids":["task-6ef21ff5b2fa46ca89f5d4b5a4e19843"],"allocations":[{"task_id":"task-6ef21ff5b2fa46ca89f5d4b5a4e19843","commander_count":1}],"commander_count":1},{"mode_id":2,"name":"ventrilo","task_ids":["task-6ef21ff5b2fa46ca89f5d4b5a4e19843"],"allocations":[{"task_id":"task-6ef21ff5b2fa46ca89f5d4b5a4e19843","commander_count":1}],"commander_count":1}],"account_modes":[{"account_id":"ventrilo","mode_id":4,"running":true}],"recruitments":[],"recruit_bots":[],"account_recruit_bots":[],"recruit_states":[],"castles":[{"account_id":"ventrilo","castle_id":16011862,"kingdom_id":0,"area_type":1,"x":509,"y":405,"name":"._."},{"account_id":"ventrilo","castle_id":16673031,"kingdom_id":0,"area_type":4,"x":509,"y":407,"name":"Outpost Ventril"},{"account_id":"ventrilo","castle_id":16632819,"kingdom_id":0,"area_type":4,"x":505,"y":407,"name":"vrvr"},{"account_id":"ventrilo","castle_id":16366514,"kingdom_id":1,"area_type":12,"x":593,"y":613,"name":"Castle Ventrilo"},{"account_id":"ventrilo","castle_id":16366513,"kingdom_id":2,"area_type":12,"x":654,"y":696,"name":"Nui"},{"account_id":"ventrilo","castle_id":16681051,"kingdom_id":3,"area_type":12,"x":688,"y":582,"name":"fire"}]}
+{
+  "catalog": [
+    {
+      "id": 606,
+      "name": "archer",
+      "kind": "troop"
+    },
+    {
+      "id": 652,
+      "name": "armed_citizen",
+      "kind": "troop"
+    },
+    {
+      "id": 29,
+      "name": "arrow_rain_ballista",
+      "kind": "tool"
+    },
+    {
+      "id": 880,
+      "name": "arrow_rain_ballista_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 624,
+      "name": "arrow_slit",
+      "kind": "tool"
+    },
+    {
+      "id": 754,
+      "name": "assassin",
+      "kind": "troop"
+    },
+    {
+      "id": 642,
+      "name": "assault_bridge",
+      "kind": "tool"
+    },
+    {
+      "id": 391,
+      "name": "assault_flame_thrower_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 110,
+      "name": "balistraria",
+      "kind": "tool"
+    },
+    {
+      "id": 56,
+      "name": "ballast_stone",
+      "kind": "tool"
+    },
+    {
+      "id": 758,
+      "name": "ballista",
+      "kind": "tool"
+    },
+    {
+      "id": 623,
+      "name": "bamboo_ladder",
+      "kind": "tool"
+    },
+    {
+      "id": 660,
+      "name": "banner",
+      "kind": "tool"
+    },
+    {
+      "id": 757,
+      "name": "banner_of_the_demon_slayers",
+      "kind": "tool"
+    },
+    {
+      "id": 774,
+      "name": "banner_of_the_foreign_invaders",
+      "kind": "tool"
+    },
+    {
+      "id": 61,
+      "name": "banner_of_the_frost_warriors",
+      "kind": "tool"
+    },
+    {
+      "id": 71,
+      "name": "banner_of_the_underworld",
+      "kind": "tool"
+    },
+    {
+      "id": 24,
+      "name": "banner_of_triumph",
+      "kind": "tool"
+    },
+    {
+      "id": 721,
+      "name": "barbarian",
+      "kind": "troop"
+    },
+    {
+      "id": 89,
+      "name": "bark_shield",
+      "kind": "tool"
+    },
+    {
+      "id": 611,
+      "name": "battering_ram",
+      "kind": "tool"
+    },
+    {
+      "id": 131,
+      "name": "bauble_crossing",
+      "kind": "tool"
+    },
+    {
+      "id": 482,
+      "name": "bavarian_brewer",
+      "kind": "troop"
+    },
+    {
+      "id": 711,
+      "name": "bear_bowman",
+      "kind": "troop"
+    },
+    {
+      "id": 710,
+      "name": "bear_warrior",
+      "kind": "troop"
+    },
+    {
+      "id": 778,
+      "name": "berimond_shield",
+      "kind": "tool"
+    },
+    {
+      "id": 22,
+      "name": "berserker",
+      "kind": "troop"
+    },
+    {
+      "id": 761,
+      "name": "boarding_ladder",
+      "kind": "tool"
+    },
+    {
+      "id": 731,
+      "name": "bodkin_arrowheads",
+      "kind": "tool"
+    },
+    {
+      "id": 930,
+      "name": "bodkin_arrowheads_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 48,
+      "name": "bone_huntress",
+      "kind": "troop"
+    },
+    {
+      "id": 54,
+      "name": "bone_ladder",
+      "kind": "tool"
+    },
+    {
+      "id": 118,
+      "name": "bone_rattler",
+      "kind": "troop"
+    },
+    {
+      "id": 650,
+      "name": "boulders",
+      "kind": "tool"
+    },
+    {
+      "id": 39,
+      "name": "bow_master",
+      "kind": "troop"
+    },
+    {
+      "id": 830,
+      "name": "bow_master_1",
+      "kind": "troop"
+    },
+    {
+      "id": 608,
+      "name": "bowman",
+      "kind": "troop"
+    },
+    {
+      "id": 649,
+      "name": "breaching_tower",
+      "kind": "tool"
+    },
+    {
+      "id": 104,
+      "name": "broadhead_arrows",
+      "kind": "tool"
+    },
+    {
+      "id": 792,
+      "name": "bronze_magmatic_chrono_vial_all_sides",
+      "kind": "tool"
+    },
+    {
+      "id": 790,
+      "name": "bronze_magmatic_chrono_vial_gate",
+      "kind": "tool"
+    },
+    {
+      "id": 789,
+      "name": "bronze_magmatic_chrono_vial_left",
+      "kind": "tool"
+    },
+    {
+      "id": 791,
+      "name": "bronze_magmatic_chrono_vial_right",
+      "kind": "tool"
+    },
+    {
+      "id": 804,
+      "name": "bronze_magmatic_flintlock_gun",
+      "kind": "tool"
+    },
+    {
+      "id": 801,
+      "name": "bronze_magmatic_grenade_flask",
+      "kind": "tool"
+    },
+    {
+      "id": 810,
+      "name": "bronze_obsidian_siege_shield",
+      "kind": "tool"
+    },
+    {
+      "id": 807,
+      "name": "bronze_obsidian_weighted_net",
+      "kind": "tool"
+    },
+    {
+      "id": 979,
+      "name": "bronze_sporebane_flintlock_gun",
+      "kind": "tool"
+    },
+    {
+      "id": 976,
+      "name": "bronze_sporebane_grenade_flask",
+      "kind": "tool"
+    },
+    {
+      "id": 967,
+      "name": "bronze_sporeguard_chrono_vial_all_sides",
+      "kind": "tool"
+    },
+    {
+      "id": 965,
+      "name": "bronze_sporeguard_chrono_vial_gate",
+      "kind": "tool"
+    },
+    {
+      "id": 964,
+      "name": "bronze_sporeguard_chrono_vial_left",
+      "kind": "tool"
+    },
+    {
+      "id": 966,
+      "name": "bronze_sporeguard_chrono_vial_right",
+      "kind": "tool"
+    },
+    {
+      "id": 45,
+      "name": "bubbling_cauldron",
+      "kind": "tool"
+    },
+    {
+      "id": 645,
+      "name": "bulwark",
+      "kind": "tool"
+    },
+    {
+      "id": 129,
+      "name": "candy_cane_ladder",
+      "kind": "tool"
+    },
+    {
+      "id": 477,
+      "name": "candy_cane_protector_10",
+      "kind": "troop"
+    },
+    {
+      "id": 30,
+      "name": "case_of_samurai_tokens",
+      "kind": "tool"
+    },
+    {
+      "id": 165,
+      "name": "case_of_the_shogun",
+      "kind": "tool"
+    },
+    {
+      "id": 480,
+      "name": "cask_marksmann",
+      "kind": "troop"
+    },
+    {
+      "id": 635,
+      "name": "cast_iron_mantlet",
+      "kind": "tool"
+    },
+    {
+      "id": 626,
+      "name": "castle_gate_reinforcement",
+      "kind": "tool"
+    },
+    {
+      "id": 74,
+      "name": "cave_hunter_74",
+      "kind": "troop"
+    },
+    {
+      "id": 8,
+      "name": "cave_hunter_8",
+      "kind": "troop"
+    },
+    {
+      "id": 69,
+      "name": "cave_ladder",
+      "kind": "tool"
+    },
+    {
+      "id": 68,
+      "name": "cave_smasher_68",
+      "kind": "troop"
+    },
+    {
+      "id": 7,
+      "name": "cave_smasher_7",
+      "kind": "troop"
+    },
+    {
+      "id": 347,
+      "name": "celestial_marksman",
+      "kind": "troop"
+    },
+    {
+      "id": 31,
+      "name": "chest_of_samurai_tokens",
+      "kind": "tool"
+    },
+    {
+      "id": 166,
+      "name": "chest_of_the_shogun",
+      "kind": "tool"
+    },
+    {
+      "id": 495,
+      "name": "christmas_archer",
+      "kind": "troop"
+    },
+    {
+      "id": 496,
+      "name": "christmas_guardian",
+      "kind": "troop"
+    },
+    {
+      "id": 497,
+      "name": "christmas_huntress",
+      "kind": "troop"
+    },
+    {
+      "id": 494,
+      "name": "christmas_warrior",
+      "kind": "troop"
+    },
+    {
+      "id": 784,
+      "name": "cinder_drake_archer",
+      "kind": "troop"
+    },
+    {
+      "id": 783,
+      "name": "cinder_drake_sentinel",
+      "kind": "troop"
+    },
+    {
+      "id": 492,
+      "name": "colossal_nomad_tablet_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 512,
+      "name": "colossal_samurai_token_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 722,
+      "name": "composite_bowman",
+      "kind": "troop"
+    },
+    {
+      "id": 191,
+      "name": "corrupted_assassin",
+      "kind": "troop"
+    },
+    {
+      "id": 192,
+      "name": "corrupted_crossbowman",
+      "kind": "troop"
+    },
+    {
+      "id": 504,
+      "name": "corrupted_subject",
+      "kind": "troop"
+    },
+    {
+      "id": 193,
+      "name": "corrupted_veteran_halberdier",
+      "kind": "troop"
+    },
+    {
+      "id": 194,
+      "name": "corrupted_veteran_longbowman",
+      "kind": "troop"
+    },
+    {
+      "id": 698,
+      "name": "cow_berdier",
+      "kind": "troop"
+    },
+    {
+      "id": 607,
+      "name": "crossbowman",
+      "kind": "troop"
+    },
+    {
+      "id": 76,
+      "name": "crossbowman_of_the_elite_guard",
+      "kind": "troop"
+    },
+    {
+      "id": 664,
+      "name": "crossbowman_of_the_kingsguard",
+      "kind": "troop"
+    },
+    {
+      "id": 244,
+      "name": "crown_of_khan_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 80,
+      "name": "crystal_ballista",
+      "kind": "tool"
+    },
+    {
+      "id": 680,
+      "name": "cultist_bowman",
+      "kind": "troop"
+    },
+    {
+      "id": 183,
+      "name": "cultist_brawler",
+      "kind": "troop"
+    },
+    {
+      "id": 679,
+      "name": "cultist_fanatic",
+      "kind": "troop"
+    },
+    {
+      "id": 186,
+      "name": "cultist_hunter",
+      "kind": "troop"
+    },
+    {
+      "id": 184,
+      "name": "cultist_slingshot",
+      "kind": "troop"
+    },
+    {
+      "id": 185,
+      "name": "cultist_warrior",
+      "kind": "troop"
+    },
+    {
+      "id": 598,
+      "name": "cyst_born_sporecaster_1",
+      "kind": "troop"
+    },
+    {
+      "id": 715,
+      "name": "deathly_horror",
+      "kind": "troop"
+    },
+    {
+      "id": 505,
+      "name": "decayed_axe_bearer",
+      "kind": "troop"
+    },
+    {
+      "id": 506,
+      "name": "decayed_bolt_slinger",
+      "kind": "troop"
+    },
+    {
+      "id": 714,
+      "name": "demon_horror",
+      "kind": "troop"
+    },
+    {
+      "id": 753,
+      "name": "demon_slayer",
+      "kind": "troop"
+    },
+    {
+      "id": 676,
+      "name": "desert_bowman",
+      "kind": "troop"
+    },
+    {
+      "id": 277,
+      "name": "direwolf_277",
+      "kind": "troop"
+    },
+    {
+      "id": 49,
+      "name": "direwolf_49",
+      "kind": "troop"
+    },
+    {
+      "id": 785,
+      "name": "dormant_rift_egg_0",
+      "kind": "troop"
+    },
+    {
+      "id": 786,
+      "name": "dormant_rift_wyrmling_1",
+      "kind": "troop"
+    },
+    {
+      "id": 597,
+      "name": "dormant_spore_cyst_0",
+      "kind": "troop"
+    },
+    {
+      "id": 594,
+      "name": "dormant_spore_maw_0",
+      "kind": "troop"
+    },
+    {
+      "id": 673,
+      "name": "dragon_claws",
+      "kind": "troop"
+    },
+    {
+      "id": 674,
+      "name": "dragon_fire",
+      "kind": "troop"
+    },
+    {
+      "id": 639,
+      "name": "dummy_archers",
+      "kind": "tool"
+    },
+    {
+      "id": 632,
+      "name": "dummy_melee_soldiers",
+      "kind": "tool"
+    },
+    {
+      "id": 735,
+      "name": "dummy_peasants",
+      "kind": "tool"
+    },
+    {
+      "id": 633,
+      "name": "dummy_ranged_soldiers",
+      "kind": "tool"
+    },
+    {
+      "id": 288,
+      "name": "easter_championess",
+      "kind": "troop"
+    },
+    {
+      "id": 141,
+      "name": "elite_nomad_ram_141",
+      "kind": "tool"
+    },
+    {
+      "id": 560,
+      "name": "elite_nomad_ram_560",
+      "kind": "tool"
+    },
+    {
+      "id": 142,
+      "name": "elite_nomad_rope_ladder_142",
+      "kind": "tool"
+    },
+    {
+      "id": 561,
+      "name": "elite_nomad_rope_ladder_561",
+      "kind": "tool"
+    },
+    {
+      "id": 143,
+      "name": "elite_nomad_shield_143",
+      "kind": "tool"
+    },
+    {
+      "id": 562,
+      "name": "elite_nomad_shield_562",
+      "kind": "tool"
+    },
+    {
+      "id": 116,
+      "name": "elite_spiked_shield",
+      "kind": "tool"
+    },
+    {
+      "id": 114,
+      "name": "elite_tonnelon_114",
+      "kind": "tool"
+    },
+    {
+      "id": 565,
+      "name": "elite_tonnelon_565",
+      "kind": "tool"
+    },
+    {
+      "id": 240,
+      "name": "emperors_banner",
+      "kind": "tool"
+    },
+    {
+      "id": 491,
+      "name": "enormous_nomad_tablet_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 511,
+      "name": "enormous_samurai_token_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 569,
+      "name": "exalted_raid_ladder_250",
+      "kind": "tool"
+    },
+    {
+      "id": 586,
+      "name": "exalted_raid_ladder_340",
+      "kind": "tool"
+    },
+    {
+      "id": 587,
+      "name": "exalted_raid_ladder_500",
+      "kind": "tool"
+    },
+    {
+      "id": 571,
+      "name": "exalted_raid_ram_250",
+      "kind": "tool"
+    },
+    {
+      "id": 591,
+      "name": "exalted_raid_ram_340",
+      "kind": "tool"
+    },
+    {
+      "id": 592,
+      "name": "exalted_raid_ram_500",
+      "kind": "tool"
+    },
+    {
+      "id": 462,
+      "name": "explosive_arrows_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 777,
+      "name": "fanged_bridge",
+      "kind": "tool"
+    },
+    {
+      "id": 499,
+      "name": "festive_archer",
+      "kind": "troop"
+    },
+    {
+      "id": 500,
+      "name": "festive_guardian",
+      "kind": "troop"
+    },
+    {
+      "id": 501,
+      "name": "festive_huntress",
+      "kind": "troop"
+    },
+    {
+      "id": 128,
+      "name": "festive_ram",
+      "kind": "tool"
+    },
+    {
+      "id": 498,
+      "name": "festive_warrior",
+      "kind": "troop"
+    },
+    {
+      "id": 326,
+      "name": "field_cannon_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 738,
+      "name": "fire_cart",
+      "kind": "tool"
+    },
+    {
+      "id": 625,
+      "name": "fire_moat",
+      "kind": "tool"
+    },
+    {
+      "id": 431,
+      "name": "fire_trap_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 117,
+      "name": "fire_witch",
+      "kind": "troop"
+    },
+    {
+      "id": 90,
+      "name": "flag_of_the_forest_guardians",
+      "kind": "tool"
+    },
+    {
+      "id": 723,
+      "name": "flame_bearer",
+      "kind": "troop"
+    },
+    {
+      "id": 524,
+      "name": "flamebreath_berserker_0",
+      "kind": "troop"
+    },
+    {
+      "id": 182,
+      "name": "flaming_arrows_182",
+      "kind": "tool"
+    },
+    {
+      "id": 629,
+      "name": "flaming_arrows_629",
+      "kind": "tool"
+    },
+    {
+      "id": 125,
+      "name": "fleet_shield",
+      "kind": "tool"
+    },
+    {
+      "id": 26,
+      "name": "folding_ladder",
+      "kind": "tool"
+    },
+    {
+      "id": 86,
+      "name": "forest_bowman",
+      "kind": "troop"
+    },
+    {
+      "id": 85,
+      "name": "forest_guardian",
+      "kind": "troop"
+    },
+    {
+      "id": 84,
+      "name": "forest_hunter_84",
+      "kind": "troop"
+    },
+    {
+      "id": 961,
+      "name": "forest_hunter_961",
+      "kind": "troop"
+    },
+    {
+      "id": 83,
+      "name": "forest_warrior_83",
+      "kind": "troop"
+    },
+    {
+      "id": 960,
+      "name": "forest_warrior_960",
+      "kind": "troop"
+    },
+    {
+      "id": 503,
+      "name": "forlorn_ranger",
+      "kind": "troop"
+    },
+    {
+      "id": 473,
+      "name": "forlorn_ranger_10_473",
+      "kind": "troop"
+    },
+    {
+      "id": 484,
+      "name": "forlorn_ranger_10_484",
+      "kind": "troop"
+    },
+    {
+      "id": 502,
+      "name": "forsaken_maiden",
+      "kind": "troop"
+    },
+    {
+      "id": 472,
+      "name": "forsaken_maiden_10_472",
+      "kind": "troop"
+    },
+    {
+      "id": 483,
+      "name": "forsaken_maiden_10_483",
+      "kind": "troop"
+    },
+    {
+      "id": 245,
+      "name": "fortified_ram_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 50,
+      "name": "frost_bowman",
+      "kind": "troop"
+    },
+    {
+      "id": 369,
+      "name": "fruit_breaker",
+      "kind": "troop"
+    },
+    {
+      "id": 15,
+      "name": "fruit_pirate",
+      "kind": "troop"
+    },
+    {
+      "id": 593,
+      "name": "fungus_guard",
+      "kind": "troop"
+    },
+    {
+      "id": 25,
+      "name": "gate_stormer",
+      "kind": "tool"
+    },
+    {
+      "id": 490,
+      "name": "giant_nomad_tablet_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 510,
+      "name": "giant_samurai_token_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 134,
+      "name": "gingerbread_brawler",
+      "kind": "troop"
+    },
+    {
+      "id": 135,
+      "name": "gingerbread_sniper",
+      "kind": "troop"
+    },
+    {
+      "id": 486,
+      "name": "glacial_amazon_archer",
+      "kind": "troop"
+    },
+    {
+      "id": 487,
+      "name": "glacial_amazon_guardian",
+      "kind": "troop"
+    },
+    {
+      "id": 488,
+      "name": "glacial_amazon_huntress",
+      "kind": "troop"
+    },
+    {
+      "id": 485,
+      "name": "glacial_amazon_warrior",
+      "kind": "troop"
+    },
+    {
+      "id": 513,
+      "name": "glasswing_archer_0",
+      "kind": "troop"
+    },
+    {
+      "id": 256,
+      "name": "glory_tower_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 133,
+      "name": "gnomad_archer",
+      "kind": "troop"
+    },
+    {
+      "id": 132,
+      "name": "gnomad_warrior",
+      "kind": "troop"
+    },
+    {
+      "id": 163,
+      "name": "gold_khan_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 800,
+      "name": "gold_magmatic_chrono_vial_all_sides",
+      "kind": "tool"
+    },
+    {
+      "id": 798,
+      "name": "gold_magmatic_chrono_vial_gate",
+      "kind": "tool"
+    },
+    {
+      "id": 797,
+      "name": "gold_magmatic_chrono_vial_left",
+      "kind": "tool"
+    },
+    {
+      "id": 799,
+      "name": "gold_magmatic_chrono_vial_right",
+      "kind": "tool"
+    },
+    {
+      "id": 806,
+      "name": "gold_magmatic_flintlock_gun",
+      "kind": "tool"
+    },
+    {
+      "id": 803,
+      "name": "gold_magmatic_grenade_flask",
+      "kind": "tool"
+    },
+    {
+      "id": 812,
+      "name": "gold_obsidian_siege_shield",
+      "kind": "tool"
+    },
+    {
+      "id": 809,
+      "name": "gold_obsidian_weighted_net",
+      "kind": "tool"
+    },
+    {
+      "id": 981,
+      "name": "gold_sporebane_flintlock_gun",
+      "kind": "tool"
+    },
+    {
+      "id": 978,
+      "name": "gold_sporebane_grenade_flask",
+      "kind": "tool"
+    },
+    {
+      "id": 975,
+      "name": "gold_sporeguard_chrono_vial_all_sides",
+      "kind": "tool"
+    },
+    {
+      "id": 973,
+      "name": "gold_sporeguard_chrono_vial_gate",
+      "kind": "tool"
+    },
+    {
+      "id": 972,
+      "name": "gold_sporeguard_chrono_vial_left",
+      "kind": "tool"
+    },
+    {
+      "id": 974,
+      "name": "gold_sporeguard_chrono_vial_right",
+      "kind": "tool"
+    },
+    {
+      "id": 73,
+      "name": "golden_piggy_bank",
+      "kind": "tool"
+    },
+    {
+      "id": 82,
+      "name": "golden_reputation_booster",
+      "kind": "tool"
+    },
+    {
+      "id": 94,
+      "name": "golden_royal_coin_case",
+      "kind": "tool"
+    },
+    {
+      "id": 97,
+      "name": "golden_royal_token_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 72,
+      "name": "granite_ram",
+      "kind": "tool"
+    },
+    {
+      "id": 733,
+      "name": "grappling_hooks",
+      "kind": "tool"
+    },
+    {
+      "id": 579,
+      "name": "graveguard_potion",
+      "kind": "tool"
+    },
+    {
+      "id": 580,
+      "name": "great_graveguard_potion",
+      "kind": "tool"
+    },
+    {
+      "id": 788,
+      "name": "great_rift_dragon_3",
+      "kind": "troop"
+    },
+    {
+      "id": 643,
+      "name": "grimacing_shield",
+      "kind": "tool"
+    },
+    {
+      "id": 124,
+      "name": "grims_crossing",
+      "kind": "tool"
+    },
+    {
+      "id": 122,
+      "name": "grims_ladder",
+      "kind": "tool"
+    },
+    {
+      "id": 123,
+      "name": "grims_ram",
+      "kind": "tool"
+    },
+    {
+      "id": 121,
+      "name": "grims_shield",
+      "kind": "tool"
+    },
+    {
+      "id": 336,
+      "name": "guardian_of_spring",
+      "kind": "troop"
+    },
+    {
+      "id": 604,
+      "name": "halberdier",
+      "kind": "troop"
+    },
+    {
+      "id": 381,
+      "name": "hand_cannon_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 57,
+      "name": "heavy_ballast_stone",
+      "kind": "tool"
+    },
+    {
+      "id": 609,
+      "name": "heavy_crossbowman",
+      "kind": "troop"
+    },
+    {
+      "id": 648,
+      "name": "heavy_ram",
+      "kind": "tool"
+    },
+    {
+      "id": 77,
+      "name": "heros_banner",
+      "kind": "tool"
+    },
+    {
+      "id": 475,
+      "name": "high_kings_banner",
+      "kind": "tool"
+    },
+    {
+      "id": 474,
+      "name": "high_queens_banner",
+      "kind": "tool"
+    },
+    {
+      "id": 267,
+      "name": "hookshot_cannon_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 734,
+      "name": "horsetail_standard",
+      "kind": "tool"
+    },
+    {
+      "id": 405,
+      "name": "huge_nomad_tablet_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 407,
+      "name": "huge_samurai_token_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 180,
+      "name": "hurling_rocks_180",
+      "kind": "tool"
+    },
+    {
+      "id": 637,
+      "name": "hurling_rocks_637",
+      "kind": "tool"
+    },
+    {
+      "id": 278,
+      "name": "hwacha_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 19,
+      "name": "imperial_bowman",
+      "kind": "troop"
+    },
+    {
+      "id": 18,
+      "name": "imperial_guardsman",
+      "kind": "troop"
+    },
+    {
+      "id": 20,
+      "name": "imperial_knight",
+      "kind": "troop"
+    },
+    {
+      "id": 21,
+      "name": "imperial_marksman",
+      "kind": "troop"
+    },
+    {
+      "id": 167,
+      "name": "improved_fire_cart",
+      "kind": "tool"
+    },
+    {
+      "id": 169,
+      "name": "improved_rolling_shield",
+      "kind": "tool"
+    },
+    {
+      "id": 168,
+      "name": "improved_tree_ladder",
+      "kind": "tool"
+    },
+    {
+      "id": 112,
+      "name": "inferno_moat",
+      "kind": "tool"
+    },
+    {
+      "id": 140,
+      "name": "infinity_shield",
+      "kind": "tool"
+    },
+    {
+      "id": 179,
+      "name": "insulating_mat_179",
+      "kind": "tool"
+    },
+    {
+      "id": 644,
+      "name": "insulating_mat_644",
+      "kind": "tool"
+    },
+    {
+      "id": 772,
+      "name": "invader_bridge",
+      "kind": "tool"
+    },
+    {
+      "id": 771,
+      "name": "invader_ladder",
+      "kind": "tool"
+    },
+    {
+      "id": 566,
+      "name": "invader_mask_566",
+      "kind": "tool"
+    },
+    {
+      "id": 773,
+      "name": "invader_mask_773",
+      "kind": "tool"
+    },
+    {
+      "id": 770,
+      "name": "invader_ram",
+      "kind": "tool"
+    },
+    {
+      "id": 139,
+      "name": "invaders_footbridge",
+      "kind": "tool"
+    },
+    {
+      "id": 641,
+      "name": "iron_ram",
+      "kind": "tool"
+    },
+    {
+      "id": 87,
+      "name": "ironwood_ram",
+      "kind": "tool"
+    },
+    {
+      "id": 478,
+      "name": "jolly_gingerbread_sniper_10",
+      "kind": "troop"
+    },
+    {
+      "id": 32,
+      "name": "karimata_arrowheads",
+      "kind": "tool"
+    },
+    {
+      "id": 850,
+      "name": "karimata_arrowheads_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 38,
+      "name": "katana_warrior",
+      "kind": "troop"
+    },
+    {
+      "id": 820,
+      "name": "katana_warrior_1",
+      "kind": "troop"
+    },
+    {
+      "id": 1,
+      "name": "khan_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 725,
+      "name": "khan_guard",
+      "kind": "troop"
+    },
+    {
+      "id": 153,
+      "name": "kings_banner",
+      "kind": "tool"
+    },
+    {
+      "id": 159,
+      "name": "kings_bridge",
+      "kind": "tool"
+    },
+    {
+      "id": 157,
+      "name": "kings_ladder",
+      "kind": "tool"
+    },
+    {
+      "id": 155,
+      "name": "kings_ram",
+      "kind": "tool"
+    },
+    {
+      "id": 161,
+      "name": "kings_shield",
+      "kind": "tool"
+    },
+    {
+      "id": 243,
+      "name": "knight_of_khan_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 75,
+      "name": "knight_of_the_elite_guard",
+      "kind": "troop"
+    },
+    {
+      "id": 672,
+      "name": "knight_of_the_kingsguard",
+      "kind": "troop"
+    },
+    {
+      "id": 146,
+      "name": "knight_of_the_throne_watcher",
+      "kind": "troop"
+    },
+    {
+      "id": 763,
+      "name": "kraken_banner",
+      "kind": "tool"
+    },
+    {
+      "id": 719,
+      "name": "kraken_head",
+      "kind": "troop"
+    },
+    {
+      "id": 870,
+      "name": "kunai_thrower_1",
+      "kind": "troop"
+    },
+    {
+      "id": 171,
+      "name": "ladder_of_the_shogun_171",
+      "kind": "tool"
+    },
+    {
+      "id": 559,
+      "name": "ladder_of_the_shogun_559",
+      "kind": "tool"
+    },
+    {
+      "id": 743,
+      "name": "lancer",
+      "kind": "troop"
+    },
+    {
+      "id": 900,
+      "name": "lancer_1",
+      "kind": "troop"
+    },
+    {
+      "id": 669,
+      "name": "large_ballista",
+      "kind": "tool"
+    },
+    {
+      "id": 404,
+      "name": "large_nomad_tablet_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 406,
+      "name": "large_samurai_token_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 787,
+      "name": "lesser_rift_dragon_2",
+      "kind": "troop"
+    },
+    {
+      "id": 730,
+      "name": "lime_powder_bomb",
+      "kind": "tool"
+    },
+    {
+      "id": 920,
+      "name": "lime_powder_bomb_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 713,
+      "name": "lion_bowman",
+      "kind": "troop"
+    },
+    {
+      "id": 712,
+      "name": "lion_warrior",
+      "kind": "troop"
+    },
+    {
+      "id": 699,
+      "name": "longbow_ox",
+      "kind": "troop"
+    },
+    {
+      "id": 610,
+      "name": "longbowman",
+      "kind": "troop"
+    },
+    {
+      "id": 654,
+      "name": "loot_cart",
+      "kind": "tool"
+    },
+    {
+      "id": 653,
+      "name": "loot_sack",
+      "kind": "tool"
+    },
+    {
+      "id": 603,
+      "name": "maceman",
+      "kind": "troop"
+    },
+    {
+      "id": 620,
+      "name": "mantlet",
+      "kind": "tool"
+    },
+    {
+      "id": 684,
+      "name": "marauder",
+      "kind": "troop"
+    },
+    {
+      "id": 14,
+      "name": "marksman",
+      "kind": "troop"
+    },
+    {
+      "id": 147,
+      "name": "marksman_of_the_throne_watcher",
+      "kind": "troop"
+    },
+    {
+      "id": 782,
+      "name": "master_archer",
+      "kind": "troop"
+    },
+    {
+      "id": 51,
+      "name": "master_bone_huntress",
+      "kind": "troop"
+    },
+    {
+      "id": 578,
+      "name": "master_dominator_banner",
+      "kind": "tool"
+    },
+    {
+      "id": 52,
+      "name": "master_frost_bowman",
+      "kind": "troop"
+    },
+    {
+      "id": 573,
+      "name": "master_rift_dominator_ladder",
+      "kind": "tool"
+    },
+    {
+      "id": 575,
+      "name": "master_rift_dominator_ram",
+      "kind": "tool"
+    },
+    {
+      "id": 781,
+      "name": "master_swordsman",
+      "kind": "troop"
+    },
+    {
+      "id": 746,
+      "name": "militia",
+      "kind": "troop"
+    },
+    {
+      "id": 451,
+      "name": "mobile_cauldron_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 638,
+      "name": "moon_storm_banner",
+      "kind": "tool"
+    },
+    {
+      "id": 627,
+      "name": "murder_hole",
+      "kind": "tool"
+    },
+    {
+      "id": 13,
+      "name": "muscle_man",
+      "kind": "troop"
+    },
+    {
+      "id": 764,
+      "name": "nautical_ballista",
+      "kind": "tool"
+    },
+    {
+      "id": 62,
+      "name": "nomad_piggy_bank",
+      "kind": "tool"
+    },
+    {
+      "id": 109,
+      "name": "nomadic_murder_hole",
+      "kind": "tool"
+    },
+    {
+      "id": 670,
+      "name": "norseman_with_axe_670",
+      "kind": "troop"
+    },
+    {
+      "id": 677,
+      "name": "norseman_with_axe_677",
+      "kind": "troop"
+    },
+    {
+      "id": 671,
+      "name": "norseman_with_bow_671",
+      "kind": "troop"
+    },
+    {
+      "id": 678,
+      "name": "norseman_with_bow_678",
+      "kind": "troop"
+    },
+    {
+      "id": 115,
+      "name": "onslaught_bridge",
+      "kind": "tool"
+    },
+    {
+      "id": 370,
+      "name": "organ_cannon_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 776,
+      "name": "paw_ladder",
+      "kind": "tool"
+    },
+    {
+      "id": 107,
+      "name": "plunderers_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 108,
+      "name": "plunderers_trunk",
+      "kind": "tool"
+    },
+    {
+      "id": 742,
+      "name": "poison_arrows",
+      "kind": "tool"
+    },
+    {
+      "id": 622,
+      "name": "portcullis",
+      "kind": "tool"
+    },
+    {
+      "id": 581,
+      "name": "premium_graveguard_potion",
+      "kind": "tool"
+    },
+    {
+      "id": 67,
+      "name": "premium_piggy_bank",
+      "kind": "tool"
+    },
+    {
+      "id": 66,
+      "name": "premium_royal_coin_case",
+      "kind": "tool"
+    },
+    {
+      "id": 96,
+      "name": "premium_royal_token_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 481,
+      "name": "pretzel_guardian",
+      "kind": "troop"
+    },
+    {
+      "id": 659,
+      "name": "prince",
+      "kind": "troop"
+    },
+    {
+      "id": 217,
+      "name": "protector_of_the_north_0",
+      "kind": "troop"
+    },
+    {
+      "id": 42,
+      "name": "pumpkin_butcher",
+      "kind": "troop"
+    },
+    {
+      "id": 685,
+      "name": "pyromaniac",
+      "kind": "troop"
+    },
+    {
+      "id": 105,
+      "name": "quicklime_bomb",
+      "kind": "tool"
+    },
+    {
+      "id": 106,
+      "name": "rage_banner_106",
+      "kind": "tool"
+    },
+    {
+      "id": 563,
+      "name": "rage_banner_563",
+      "kind": "tool"
+    },
+    {
+      "id": 576,
+      "name": "raid_dominator_banner",
+      "kind": "tool"
+    },
+    {
+      "id": 572,
+      "name": "raid_dominator_ladder",
+      "kind": "tool"
+    },
+    {
+      "id": 574,
+      "name": "raid_dominator_ram",
+      "kind": "tool"
+    },
+    {
+      "id": 584,
+      "name": "raid_ladder_125",
+      "kind": "tool"
+    },
+    {
+      "id": 585,
+      "name": "raid_ladder_200",
+      "kind": "tool"
+    },
+    {
+      "id": 568,
+      "name": "raid_ladder_60",
+      "kind": "tool"
+    },
+    {
+      "id": 583,
+      "name": "raid_ladder_80",
+      "kind": "tool"
+    },
+    {
+      "id": 589,
+      "name": "raid_ram_125",
+      "kind": "tool"
+    },
+    {
+      "id": 590,
+      "name": "raid_ram_200",
+      "kind": "tool"
+    },
+    {
+      "id": 570,
+      "name": "raid_ram_60",
+      "kind": "tool"
+    },
+    {
+      "id": 588,
+      "name": "raid_ram_80",
+      "kind": "tool"
+    },
+    {
+      "id": 170,
+      "name": "ram_of_the_shogun_170",
+      "kind": "tool"
+    },
+    {
+      "id": 557,
+      "name": "ram_of_the_shogun_557",
+      "kind": "tool"
+    },
+    {
+      "id": 43,
+      "name": "raven_chomper",
+      "kind": "troop"
+    },
+    {
+      "id": 111,
+      "name": "reinforced_portcullis",
+      "kind": "tool"
+    },
+    {
+      "id": 148,
+      "name": "relic_axeman_0",
+      "kind": "troop"
+    },
+    {
+      "id": 150,
+      "name": "relic_hammerman_0",
+      "kind": "troop"
+    },
+    {
+      "id": 151,
+      "name": "relic_longbowman_0",
+      "kind": "troop"
+    },
+    {
+      "id": 149,
+      "name": "relic_shortbowman_0",
+      "kind": "troop"
+    },
+    {
+      "id": 37,
+      "name": "renegade_bow_master",
+      "kind": "troop"
+    },
+    {
+      "id": 79,
+      "name": "renegade_cave_hunter",
+      "kind": "troop"
+    },
+    {
+      "id": 78,
+      "name": "renegade_cave_smasher",
+      "kind": "troop"
+    },
+    {
+      "id": 693,
+      "name": "renegade_cultist_bowman",
+      "kind": "troop"
+    },
+    {
+      "id": 692,
+      "name": "renegade_cultist_warrior",
+      "kind": "troop"
+    },
+    {
+      "id": 689,
+      "name": "renegade_desert_bowman",
+      "kind": "troop"
+    },
+    {
+      "id": 36,
+      "name": "renegade_katana_warrior",
+      "kind": "troop"
+    },
+    {
+      "id": 35,
+      "name": "renegade_kunai_thrower",
+      "kind": "troop"
+    },
+    {
+      "id": 728,
+      "name": "renegade_lancer",
+      "kind": "troop"
+    },
+    {
+      "id": 691,
+      "name": "renegade_norseman_bowman",
+      "kind": "troop"
+    },
+    {
+      "id": 690,
+      "name": "renegade_norseman_warrior",
+      "kind": "troop"
+    },
+    {
+      "id": 688,
+      "name": "renegade_saber_warrior",
+      "kind": "troop"
+    },
+    {
+      "id": 34,
+      "name": "renegade_sai_warrior",
+      "kind": "troop"
+    },
+    {
+      "id": 963,
+      "name": "renegade_sail_ripper",
+      "kind": "troop"
+    },
+    {
+      "id": 760,
+      "name": "renegade_sail_ripper_0",
+      "kind": "troop"
+    },
+    {
+      "id": 767,
+      "name": "renegade_shark_tooth_warrior",
+      "kind": "troop"
+    },
+    {
+      "id": 729,
+      "name": "renegade_spear_thrower",
+      "kind": "troop"
+    },
+    {
+      "id": 768,
+      "name": "renegade_stone_smasher",
+      "kind": "troop"
+    },
+    {
+      "id": 962,
+      "name": "renegade_swashbuckler",
+      "kind": "troop"
+    },
+    {
+      "id": 759,
+      "name": "renegade_swashbuckler_0",
+      "kind": "troop"
+    },
+    {
+      "id": 81,
+      "name": "reputation_booster",
+      "kind": "tool"
+    },
+    {
+      "id": 739,
+      "name": "rolling_shield",
+      "kind": "tool"
+    },
+    {
+      "id": 152,
+      "name": "royal_banner",
+      "kind": "tool"
+    },
+    {
+      "id": 158,
+      "name": "royal_bridge",
+      "kind": "tool"
+    },
+    {
+      "id": 65,
+      "name": "royal_coin_case",
+      "kind": "tool"
+    },
+    {
+      "id": 164,
+      "name": "royal_khan_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 156,
+      "name": "royal_ladder",
+      "kind": "tool"
+    },
+    {
+      "id": 154,
+      "name": "royal_ram",
+      "kind": "tool"
+    },
+    {
+      "id": 160,
+      "name": "royal_shield",
+      "kind": "tool"
+    },
+    {
+      "id": 95,
+      "name": "royal_token_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 137,
+      "name": "rune_ram",
+      "kind": "tool"
+    },
+    {
+      "id": 726,
+      "name": "saber_cleaver",
+      "kind": "troop"
+    },
+    {
+      "id": 675,
+      "name": "saber_warrior",
+      "kind": "troop"
+    },
+    {
+      "id": 860,
+      "name": "sai_warrior_1",
+      "kind": "troop"
+    },
+    {
+      "id": 717,
+      "name": "sail_ripper_0",
+      "kind": "troop"
+    },
+    {
+      "id": 63,
+      "name": "samurai_piggy_bank",
+      "kind": "tool"
+    },
+    {
+      "id": 535,
+      "name": "scalebound_guardian_0",
+      "kind": "troop"
+    },
+    {
+      "id": 546,
+      "name": "scaleshard_marksman_0",
+      "kind": "troop"
+    },
+    {
+      "id": 614,
+      "name": "scaling_ladder",
+      "kind": "tool"
+    },
+    {
+      "id": 687,
+      "name": "scout_of_the_kingsguard",
+      "kind": "troop"
+    },
+    {
+      "id": 686,
+      "name": "sentinel_of_the_kingsguard",
+      "kind": "troop"
+    },
+    {
+      "id": 101,
+      "name": "shamrock_assassin",
+      "kind": "troop"
+    },
+    {
+      "id": 100,
+      "name": "shamrock_huntsman",
+      "kind": "troop"
+    },
+    {
+      "id": 126,
+      "name": "shapeshifter_legionnaire",
+      "kind": "troop"
+    },
+    {
+      "id": 127,
+      "name": "shapeshifter_sharpshooter",
+      "kind": "troop"
+    },
+    {
+      "id": 762,
+      "name": "shark_shield",
+      "kind": "tool"
+    },
+    {
+      "id": 657,
+      "name": "shark_tooth_warrior",
+      "kind": "troop"
+    },
+    {
+      "id": 181,
+      "name": "sharpened_stakes_181",
+      "kind": "tool"
+    },
+    {
+      "id": 634,
+      "name": "sharpened_stakes_634",
+      "kind": "tool"
+    },
+    {
+      "id": 195,
+      "name": "shield_maiden_0",
+      "kind": "troop"
+    },
+    {
+      "id": 196,
+      "name": "shield_maiden_1",
+      "kind": "troop"
+    },
+    {
+      "id": 197,
+      "name": "shield_maiden_2",
+      "kind": "troop"
+    },
+    {
+      "id": 198,
+      "name": "shield_maiden_3",
+      "kind": "troop"
+    },
+    {
+      "id": 199,
+      "name": "shield_maiden_4",
+      "kind": "troop"
+    },
+    {
+      "id": 200,
+      "name": "shield_maiden_5",
+      "kind": "troop"
+    },
+    {
+      "id": 201,
+      "name": "shield_maiden_6",
+      "kind": "troop"
+    },
+    {
+      "id": 202,
+      "name": "shield_maiden_7",
+      "kind": "troop"
+    },
+    {
+      "id": 203,
+      "name": "shield_maiden_8",
+      "kind": "troop"
+    },
+    {
+      "id": 204,
+      "name": "shield_maiden_9",
+      "kind": "troop"
+    },
+    {
+      "id": 172,
+      "name": "shield_of_the_shogun_172",
+      "kind": "tool"
+    },
+    {
+      "id": 558,
+      "name": "shield_of_the_shogun_558",
+      "kind": "tool"
+    },
+    {
+      "id": 55,
+      "name": "shield_sled",
+      "kind": "tool"
+    },
+    {
+      "id": 651,
+      "name": "shield_wall",
+      "kind": "tool"
+    },
+    {
+      "id": 359,
+      "name": "shrapnel_bomb_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 289,
+      "name": "siege_mortar_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 640,
+      "name": "siege_tower",
+      "kind": "tool"
+    },
+    {
+      "id": 162,
+      "name": "silver_khan_chest",
+      "kind": "tool"
+    },
+    {
+      "id": 796,
+      "name": "silver_magmatic_chrono_vial_all_sides",
+      "kind": "tool"
+    },
+    {
+      "id": 794,
+      "name": "silver_magmatic_chrono_vial_gate",
+      "kind": "tool"
+    },
+    {
+      "id": 793,
+      "name": "silver_magmatic_chrono_vial_left",
+      "kind": "tool"
+    },
+    {
+      "id": 795,
+      "name": "silver_magmatic_chrono_vial_right",
+      "kind": "tool"
+    },
+    {
+      "id": 805,
+      "name": "silver_magmatic_flintlock_gun",
+      "kind": "tool"
+    },
+    {
+      "id": 802,
+      "name": "silver_magmatic_grenade_flask",
+      "kind": "tool"
+    },
+    {
+      "id": 811,
+      "name": "silver_obsidian_siege_shield",
+      "kind": "tool"
+    },
+    {
+      "id": 808,
+      "name": "silver_obsidian_weighted_net",
+      "kind": "tool"
+    },
+    {
+      "id": 980,
+      "name": "silver_sporebane_flintlock_gun",
+      "kind": "tool"
+    },
+    {
+      "id": 977,
+      "name": "silver_sporebane_grenade_flask",
+      "kind": "tool"
+    },
+    {
+      "id": 971,
+      "name": "silver_sporeguard_chrono_vial_all_sides",
+      "kind": "tool"
+    },
+    {
+      "id": 969,
+      "name": "silver_sporeguard_chrono_vial_gate",
+      "kind": "tool"
+    },
+    {
+      "id": 968,
+      "name": "silver_sporeguard_chrono_vial_left",
+      "kind": "tool"
+    },
+    {
+      "id": 970,
+      "name": "silver_sporeguard_chrono_vial_right",
+      "kind": "tool"
+    },
+    {
+      "id": 119,
+      "name": "skeletal_hunter",
+      "kind": "troop"
+    },
+    {
+      "id": 120,
+      "name": "skeletal_scytheman",
+      "kind": "troop"
+    },
+    {
+      "id": 41,
+      "name": "skeleton_bowman_41",
+      "kind": "troop"
+    },
+    {
+      "id": 663,
+      "name": "skeleton_bowman_663",
+      "kind": "troop"
+    },
+    {
+      "id": 40,
+      "name": "skeleton_warrior_40",
+      "kind": "troop"
+    },
+    {
+      "id": 662,
+      "name": "skeleton_warrior_662",
+      "kind": "troop"
+    },
+    {
+      "id": 727,
+      "name": "slingshot",
+      "kind": "troop"
+    },
+    {
+      "id": 28,
+      "name": "smoke_bomb",
+      "kind": "tool"
+    },
+    {
+      "id": 890,
+      "name": "smoke_bomb_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 91,
+      "name": "soldiers_banner",
+      "kind": "tool"
+    },
+    {
+      "id": 744,
+      "name": "spear_thrower",
+      "kind": "troop"
+    },
+    {
+      "id": 910,
+      "name": "spear_thrower_1",
+      "kind": "troop"
+    },
+    {
+      "id": 421,
+      "name": "spear_trap_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 23,
+      "name": "spear_woman",
+      "kind": "troop"
+    },
+    {
+      "id": 602,
+      "name": "spearman",
+      "kind": "troop"
+    },
+    {
+      "id": 348,
+      "name": "spike_board_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 2,
+      "name": "spiked_shield",
+      "kind": "tool"
+    },
+    {
+      "id": 595,
+      "name": "spore_gnasher_1",
+      "kind": "troop"
+    },
+    {
+      "id": 596,
+      "name": "spore_slinger",
+      "kind": "troop"
+    },
+    {
+      "id": 103,
+      "name": "spring_footsoldier",
+      "kind": "troop"
+    },
+    {
+      "id": 102,
+      "name": "spring_huntress",
+      "kind": "troop"
+    },
+    {
+      "id": 408,
+      "name": "star_spangled_banner_408",
+      "kind": "tool"
+    },
+    {
+      "id": 60,
+      "name": "star_spangled_banner_60",
+      "kind": "tool"
+    },
+    {
+      "id": 59,
+      "name": "star_spangled_crossbowman",
+      "kind": "troop"
+    },
+    {
+      "id": 58,
+      "name": "star_spangled_knight",
+      "kind": "troop"
+    },
+    {
+      "id": 410,
+      "name": "star_spangled_veteran_deathly_horror",
+      "kind": "troop"
+    },
+    {
+      "id": 409,
+      "name": "star_spangled_veteran_demon_horror",
+      "kind": "troop"
+    },
+    {
+      "id": 479,
+      "name": "stein_smasher",
+      "kind": "troop"
+    },
+    {
+      "id": 70,
+      "name": "stone_shield",
+      "kind": "tool"
+    },
+    {
+      "id": 658,
+      "name": "stone_smasher",
+      "kind": "troop"
+    },
+    {
+      "id": 358,
+      "name": "summer_huntress",
+      "kind": "troop"
+    },
+    {
+      "id": 461,
+      "name": "summer_marksman",
+      "kind": "troop"
+    },
+    {
+      "id": 476,
+      "name": "supreme_monarchs_banner",
+      "kind": "tool"
+    },
+    {
+      "id": 646,
+      "name": "swamp_snapper",
+      "kind": "tool"
+    },
+    {
+      "id": 716,
+      "name": "swashbuckler_0",
+      "kind": "troop"
+    },
+    {
+      "id": 27,
+      "name": "swiveling_shield",
+      "kind": "tool"
+    },
+    {
+      "id": 601,
+      "name": "swordsman",
+      "kind": "troop"
+    },
+    {
+      "id": 647,
+      "name": "tar_pitch_kettle",
+      "kind": "tool"
+    },
+    {
+      "id": 718,
+      "name": "tentacle",
+      "kind": "troop"
+    },
+    {
+      "id": 775,
+      "name": "the_claw",
+      "kind": "tool"
+    },
+    {
+      "id": 178,
+      "name": "the_dignity_of_berimond",
+      "kind": "tool"
+    },
+    {
+      "id": 779,
+      "name": "the_glory_of_berimond",
+      "kind": "tool"
+    },
+    {
+      "id": 780,
+      "name": "the_pride_of_berimond",
+      "kind": "tool"
+    },
+    {
+      "id": 241,
+      "name": "the_rise_of_berimond",
+      "kind": "tool"
+    },
+    {
+      "id": 242,
+      "name": "the_savior_of_berimond",
+      "kind": "tool"
+    },
+    {
+      "id": 16,
+      "name": "the_splendor_of_berimond",
+      "kind": "tool"
+    },
+    {
+      "id": 17,
+      "name": "the_treasure_of_berimond",
+      "kind": "tool"
+    },
+    {
+      "id": 64,
+      "name": "the_winter_kings_banner",
+      "kind": "tool"
+    },
+    {
+      "id": 3,
+      "name": "the_wolfs_howl",
+      "kind": "tool"
+    },
+    {
+      "id": 755,
+      "name": "thorn_ladder",
+      "kind": "tool"
+    },
+    {
+      "id": 33,
+      "name": "throwing_nails",
+      "kind": "tool"
+    },
+    {
+      "id": 840,
+      "name": "throwing_nails_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 300,
+      "name": "thunder_crash_bomb_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 4,
+      "name": "tonnelon",
+      "kind": "tool"
+    },
+    {
+      "id": 741,
+      "name": "torches",
+      "kind": "tool"
+    },
+    {
+      "id": 736,
+      "name": "transport_yak",
+      "kind": "tool"
+    },
+    {
+      "id": 656,
+      "name": "traveling_crossbowman",
+      "kind": "troop"
+    },
+    {
+      "id": 655,
+      "name": "traveling_knight",
+      "kind": "troop"
+    },
+    {
+      "id": 315,
+      "name": "trebuchet_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 740,
+      "name": "tree_trunk_ladder",
+      "kind": "tool"
+    },
+    {
+      "id": 732,
+      "name": "turtle_ram",
+      "kind": "tool"
+    },
+    {
+      "id": 605,
+      "name": "two_handed_swordsman",
+      "kind": "troop"
+    },
+    {
+      "id": 299,
+      "name": "valkyrie_huntress",
+      "kind": "troop"
+    },
+    {
+      "id": 205,
+      "name": "valkyrie_ranger_0",
+      "kind": "troop"
+    },
+    {
+      "id": 206,
+      "name": "valkyrie_ranger_1",
+      "kind": "troop"
+    },
+    {
+      "id": 216,
+      "name": "valkyrie_ranger_10",
+      "kind": "troop"
+    },
+    {
+      "id": 207,
+      "name": "valkyrie_ranger_2",
+      "kind": "troop"
+    },
+    {
+      "id": 208,
+      "name": "valkyrie_ranger_3",
+      "kind": "troop"
+    },
+    {
+      "id": 209,
+      "name": "valkyrie_ranger_4",
+      "kind": "troop"
+    },
+    {
+      "id": 210,
+      "name": "valkyrie_ranger_5",
+      "kind": "troop"
+    },
+    {
+      "id": 211,
+      "name": "valkyrie_ranger_6",
+      "kind": "troop"
+    },
+    {
+      "id": 212,
+      "name": "valkyrie_ranger_7",
+      "kind": "troop"
+    },
+    {
+      "id": 213,
+      "name": "valkyrie_ranger_8",
+      "kind": "troop"
+    },
+    {
+      "id": 214,
+      "name": "valkyrie_ranger_9",
+      "kind": "troop"
+    },
+    {
+      "id": 228,
+      "name": "valkyrie_sniper_0",
+      "kind": "troop"
+    },
+    {
+      "id": 229,
+      "name": "valkyrie_sniper_1",
+      "kind": "troop"
+    },
+    {
+      "id": 238,
+      "name": "valkyrie_sniper_10",
+      "kind": "troop"
+    },
+    {
+      "id": 230,
+      "name": "valkyrie_sniper_2",
+      "kind": "troop"
+    },
+    {
+      "id": 231,
+      "name": "valkyrie_sniper_3",
+      "kind": "troop"
+    },
+    {
+      "id": 232,
+      "name": "valkyrie_sniper_4",
+      "kind": "troop"
+    },
+    {
+      "id": 233,
+      "name": "valkyrie_sniper_5",
+      "kind": "troop"
+    },
+    {
+      "id": 234,
+      "name": "valkyrie_sniper_6",
+      "kind": "troop"
+    },
+    {
+      "id": 235,
+      "name": "valkyrie_sniper_7",
+      "kind": "troop"
+    },
+    {
+      "id": 236,
+      "name": "valkyrie_sniper_8",
+      "kind": "troop"
+    },
+    {
+      "id": 237,
+      "name": "valkyrie_sniper_9",
+      "kind": "troop"
+    },
+    {
+      "id": 44,
+      "name": "vampire_bats",
+      "kind": "tool"
+    },
+    {
+      "id": 138,
+      "name": "vertical_assault_apparatus",
+      "kind": "tool"
+    },
+    {
+      "id": 745,
+      "name": "veteran_banner",
+      "kind": "tool"
+    },
+    {
+      "id": 631,
+      "name": "veteran_bowman",
+      "kind": "troop"
+    },
+    {
+      "id": 12,
+      "name": "veteran_composite_bowman",
+      "kind": "troop"
+    },
+    {
+      "id": 636,
+      "name": "veteran_crossbowman",
+      "kind": "troop"
+    },
+    {
+      "id": 10,
+      "name": "veteran_deathly_horror",
+      "kind": "troop"
+    },
+    {
+      "id": 9,
+      "name": "veteran_demon_horror",
+      "kind": "troop"
+    },
+    {
+      "id": 577,
+      "name": "veteran_dominator_banner",
+      "kind": "tool"
+    },
+    {
+      "id": 11,
+      "name": "veteran_flame_bearer",
+      "kind": "troop"
+    },
+    {
+      "id": 308,
+      "name": "veteran_halberdier_0",
+      "kind": "troop"
+    },
+    {
+      "id": 312,
+      "name": "veteran_heavy_crossbowman_0",
+      "kind": "troop"
+    },
+    {
+      "id": 311,
+      "name": "veteran_longbowman_0",
+      "kind": "troop"
+    },
+    {
+      "id": 630,
+      "name": "veteran_maceman",
+      "kind": "troop"
+    },
+    {
+      "id": 765,
+      "name": "veteran_marauder",
+      "kind": "troop"
+    },
+    {
+      "id": 766,
+      "name": "veteran_pyromaniac",
+      "kind": "troop"
+    },
+    {
+      "id": 5,
+      "name": "veteran_saber_cleaver",
+      "kind": "troop"
+    },
+    {
+      "id": 940,
+      "name": "veteran_saber_cleaver_1",
+      "kind": "troop"
+    },
+    {
+      "id": 6,
+      "name": "veteran_slingshot",
+      "kind": "troop"
+    },
+    {
+      "id": 950,
+      "name": "veteran_slingshot_1",
+      "kind": "troop"
+    },
+    {
+      "id": 628,
+      "name": "veteran_spearman",
+      "kind": "troop"
+    },
+    {
+      "id": 724,
+      "name": "veteran_swordsman",
+      "kind": "troop"
+    },
+    {
+      "id": 309,
+      "name": "veteran_two_handed_swordsman_0",
+      "kind": "troop"
+    },
+    {
+      "id": 88,
+      "name": "vine_ladder",
+      "kind": "tool"
+    },
+    {
+      "id": 239,
+      "name": "viscounts_banner",
+      "kind": "tool"
+    },
+    {
+      "id": 661,
+      "name": "war_banner",
+      "kind": "tool"
+    },
+    {
+      "id": 737,
+      "name": "war_horn",
+      "kind": "tool"
+    },
+    {
+      "id": 401,
+      "name": "warwagon_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 337,
+      "name": "water_mine_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 756,
+      "name": "wedge_shield",
+      "kind": "tool"
+    },
+    {
+      "id": 53,
+      "name": "whalebone_ram",
+      "kind": "tool"
+    },
+    {
+      "id": 187,
+      "name": "wilderness_brawler",
+      "kind": "troop"
+    },
+    {
+      "id": 190,
+      "name": "wilderness_hunter",
+      "kind": "troop"
+    },
+    {
+      "id": 188,
+      "name": "wilderness_slingshot",
+      "kind": "troop"
+    },
+    {
+      "id": 189,
+      "name": "wilderness_warrior",
+      "kind": "troop"
+    },
+    {
+      "id": 720,
+      "name": "wolfhound",
+      "kind": "troop"
+    },
+    {
+      "id": 113,
+      "name": "wolverine_ram_113",
+      "kind": "tool"
+    },
+    {
+      "id": 564,
+      "name": "wolverine_ram_564",
+      "kind": "tool"
+    },
+    {
+      "id": 617,
+      "name": "wood_bundle",
+      "kind": "tool"
+    },
+    {
+      "id": 441,
+      "name": "wooden_hoarding_lvl_1",
+      "kind": "tool"
+    },
+    {
+      "id": 130,
+      "name": "yule_shield",
+      "kind": "tool"
+    }
+  ],
+  "kingdoms": [
+    {
+      "id": 0,
+      "name": "green_kingdom"
+    },
+    {
+      "id": 1,
+      "name": "sand_kingdom"
+    },
+    {
+      "id": 2,
+      "name": "ice_kingdom"
+    },
+    {
+      "id": 3,
+      "name": "fire_kingdom"
+    },
+    {
+      "id": 4,
+      "name": "storm_kingdom"
+    },
+    {
+      "id": 10,
+      "name": "berimond_kingdom"
+    }
+  ],
+  "attacks": [
+    {
+      "profile_id": "attack-df3c42e1373a40f998f5abe5b2f65b3d",
+      "name": "crossbowman",
+      "payload": [
+        {
+          "L": {
+            "T": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ],
+            "U": [
+              [
+                607,
+                50
+              ],
+              [
+                -1,
+                0
+              ]
+            ]
+          },
+          "M": {
+            "T": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ],
+            "U": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ]
+          },
+          "R": {
+            "T": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ],
+            "U": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ]
+          }
+        },
+        {
+          "L": {
+            "T": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ],
+            "U": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ]
+          },
+          "M": {
+            "T": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ],
+            "U": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ]
+          },
+          "R": {
+            "T": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ],
+            "U": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ]
+          }
+        },
+        {
+          "L": {
+            "T": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ],
+            "U": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ]
+          },
+          "M": {
+            "T": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ],
+            "U": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ]
+          },
+          "R": {
+            "T": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ],
+            "U": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ]
+          }
+        },
+        {
+          "L": {
+            "T": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ],
+            "U": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ]
+          },
+          "M": {
+            "T": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ],
+            "U": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ]
+          },
+          "R": {
+            "T": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ],
+            "U": [
+              [
+                -1,
+                0
+              ],
+              [
+                -1,
+                0
+              ]
+            ]
+          }
+        }
+      ],
+      "notes": ""
+    }
+  ],
+  "tasks": [
+    {
+      "task_id": "task-675621e332b34f039640266d97a97610",
+      "name": "ff",
+      "kind": "attack",
+      "kingdom_id": 1,
+      "profile_id": "attack-df3c42e1373a40f998f5abe5b2f65b3d",
+      "target_level_min": null,
+      "target_level_max": null,
+      "commander_count": 1,
+      "max_active": 1,
+      "priority": 10,
+      "enabled": true,
+      "tags": [
+        "user"
+      ],
+      "notes": ""
+    },
+    {
+      "task_id": "task-6ef21ff5b2fa46ca89f5d4b5a4e19843",
+      "name": "latest sands",
+      "kind": "attack",
+      "kingdom_id": 1,
+      "profile_id": "attack-df3c42e1373a40f998f5abe5b2f65b3d",
+      "target_level_min": 61,
+      "target_level_max": 61,
+      "commander_count": 1,
+      "max_active": 1,
+      "priority": 30,
+      "enabled": true,
+      "tags": [
+        "user",
+        "rbc"
+      ],
+      "notes": ""
+    },
+    {
+      "task_id": "task-25b98364030e41458d51f59f0268d44f",
+      "name": "sands 61",
+      "kind": "attack",
+      "kingdom_id": 1,
+      "profile_id": "attack-df3c42e1373a40f998f5abe5b2f65b3d",
+      "target_level_min": 61,
+      "target_level_max": 61,
+      "commander_count": 1,
+      "max_active": 1,
+      "priority": 30,
+      "enabled": true,
+      "tags": [
+        "user",
+        "rbc"
+      ],
+      "notes": ""
+    }
+  ],
+  "task_runtimes": [
+    {
+      "task_id": "task-25b98364030e41458d51f59f0268d44f",
+      "source_kingdom_id": 1,
+      "source_x": 593,
+      "source_y": 613,
+      "source_kind": "main_castle",
+      "target_kingdom_id": 1,
+      "target_x": 0,
+      "target_y": 0,
+      "travel_mode": "coin",
+      "hbw": 1007
+    },
+    {
+      "task_id": "task-675621e332b34f039640266d97a97610",
+      "source_kingdom_id": 1,
+      "source_x": 593,
+      "source_y": 613,
+      "source_kind": "coordinate",
+      "target_kingdom_id": 1,
+      "target_x": 3,
+      "target_y": 4,
+      "travel_mode": "coin",
+      "hbw": 1007
+    },
+    {
+      "task_id": "task-6ef21ff5b2fa46ca89f5d4b5a4e19843",
+      "source_kingdom_id": 1,
+      "source_x": 593,
+      "source_y": 613,
+      "source_kind": "main_castle",
+      "target_kingdom_id": 1,
+      "target_x": 0,
+      "target_y": 0,
+      "travel_mode": "coin",
+      "hbw": 1007
+    }
+  ],
+  "subscriptions": [
+    {
+      "task_id": "task-25b98364030e41458d51f59f0268d44f",
+      "target_kind": "rbc",
+      "filter": {
+        "algorithm": "advanced",
+        "kingdom_id": 1,
+        "level_max": 61,
+        "level_min": 61
+      }
+    },
+    {
+      "task_id": "task-675621e332b34f039640266d97a97610",
+      "target_kind": "coordinate",
+      "filter": {
+        "kingdom_id": 1,
+        "x": 3,
+        "y": 4
+      }
+    },
+    {
+      "task_id": "task-6ef21ff5b2fa46ca89f5d4b5a4e19843",
+      "target_kind": "rbc",
+      "filter": {
+        "algorithm": "advanced",
+        "kingdom_id": 1,
+        "level_max": 61,
+        "level_min": 61
+      }
+    }
+  ],
+  "modes": [
+    {
+      "mode_id": 4,
+      "name": "sand crossbow",
+      "task_ids": [
+        "task-25b98364030e41458d51f59f0268d44f"
+      ],
+      "allocations": [
+        {
+          "task_id": "task-25b98364030e41458d51f59f0268d44f",
+          "commander_count": 17
+        }
+      ],
+      "commander_count": 17
+    },
+    {
+      "mode_id": 3,
+      "name": "ss",
+      "task_ids": [
+        "task-6ef21ff5b2fa46ca89f5d4b5a4e19843"
+      ],
+      "allocations": [
+        {
+          "task_id": "task-6ef21ff5b2fa46ca89f5d4b5a4e19843",
+          "commander_count": 1
+        }
+      ],
+      "commander_count": 1
+    },
+    {
+      "mode_id": 1,
+      "name": "v sands",
+      "task_ids": [
+        "task-6ef21ff5b2fa46ca89f5d4b5a4e19843"
+      ],
+      "allocations": [
+        {
+          "task_id": "task-6ef21ff5b2fa46ca89f5d4b5a4e19843",
+          "commander_count": 1
+        }
+      ],
+      "commander_count": 1
+    },
+    {
+      "mode_id": 2,
+      "name": "ventrilo",
+      "task_ids": [
+        "task-6ef21ff5b2fa46ca89f5d4b5a4e19843"
+      ],
+      "allocations": [
+        {
+          "task_id": "task-6ef21ff5b2fa46ca89f5d4b5a4e19843",
+          "commander_count": 1
+        }
+      ],
+      "commander_count": 1
+    }
+  ],
+  "account_modes": [
+    {
+      "account_id": "ventrilo",
+      "mode_id": 4,
+      "running": true
+    }
+  ],
+  "recruitments": [],
+  "recruit_bots": [],
+  "account_recruit_bots": [],
+  "recruit_states": [],
+  "castles": [
+    {
+      "account_id": "ventrilo",
+      "castle_id": 16011862,
+      "kingdom_id": 0,
+      "area_type": 1,
+      "x": 509,
+      "y": 405,
+      "name": "._."
+    },
+    {
+      "account_id": "ventrilo",
+      "castle_id": 16673031,
+      "kingdom_id": 0,
+      "area_type": 4,
+      "x": 509,
+      "y": 407,
+      "name": "Outpost Ventril"
+    },
+    {
+      "account_id": "ventrilo",
+      "castle_id": 16632819,
+      "kingdom_id": 0,
+      "area_type": 4,
+      "x": 505,
+      "y": 407,
+      "name": "vrvr"
+    },
+    {
+      "account_id": "ventrilo",
+      "castle_id": 16366514,
+      "kingdom_id": 1,
+      "area_type": 12,
+      "x": 593,
+      "y": 613,
+      "name": "Castle Ventrilo"
+    },
+    {
+      "account_id": "ventrilo",
+      "castle_id": 16366513,
+      "kingdom_id": 2,
+      "area_type": 12,
+      "x": 654,
+      "y": 696,
+      "name": "Nui"
+    },
+    {
+      "account_id": "ventrilo",
+      "castle_id": 16681051,
+      "kingdom_id": 3,
+      "area_type": 12,
+      "x": 688,
+      "y": 582,
+      "name": "fire"
+    }
+  ]
+}
