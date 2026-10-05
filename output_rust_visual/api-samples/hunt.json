@@ -108,14 +108,14 @@
       "commander_number": null,
       "troop_count": null,
       "duration_s": 448,
-      "coin_loot": null,
-      "ruby_loot": null,
-      "status": "sent",
+      "coin_loot": 12000,
+      "ruby_loot": 280,
+      "status": "returning",
       "result_flag": null,
       "error_message": null,
       "sent_at_ms": 1791075043063,
       "landed_at_ms": null,
-      "result_at_ms": null
+      "result_at_ms": 1791075491063
     },
     {
       "account_id": "ventrilo",
@@ -130,14 +130,14 @@
       "commander_number": null,
       "troop_count": null,
       "duration_s": 392,
-      "coin_loot": null,
-      "ruby_loot": null,
-      "status": "sent",
+      "coin_loot": 3000,
+      "ruby_loot": 42,
+      "status": "returning",
       "result_flag": null,
       "error_message": null,
       "sent_at_ms": 1791075020095,
       "landed_at_ms": null,
-      "result_at_ms": null
+      "result_at_ms": 1791075412095
     },
     {
       "account_id": "ventrilo",

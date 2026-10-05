@@ -163,6 +163,7 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
         data_dir.join("empire.sqlite3").display()
     );
     let store = Store::open(&database_url).await?;
+    store.reconcile_stored_attack_returns().await?;
     let state = AppState {
         licence: licence::LicenceGate::new(store.clone())?,
         store,

@@ -352,8 +352,8 @@ pub fn returned_march_id(cat_payload: &Value) -> Option<i64> {
 /// Where a returning RBC march went, from a return packet: `(kingdom, x, y)`.
 ///
 /// Reads `A.M.SA`, not `TA`. On the return leg the areas are swapped, so `SA` is
-/// the attacked RBC and `TA` is the castle it set out from. The area type must be
-/// the RBC type, which is what rejects a castle-to-castle movement.
+/// the attacked NPC and `TA` is the castle it set out from. Accept RBCs and
+/// fortresses; reject castle-to-castle movements.
 ///
 /// The `cra` acknowledgement's `AAM.M.MID` does **not** match the `A.M.MID` the
 /// return carries — observed live, every time. `bot/rbc_proxy_listener.py` says so
@@ -361,7 +361,7 @@ pub fn returned_march_id(cat_payload: &Value) -> Option<i64> {
 /// [`crate::store::Store::finish_march_by_target`] implements.
 pub fn return_target(cat_payload: &Value) -> Option<(i64, i64, i64)> {
     let row = cat_payload.pointer("/A/M/SA")?.as_array()?;
-    if row.first()?.as_i64()? != RBC_AREA_TYPE {
+    if !matches!(row.first()?.as_i64()?, RBC_AREA_TYPE | 11) {
         return None;
     }
     let kingdom_id = cat_payload
@@ -371,9 +371,14 @@ pub fn return_target(cat_payload: &Value) -> Option<(i64, i64, i64)> {
     Some((kingdom_id, row.get(1)?.as_i64()?, row.get(2)?.as_i64()?))
 }
 
-/// Return-trip duration from a return packet (`cat`), i.e. `A.M.TT`.
+/// Remaining return trip: total travel time minus elapsed travel time.
 pub fn return_seconds_from_return(cat_payload: &Value) -> Option<i64> {
-    cat_payload.pointer("/A/M/TT").and_then(Value::as_i64)
+    let total = cat_payload.pointer("/A/M/TT")?.as_i64()?;
+    let elapsed = cat_payload
+        .pointer("/A/M/PT")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    Some(total.saturating_sub(elapsed).max(0))
 }
 
 /// How a task's attack is shaped, so the payload can be built without the task
@@ -855,6 +860,24 @@ mod tests {
         let back = json!({"A": {"S": 0, "UM": {"L": {"ID": 17}}}});
         assert_eq!(returned_lord_id(&back), Some(17));
         assert_eq!(returned_lord_id(&json!({"A": {}})), None);
+    }
+
+    #[test]
+    fn fortress_returns_use_the_boss_source_and_remaining_travel_time() {
+        let back = json!({"A": {"M": {"KID":1,"TT":205,"PT":5,
+            "SA":[11,848,497,-1,45,86127,15170153,1],"TA":[12,593,613,16366514]},
+            "UM":{"L":{"ID":16}}}});
+        assert_eq!(return_target(&back), Some((1, 848, 497)));
+        assert_eq!(return_seconds_from_return(&back), Some(200));
+        // `UM` sits under `A`, not at the top level. The return repair joins a
+        // stored result to its ledger row on this lord, so if the path drifts the
+        // repair quietly matches nothing and every attack stays "sent".
+        assert_eq!(returned_lord_id(&back), Some(16));
+        assert_eq!(
+            back.pointer("/UM/L/ID"),
+            None,
+            "the top-level path is the one that silently yields nothing"
+        );
     }
 
     #[test]

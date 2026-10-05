@@ -12,6 +12,7 @@ use super::{Store, canonical_account_id};
 /// Commander availability states, matching the vocabulary the Python bot used.
 pub const COMMANDER_AVAILABLE: &str = "available";
 pub const COMMANDER_OUTBOUND: &str = "outbound";
+pub const COMMANDER_RETURNING: &str = "returning";
 
 /// March states. `sent` means the server acknowledged with a march id but the
 /// troops have not landed; `returning` means they are on the way back.
@@ -273,6 +274,116 @@ impl Store {
         Ok(())
     }
 
+    /// Apply a return once, by the outbound march's target and commander.
+    /// A delayed/duplicate result cannot release a commander on a newer march.
+    pub async fn apply_attack_return(
+        &self,
+        account_id: &str,
+        payload: &serde_json::Value,
+        observed_at_ms: i64,
+        rest_ms: i64,
+    ) -> Result<bool, sqlx::Error> {
+        use crate::hunt;
+        let (Some((kid, x, y)), Some(lid)) = (
+            hunt::return_target(payload),
+            hunt::returned_lord_id(payload),
+        ) else {
+            return Ok(false);
+        };
+        let account_id = canonical_account_id(account_id);
+        let matched: Option<i64> = sqlx::query_scalar(
+            "SELECT march_id FROM attack_ledger WHERE account_id = ? AND kingdom_id = ?
+             AND x = ? AND y = ? AND lord_id = ? AND status = 'sent' AND sent_at_ms <= ?
+             ORDER BY sent_at_ms DESC LIMIT 1",
+        )
+        .bind(&account_id)
+        .bind(kid)
+        .bind(x)
+        .bind(y)
+        .bind(lid)
+        .bind(observed_at_ms)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(march_id) = matched else {
+            return Ok(false);
+        };
+        let seconds = hunt::return_seconds_from_return(payload);
+        let loot = hunt::loot_from_return(payload);
+        if self
+            .finish_march_by_target(
+                &account_id,
+                kid,
+                x,
+                y,
+                lid,
+                seconds,
+                loot.map(|v| v.0),
+                loot.map(|v| v.1),
+                hunt::result_flag_from_return(payload),
+                observed_at_ms,
+            )
+            .await?
+            == 0
+        {
+            return Ok(false);
+        }
+        if let Some(seconds) = seconds {
+            sqlx::query(
+                "UPDATE commander_state SET status = ?, available_after_ms = ?, updated_at_ms = ?
+                         WHERE account_id = ? AND lord_id = ? AND march_id = ?",
+            )
+            .bind(COMMANDER_RETURNING)
+            .bind(
+                observed_at_ms
+                    .saturating_add(seconds.saturating_mul(1000))
+                    .saturating_add(rest_ms),
+            )
+            .bind(observed_at_ms)
+            .bind(&account_id)
+            .bind(lid)
+            .bind(march_id)
+            .execute(&self.pool)
+            .await?;
+        }
+        self.record_fortress_result(&account_id, kid, x, y, loot.map(|v| v.1), observed_at_ms)
+            .await?;
+        Ok(true)
+    }
+
+    /// Repair results retained by older builds that ignored type-11 CAT rows.
+    /// Ownership comes from the returning army's home castle, not the UI account.
+    pub async fn reconcile_stored_attack_returns(&self) -> Result<u64, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT n.payload_json, n.observed_at_ms, c.account_id
+            FROM network_message n JOIN owned_castle c
+              ON c.castle_id = json_extract(n.payload_json, '$.A.M.TA[3]')
+             AND c.kingdom_id = json_extract(n.payload_json, '$.A.M.KID')
+            WHERE n.command = 'cat' AND json_extract(n.payload_json, '$.A.M.TA[0]') IN (1,4,12)
+            ORDER BY n.observed_at_ms ASC LIMIT 5000",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut repaired = 0;
+        for row in rows {
+            let Ok(payload) = serde_json::from_str::<serde_json::Value>(row.get("payload_json"))
+            else {
+                continue;
+            };
+            if self
+                .apply_attack_return(
+                    row.get("account_id"),
+                    &payload,
+                    row.get("observed_at_ms"),
+                    10_000,
+                )
+                .await?
+            {
+                repaired += 1;
+            }
+        }
+        Ok(repaired)
+    }
+
     pub async fn commander_states(
         &self,
         account_id: &str,
@@ -316,10 +427,6 @@ impl Store {
         Ok(rows.into_iter().map(|row| row.get("lord_id")).collect())
     }
 }
-
-/// A march that has not come back within this long is treated as lost rather
-/// than in flight, so a crash mid-run does not leave the count climbing forever.
-pub const STALE_MARCH_MILLIS: i64 = 60 * 60 * 1_000;
 
 /// How recently a run must have checked in for it to count as alive.
 pub const HEARTBEAT_FRESH_MILLIS: i64 = 90_000;
@@ -643,15 +750,26 @@ impl Store {
         let totals = sqlx::query(
             "SELECT COUNT(*) marches,
                     COALESCE(SUM(status = ?), 0) returned,
-                    COALESCE(SUM(status = ? AND sent_at_ms > ?), 0) in_flight,
                     COALESCE(SUM(coin_loot), 0) coins,
                     COALESCE(SUM(ruby_loot), 0) rubies
              FROM attack_ledger
              WHERE (? IS NULL OR account_id = ?)",
         )
         .bind(MARCH_RETURNING)
-        .bind(MARCH_SENT)
-        .bind(now_ms() - STALE_MARCH_MILLIS)
+        .bind(account_id.as_deref())
+        .bind(account_id.as_deref())
+        .fetch_one(&self.pool)
+        .await?;
+        // A commander has one durable availability record, regardless of how
+        // many historical attacks are still missing a result. Both legs (and
+        // the short home rest) keep that commander unavailable. Disconnecting
+        // the socket does not teleport the army home.
+        let in_flight: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM commander_state
+             WHERE status IN ('outbound', 'returning') AND available_after_ms > ?
+               AND (? IS NULL OR account_id = ?)",
+        )
+        .bind(now_ms())
         .bind(account_id.as_deref())
         .bind(account_id.as_deref())
         .fetch_one(&self.pool)
@@ -699,7 +817,7 @@ impl Store {
                 .or_else(|| account_row.map(|row| row.get("account_id"))),
             marches: totals.get("marches"),
             returned: totals.get("returned"),
-            in_flight: if active { totals.get("in_flight") } else { 0 },
+            in_flight,
             coins: totals.get("coins"),
             rubies: totals.get("rubies"),
             active,

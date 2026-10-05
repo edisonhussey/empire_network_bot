@@ -1800,12 +1800,63 @@ async fn dashboard_and_hunt_summaries_are_scoped_to_the_selected_account() {
 }
 
 #[tokio::test]
-async fn a_march_that_never_comes_back_stops_counting_as_in_flight() {
+async fn fortress_return_holds_commander_until_home_and_duplicate_cannot_release_new_trip() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    let outbound = march(Some("fortress"), 9001, 7);
+    store.record_march(&outbound).await.unwrap();
+    let mut commander = CommanderState {
+        account_id: "ventrilo".into(),
+        lord_id: 7,
+        status: "outbound".into(),
+        available_after_ms: NOW + 120_000,
+        march_id: Some(9001),
+        target_key: Some("1:600:610".into()),
+    };
+    store.set_commander_state(&commander, NOW).await.unwrap();
+    let packet = json!({"A":{"M":{"KID":1,"SA":[11,600,610],"TA":[12,593,613],"TT":205,"PT":5},
+        "UM":{"L":{"ID":7}},"G":[["C2",280]],"S":1}});
+    assert!(
+        store
+            .apply_attack_return("ventrilo", &packet, NOW + 100_000, 7000)
+            .await
+            .unwrap()
+    );
+    let states = store.commander_states("ventrilo").await.unwrap();
+    assert_eq!(states[0].status, "returning");
+    assert_eq!(states[0].available_after_ms, NOW + 307_000);
+    let rows = store.recent_marches("ventrilo", 5).await.unwrap();
+    assert_eq!(rows[0].status, "returning");
+    assert_eq!(rows[0].ruby_loot, Some(280));
+    commander.march_id = Some(9002);
+    commander.available_after_ms = NOW + 900_000;
+    store
+        .set_commander_state(&commander, NOW + 400_000)
+        .await
+        .unwrap();
+    assert!(
+        !store
+            .apply_attack_return("ventrilo", &packet, NOW + 100_000, 7000)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store.commander_states("ventrilo").await.unwrap()[0].march_id,
+        Some(9002)
+    );
+    assert_eq!(
+        store.commander_states("ventrilo").await.unwrap()[0].available_after_ms,
+        NOW + 900_000
+    );
+}
+
+#[tokio::test]
+async fn in_flight_counts_commanders_on_both_legs_even_when_disconnected() {
     let store = Store::open("sqlite::memory:").await.unwrap();
     seed_account(&store, "ventrilo").await;
 
-    // Staleness is measured against the real clock, not the fixed `NOW`, so both
-    // rows are placed relative to it: one just sent, one long past the cutoff.
+    // Availability is measured against the real clock, not the fixed `NOW`, so
+    // the rows are placed relative to it.
     let real_now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -1815,9 +1866,33 @@ async fn a_march_that_never_comes_back_stops_counting_as_in_flight() {
     recent.sent_at_ms = real_now - 60_000;
     store.record_march(&recent).await.unwrap();
 
+    // An old ledger row whose result never arrived. It must not be counted:
+    // "in flight" is decided by the commander's own record, so a lost result
+    // cannot leave the number climbing, and it cannot push the count past the
+    // number of commanders the run actually holds.
     let mut abandoned = march(Some("sand_kunai"), 89, 26);
-    abandoned.sent_at_ms = real_now - super::ledger::STALE_MARCH_MILLIS - 1;
+    abandoned.sent_at_ms = real_now - 2 * 60 * 60 * 1_000;
     store.record_march(&abandoned).await.unwrap();
+    for (lid, status, available_after_ms) in [
+        (25, "outbound", real_now + 60_000),
+        (26, "returning", real_now + 30_000),
+        (27, "returning", real_now - 1),
+    ] {
+        store
+            .set_commander_state(
+                &CommanderState {
+                    account_id: "ventrilo".into(),
+                    lord_id: lid,
+                    status: status.into(),
+                    available_after_ms,
+                    march_id: None,
+                    target_key: None,
+                },
+                real_now,
+            )
+            .await
+            .unwrap();
+    }
 
     // With a run checking in, only the recent march is in the air.
     store
@@ -1828,12 +1903,18 @@ async fn a_march_that_never_comes_back_stops_counting_as_in_flight() {
     assert!(live.active);
     assert_eq!(live.marches, 2);
     assert_eq!(
-        live.in_flight, 1,
-        "an abandoned march must not be reported as still flying"
+        live.in_flight, 2,
+        "count outbound and returning commanders, excluding those already home"
+    );
+    // The count can never exceed the commanders the account owns. That is the
+    // property that was violated when this counted ledger rows: 15 attacks from
+    // 10 commanders reported 14 in flight.
+    assert!(
+        live.in_flight <= store.commander_states("ventrilo").await.unwrap().len() as i64,
+        "in flight must never exceed the commander count"
     );
 
-    // With no run alive, nothing can be in flight at all: the marches were left
-    // behind by a session that is no longer there to receive them.
+    // Closing a connection does not bring an army home.
     store
         .set_app_state(
             HUNT_HEARTBEAT_KEY,
@@ -1844,7 +1925,7 @@ async fn a_march_that_never_comes_back_stops_counting_as_in_flight() {
         .unwrap();
     let stopped = store.hunt_summary(5).await.unwrap();
     assert!(!stopped.active, "a stale heartbeat means no run is alive");
-    assert_eq!(stopped.in_flight, 0);
+    assert_eq!(stopped.in_flight, 2);
     assert_eq!(stopped.marches, 2, "history is still reported when stopped");
 }
 

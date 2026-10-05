@@ -2446,51 +2446,23 @@ impl Automation {
                 self.detail = format!("Attack {march_id} acknowledged; scheduling next target");
             }
             "cat" => {
-                let (Some((kingdom_id, x, y)), Some(lord_id)) = (
+                let (Some(_), Some(lord_id)) = (
                     hunt::return_target(&packet.payload),
                     hunt::returned_lord_id(&packet.payload),
                 ) else {
                     return;
                 };
-                let loot = hunt::loot_from_return(&packet.payload);
                 let return_seconds = hunt::return_seconds_from_return(&packet.payload);
-                let _ = store
-                    .finish_march_by_target(
-                        account_id,
-                        kingdom_id,
-                        x,
-                        y,
-                        lord_id,
-                        return_seconds,
-                        loot.map(|value| value.0),
-                        loot.map(|value| value.1),
-                        hunt::result_flag_from_return(&packet.payload),
-                        now,
-                    )
+                let rest_ms = (Waits::commander_return_hold(&mut self.rng) * 1_000.0) as i64;
+                let applied = store
+                    .apply_attack_return(account_id, &packet.payload, now, rest_ms)
                     .await;
-                let _ = store
-                    .record_fortress_result(
-                        account_id,
-                        kingdom_id,
-                        x,
-                        y,
-                        loot.map(|value| value.1),
-                        now,
-                    )
-                    .await;
-                if let Some(seconds) = return_seconds {
-                    let available_after_ms = now
-                        + ((seconds.max(0) as f64 + Waits::commander_return_hold(&mut self.rng))
-                            * 1_000.0) as i64;
-                    let state = CommanderState {
-                        account_id: account_id.to_owned(),
-                        lord_id,
-                        status: COMMANDER_OUTBOUND.to_owned(),
-                        available_after_ms,
-                        march_id: None,
-                        target_key: Some(format!("{kingdom_id}:{x}:{y}")),
-                    };
-                    let _ = store.set_commander_state(&state, now).await;
+                if let Err(error) = &applied {
+                    warn!(%error, %account_id, "attack return persistence failed");
+                }
+                if matches!(applied, Ok(true))
+                    && let Some(seconds) = return_seconds
+                {
                     self.detail =
                         format!("Commander {lord_id} returning for about {seconds}s before reuse");
                 }

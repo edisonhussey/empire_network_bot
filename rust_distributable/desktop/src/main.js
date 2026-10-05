@@ -970,43 +970,6 @@ function dashboardStat(value, label) {
 /// counts down to a real time rather than an estimate. While the map walk is
 /// still running it says so, because "none yet" and "still looking" are
 /// different things to be told.
-/// The fortress console: the next few fortresses in the order the server says
-/// they open, with the coordinates the client shows.
-///
-/// Fortress coordinates never change once learned, so this is a schedule rather
-/// than a discovery feed — the only thing that moves between polls is the
-/// countdown. Rows already past their opening time are the ones a run can act on
-/// right now, so only those carry the status colour.
-function renderFortressConsole(summary) {
-  const list = $("#dashboard-fortresses");
-  list.replaceChildren();
-  const rows = summary?.fortress_upcoming || [];
-  const note = $("#fortress-console-note");
-  if (note) note.textContent = rows.length ? `${rows.length} shown` : "By the server's cooldown";
-  if (!rows.length) {
-    list.append(element("p", "empty-copy", summary?.fortress_probes_pending
-      ? "Still mapping — no fortress coordinates yet."
-      : summary?.fortress_count
-        ? "No fortress is inside its one-minute claim window."
-        : "No fortress observed yet."));
-    return;
-  }
-  const now = Date.now();
-  for (const row of rows) {
-    const line = element("div", "fortress-row");
-    const wait = row.available_at_ms - now;
-    const when = element("span", wait <= 0 ? "fortress-when due" : "fortress-when",
-      wait <= 0 ? "Ready now" : `in ${humanWait(wait)}`);
-    line.append(
-      element("b", "", `${kingdomLabel(row.kingdom_id)} · ${row.x},${row.y}`),
-      element("small", "", `level ${row.level}`),
-      when,
-    );
-    line.title = `Open ${new Date(row.available_at_ms).toLocaleString()}`;
-    list.append(line);
-  }
-}
-
 function nextFortressSummary(summary) {
   const count = summary?.fortress_count || 0;
   const pending = summary?.fortress_probes_pending || 0;
@@ -1134,7 +1097,6 @@ async function refreshDashboard(knownDirect = null, force = false) {
     $("#rate-coins").textContent = compactNumber(summary.coins_last_hour);
     $("#chart-updated").textContent = `Updated ${new Date(summary.generated_at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
     renderRubyChart(summary.ruby_series);
-    renderFortressConsole(summary);
 
     const dashboardAccounts = activeAccountId ? connectedAccounts.filter((account) => account.account_id.toLowerCase() === activeAccountId.toLowerCase()) : connectedAccounts.slice(0, 1);
     const totals = dashboardAccounts.reduce((value, account) => {
@@ -1169,12 +1131,30 @@ async function refreshDashboard(knownDirect = null, force = false) {
       setup.append(line);
     }
 
-    const events = (hunt.recent || []).map((march) => ({ at_ms: march.result_at_ms || march.sent_at_ms, kind: "attack", march }));
+    const events = (hunt.recent || []).flatMap((march) => {
+      const result = [{ at_ms: march.sent_at_ms, kind: "attack", march }];
+      if (march.result_at_ms) {
+        result.push({ at_ms: march.result_at_ms, kind: "return", march });
+        const homeAt = march.result_at_ms + (march.duration_s ?? 0) * 1000;
+        if (march.duration_s != null && homeAt <= Date.now()) result.push({ at_ms: homeAt, kind: "home", march });
+      }
+      return result;
+    });
     events.push(...(summary.scan_activity || []).map((scan) => ({ at_ms: scan.at_ms, kind: "scan", scan })));
     if (direct.scan_total && direct.scan_sent + direct.scan_cached < direct.scan_total) events.push({ at_ms: Date.now(), kind: "scanning", direct });
     events.sort((left, right) => right.at_ms - left.at_ms);
-    const activity = $("#dashboard-activity"); activity.replaceChildren();
-    for (const event of events) {
+    const activity = $("#dashboard-activity");
+    const previousScroll = activity.scrollTop;
+    activity.replaceChildren();
+    const next = (summary.fortress_upcoming || []).find((entry) => entry.available_at_ms >= Date.now() - 60_000);
+    if (next) {
+      const line = element("div", "activity-row");
+      const detail = element("div", "activity-detail");
+      detail.append(element("b", "", "Next fortress"), element("small", "", `${kingdomLabel(next.kingdom_id)} · ${next.x}:${next.y}`));
+      line.append(element("time", "", "Next"), detail, element("span", "activity-tag", next.available_at_ms <= Date.now() ? "Ready now" : `in ${humanWait(next.available_at_ms - Date.now())}`));
+      activity.append(line);
+    }
+    for (const event of events.slice(0, 80)) {
       const row = element("div", "activity-row");
       const time = document.createElement("time"); time.textContent = new Date(event.at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       const detail = element("div", "activity-detail");
@@ -1189,14 +1169,16 @@ async function refreshDashboard(knownDirect = null, force = false) {
         // Named rather than internal: which task ran, the attack it uses, and
         // the kingdom it landed in, instead of a task id and "K1".
         const task = library.tasks.find((value) => value.task_id === march.task_id);
-        const attack = task ? library.attacks.find((value) => value.profile_id === task.profile_id) : null;
         const where = [kingdomLabel(march.kingdom_id), `${march.x}:${march.y}`, march.level == null ? null : `level ${march.level}`].filter(Boolean).join(" · ");
-        detail.append(element("b", "", task?.name || "Attack"), element("small", "", `${attack?.name || "Unknown attack"} · ${where}`));
-        row.append(time, detail, element("span", "activity-tag", humanize(march.status)));
+        const title = event.kind === "home" ? "Commander home (estimated)" : event.kind === "return" ? "Attack resolved · returning home" : "Attack sent";
+        const tag = event.kind === "home" ? "Home" : event.kind === "return" ? `${compactNumber(march.ruby_loot || 0)} rubies` : "Sent";
+        detail.append(element("b", "", title), element("small", "", `${task?.name || "Attack"} · ${where}`));
+        row.append(time, detail, element("span", "activity-tag", tag));
       }
       activity.append(row);
     }
-    if (!events.length) activity.append(element("p", "empty-copy", "No recorded activity yet."));
+    if (!events.length && !next) activity.append(element("p", "empty-copy", "No recorded activity yet."));
+    activity.scrollTop = previousScroll;
   } catch (error) {
     $("#dashboard-state").textContent = "Statistics unavailable";
     $("#dashboard-subtitle").textContent = error.message;

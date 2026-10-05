@@ -377,6 +377,7 @@ legend { padding: 0 16px 0 0; }
 .scan-coverage i { display: block; height: 100%; background: var(--ink); }
 .scan-tag { display: none; }
 .scan-row.read-only .scan-radius input { display: none; }
+.control-scan-status { display: block; margin-top: 8px; color: #2463c7; font-size: 12px; font-weight: 650; }
 .scan-card .form-actions input { width: 240px; }
 
 /* ---- Preset management ----------------------------------------------- */
