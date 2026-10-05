@@ -199,6 +199,9 @@ header { padding-bottom: 28px; border-bottom: 1px solid var(--line); margin-bott
 .assignment-line:first-child { padding-top: 0; }
 .assignment-line:last-child { border-bottom: 0; }
 .assignment-line b { font-weight: 400; color: var(--ink); }
+/* The fortress window is the one row that can be acted on right now, so it is
+   the only place the status colour appears on the dashboard. */
+.assignment-line.due b { color: var(--ok); }
 .hourly-rates { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 24px; margin-bottom: 26px; }
 .hourly-rates > div { display: grid; gap: 2px; }
 .hourly-rates b { font-size: 26px; }
@@ -353,14 +356,16 @@ legend { padding: 0 16px 0 0; }
 .scan-bar { height: 3px; background: var(--line); }
 .scan-bar i { display: block; height: 100%; width: 0; background: var(--ink); transition: width .3s; }
 .scan-castles { display: grid; }
+.scan-account { font-size: 12px; color: var(--ink-3); padding-bottom: 10px; border-bottom: 1px solid var(--line); }
 .scan-row { display: grid; grid-template-columns: minmax(0, 1fr) 132px; gap: 6px 20px; align-items: center; padding: 16px 0; border-bottom: 1px solid var(--line); }
 .scan-row > div { display: grid; gap: 5px; min-width: 0; }
 .scan-row b { font-weight: 400; }
 .scan-radius { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
-.scan-radius input { width: 74px; min-height: 34px; padding: 4px 10px; }
+.scan-radius input[type="number"] { width: 74px; min-height: 34px; padding: 4px 10px; }
+.scan-radius input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; }
 .scan-coverage { height: 3px; background: var(--line); }
 .scan-coverage i { display: block; height: 100%; background: var(--ink); }
-.scan-tag { color: var(--ink-3); font-size: 12px; }
+.scan-tag { display: none; }
 .scan-row.read-only .scan-radius input { display: none; }
 .scan-card .form-actions input { width: 240px; }
 

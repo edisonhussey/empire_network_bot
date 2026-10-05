@@ -1,0 +1,12 @@
+the distributables in release. 
+
+must always reuire a valid  0 session token, and be account dependnt. as outlined. 
+
+and start from a fresh sqlite database, find a way to clean up previous databases, 
+
+right now dealing with 1 acccount only. until we perfect that. so figure out a way to delete old databases, 
+
+to test for user 
+
+
+also the empty graph on dashboard is gllitchy when 0 , so fix that the x axis labels are clusted on 0, 

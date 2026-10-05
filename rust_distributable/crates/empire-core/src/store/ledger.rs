@@ -413,6 +413,14 @@ pub struct DashboardSummary {
     pub coins_last_hour: i64,
     pub ruby_series: Vec<DashboardPoint>,
     pub scan_activity: Vec<ScanActivity>,
+    /// When the next fortress opens, if any has been observed. Fortresses are the
+    /// one target the server gives a cooldown for, so this is a countdown to a
+    /// real time rather than an estimate.
+    pub fortress_next_available_at_ms: Option<i64>,
+    pub fortress_count: i64,
+    /// Discovery probes still outstanding. The map walk is long, so the dashboard
+    /// can say it is still looking instead of implying there are none.
+    pub fortress_probes_pending: i64,
 }
 
 impl Store {
@@ -521,6 +529,39 @@ impl Store {
         })
         .collect();
 
+        // Fortress cooldowns come from the server, so the dashboard can count
+        // down to the next window instead of estimating one. A kingdom with no
+        // observation yet reports nothing rather than zero.
+        //
+        // Scoped to kingdoms that actually have a fortress task: the runner can
+        // only walk and attack tasked kingdoms, so an observation elsewhere (an
+        // Ice fortress while only Sands is tasked) must never be presented as
+        // the next target.
+        let fortress = sqlx::query(
+            "SELECT COUNT(*) observed, MIN(available_at_ms) soonest
+             FROM fortress_target
+             WHERE (? IS NULL OR account_id = ?)
+               AND kingdom_id IN (SELECT t.kingdom_id FROM task_definition t
+                                  JOIN task_subscription s ON s.task_id = t.task_id
+                                  WHERE s.target_kind = 'fortress' AND t.enabled = 1)",
+        )
+        .bind(account_id.as_deref())
+        .bind(account_id.as_deref())
+        .fetch_one(&self.pool)
+        .await?;
+        let fortress_probes_pending: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(scan.blocks_total - scan.blocks_done), 0)
+             FROM fortress_scan_state scan
+             WHERE (? IS NULL OR scan.account_id = ?)
+               AND scan.kingdom_id IN (SELECT t.kingdom_id FROM task_definition t
+                                  JOIN task_subscription s ON s.task_id = t.task_id
+                                  WHERE s.target_kind = 'fortress' AND t.enabled = 1)",
+        )
+        .bind(account_id.as_deref())
+        .bind(account_id.as_deref())
+        .fetch_one(&self.pool)
+        .await?;
+
         Ok(DashboardSummary {
             generated_at_ms: now,
             attacks_last_hour: hourly.get("attacks"),
@@ -529,6 +570,9 @@ impl Store {
             coins_last_hour: hourly.get("coins"),
             ruby_series,
             scan_activity,
+            fortress_next_available_at_ms: fortress.get("soonest"),
+            fortress_count: fortress.get("observed"),
+            fortress_probes_pending,
         })
     }
 

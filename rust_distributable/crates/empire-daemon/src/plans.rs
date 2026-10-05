@@ -429,7 +429,13 @@ pub async fn create_task(
                 target_level_max: level_max,
                 commander_count: 1,
                 max_active: Some(1),
-                priority: draft.priority.scheduler_value(),
+                // Fortress work outranks routine farming by construction: the
+                // attack window is only one minute wide.
+                priority: if draft.destination.is_fortress() {
+                    empire_core::planning::Priority::ExtraHigh.scheduler_value()
+                } else {
+                    draft.priority.scheduler_value()
+                },
                 enabled: true,
                 tags: vec!["user".to_owned(), target_kind.to_owned()],
                 notes: String::new(),

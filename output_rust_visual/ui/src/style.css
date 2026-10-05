@@ -126,6 +126,7 @@ nav button.active::before { content: ""; position: absolute; left: 0; top: 6px; 
 .licence-button:hover:not(:disabled) { background: transparent; color: var(--ink); }
 .licence-button span { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-2); }
 .licence-button b { font-weight: 400; color: var(--ink-2); }
+.plan-badge { display: block; width: max-content; margin-top: 5px; color: var(--ok); font: 500 10px/1 var(--sans); letter-spacing: .16em; text-transform: uppercase; }
 /* The two indicators that matter, always visible and always accurate: whether a
    socket is open, and whether a bot is actually driving it. */
 .link-state { display: grid; gap: 8px; }
@@ -155,6 +156,8 @@ header { padding-bottom: 28px; border-bottom: 1px solid var(--line); margin-bott
 .welcome-actions, .row-actions, .form-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .form-actions { justify-content: flex-end; margin-top: 12px; }
 .form-actions output { margin-right: auto; }
+.form-actions.save-left { justify-content: flex-start; }
+.form-actions.save-left output { margin-right: 0; }
 .readiness { display: grid; gap: 4px; text-align: right; }
 .readiness span { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-3); }
 .readiness strong { font-weight: 400; }
@@ -196,6 +199,9 @@ header { padding-bottom: 28px; border-bottom: 1px solid var(--line); margin-bott
 .assignment-line:first-child { padding-top: 0; }
 .assignment-line:last-child { border-bottom: 0; }
 .assignment-line b { font-weight: 400; color: var(--ink); }
+/* The fortress window is the one row that can be acted on right now, so it is
+   the only place the status colour appears on the dashboard. */
+.assignment-line.due b { color: var(--ok); }
 .hourly-rates { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 24px; margin-bottom: 26px; }
 .hourly-rates > div { display: grid; gap: 2px; }
 .hourly-rates b { font-size: 26px; }
@@ -205,7 +211,7 @@ header { padding-bottom: 28px; border-bottom: 1px solid var(--line); margin-bott
 .ruby-chart .grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 5; }
 .ruby-chart .line { fill: none; stroke: var(--ink); stroke-width: 1.3; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
 .ruby-chart text { fill: var(--ink-3); font-size: 15px; font-family: var(--sans); }
-.activity-list { max-height: 320px; overflow: auto; }
+.activity-list { height: 210px; overflow: auto; }
 .activity-row { display: grid; grid-template-columns: 64px 1fr auto; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
 .activity-detail { display: grid; gap: 2px; min-width: 0; }
 .activity-row time { color: var(--ink-3); font-variant-numeric: tabular-nums; }
@@ -330,9 +336,11 @@ legend { padding: 0 16px 0 0; }
 .kingdom-health .list-label { text-transform: none; letter-spacing: .02em; font-size: 14px; color: var(--ink); }
 .kingdom-health-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--line); color: var(--ink-2); }
 .kingdom-health-row b { font-weight: 400; color: var(--ink); }
-.account-connection-control { display: grid; grid-template-columns: 1fr 240px; gap: 14px 18px; align-items: center; }
+.account-connection-control { display: grid; grid-template-columns: 1fr; gap: 14px 18px; align-items: center; }
 .account-connection-control > .list-label, .account-mode-control > .list-label { grid-column: 1 / -1; text-transform: none; letter-spacing: .02em; font-size: 14px; color: var(--ink); }
 .connection-scan { grid-column: 1 / -1; display: flex; gap: 12px; }
+.control-state { margin-left: auto; color: var(--ink-3); align-self: center; }
+.control-state.live { color: var(--ok); }
 .connection-result { grid-column: 1 / -1; }
 .account-mode-control { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px; align-items: start; }
 .account-mode-control > label { text-transform: none; letter-spacing: .01em; font-size: 13px; color: var(--ink-3); }
@@ -348,6 +356,7 @@ legend { padding: 0 16px 0 0; }
 .scan-bar { height: 3px; background: var(--line); }
 .scan-bar i { display: block; height: 100%; width: 0; background: var(--ink); transition: width .3s; }
 .scan-castles { display: grid; }
+.scan-account { font-size: 12px; color: var(--ink-3); padding-bottom: 10px; border-bottom: 1px solid var(--line); }
 .scan-row { display: grid; grid-template-columns: minmax(0, 1fr) 132px; gap: 6px 20px; align-items: center; padding: 16px 0; border-bottom: 1px solid var(--line); }
 .scan-row > div { display: grid; gap: 5px; min-width: 0; }
 .scan-row b { font-weight: 400; }
@@ -358,6 +367,14 @@ legend { padding: 0 16px 0 0; }
 .scan-tag { color: var(--ink-3); font-size: 12px; }
 .scan-row.read-only .scan-radius input { display: none; }
 .scan-card .form-actions input { width: 240px; }
+
+/* ---- Preset management ----------------------------------------------- */
+.preset-import { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(360px, 2fr); gap: 28px 40px; border-top: 1px solid var(--line); padding-top: 28px !important; }
+.preset-import h2, .preset-group h2 { font-family: var(--serif); font-size: 22px; color: var(--ink); margin-top: 8px; }
+.preset-import textarea { min-height: 150px; }
+.preset-import .form-actions { grid-column: 2; margin-top: 0; }
+.preset-groups { display: grid; grid-template-columns: 1fr 1fr; gap: 42px 48px; }
+.preset-group { border-top: 1px solid var(--line); padding-top: 26px !important; }
 
 /* ---- Logs ------------------------------------------------------------- */
 .log-card .card-title { align-items: center; }
@@ -391,5 +408,21 @@ dialog[open] { display: grid; gap: 12px; }
   .health-panel, .setup-panel, .ruby-chart-panel, .activity-panel { grid-area: auto; }
   .progress-card { padding-left: 0 !important; border-left: 0; margin-top: 40px; }
   .connect-card { padding-right: 0 !important; }
+  .preset-import, .preset-groups { grid-template-columns: 1fr; }
+  .preset-import .form-actions { grid-column: 1; }
+}
+
+/* Compact desktop composition: the complete dashboard fits comfortably in a
+   1920×1080 window while individual activity and log widgets retain scrolling. */
+@media (min-width: 1200px) and (min-height: 760px) {
+  main { padding-top: 38px; padding-bottom: 38px; }
+  header { margin-bottom: 26px; padding-bottom: 18px; }
+  .view { gap: 30px; }
+  .dashboard-status-card h2 { font-size: 30px; }
+  .metric-card strong { font-size: 36px; }
+  .dashboard-grid { row-gap: 28px; }
+  .dashboard-panel { padding-top: 22px !important; }
+  .ruby-chart svg { max-height: 235px; }
+  .activity-list { height: 170px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

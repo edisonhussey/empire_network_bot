@@ -202,7 +202,14 @@ impl Store {
             .bind(maximum)
             .bind(1)
             .bind(1)
-            .bind(task.priority.scheduler_value())
+            // A fortress is attackable only inside a one-minute window, so
+            // fortress work is always the highest priority band regardless of
+            // the priority chosen when the task was created.
+            .bind(if task.destination.is_fortress() {
+                crate::planning::Priority::ExtraHigh.scheduler_value()
+            } else {
+                task.priority.scheduler_value()
+            })
             .bind(target_kind)
             .bind(now_ms)
             .execute(&mut *tx)

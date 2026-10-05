@@ -17,6 +17,24 @@ pub struct LoginCredentials {
     pub registration_token: Option<String>,
 }
 
+/// One permanent kingdom the account wants initialised.
+///
+/// The radius is per kingdom because the kingdoms are not equally worth the
+/// requests, and `enabled` lets an operator finish one kingdom before spending
+/// anything on the next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KingdomScan {
+    pub kingdom_id: i64,
+    #[serde(default = "enabled_by_default")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub radius: u16,
+}
+
+const fn enabled_by_default() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSettings {
     pub server_header: String,
@@ -29,6 +47,12 @@ pub struct SessionSettings {
     /// Map-coordinate distance from the main castle to cover in every direction.
     #[serde(default)]
     pub map_scan_radius: u16,
+    /// Permanent kingdoms to initialise, in the order they should be walked.
+    ///
+    /// Empty means the caller only sent `map_scan_radius`, which is how every
+    /// release before per-kingdom settings behaved.
+    #[serde(default)]
+    pub kingdom_scans: Vec<KingdomScan>,
 }
 
 impl Default for SessionSettings {
@@ -42,6 +66,60 @@ impl Default for SessionSettings {
             round_trip_time: 118,
             map: MapViewport::sands_default(),
             map_scan_radius: 0,
+            kingdom_scans: Vec::new(),
+        }
+    }
+}
+
+impl SessionSettings {
+    /// The order and radius to use for the outer kingdoms.
+    ///
+    /// Ice leads by default: it is walked first so a kingdom can finish before
+    /// the next one starts costing requests. A caller that set no plan at all
+    /// gets the historical behaviour — every outer kingdom, one shared radius.
+    pub fn outer_kingdom_scans(&self) -> Vec<KingdomScan> {
+        if self.kingdom_scans.is_empty() {
+            return [2, 1, 3]
+                .into_iter()
+                .map(|kingdom_id| KingdomScan {
+                    kingdom_id,
+                    enabled: true,
+                    radius: self.map_scan_radius,
+                })
+                .collect();
+        }
+        self.kingdom_scans
+            .iter()
+            .copied()
+            .filter(|scan| scan.enabled && (1..=3).contains(&scan.kingdom_id))
+            .collect()
+    }
+
+    /// Map radius to learn in one kingdom, or 0 when it is not scanned.
+    pub fn kingdom_radius(&self, kingdom_id: i64) -> u16 {
+        match self
+            .kingdom_scans
+            .iter()
+            .find(|scan| scan.kingdom_id == kingdom_id)
+        {
+            Some(scan) if scan.enabled => scan.radius,
+            Some(_) => 0,
+            // No plan at all: the shared radius applies to every kingdom, as it
+            // did before the plan existed.
+            None if self.kingdom_scans.is_empty() => self.map_scan_radius,
+            None => 0,
+        }
+    }
+
+    /// Whether a kingdom should be walked at all.
+    pub fn kingdom_enabled(&self, kingdom_id: i64) -> bool {
+        match self
+            .kingdom_scans
+            .iter()
+            .find(|scan| scan.kingdom_id == kingdom_id)
+        {
+            Some(scan) => scan.enabled,
+            None => self.kingdom_scans.is_empty(),
         }
     }
 }
@@ -102,6 +180,7 @@ pub enum SessionPhase {
     LoadingAccount,
     LoadingCastle,
     LoadingSands,
+    DiscoveringFortresses,
     SandsReady,
     Failed,
 }
@@ -175,24 +254,7 @@ impl SessionMachine {
                 Ok(Vec::new())
             }
             "gbd" if !self.bootstrap_sent => {
-                self.kingdom_maps = [0, 2, 1, 3]
-                    .into_iter()
-                    .filter_map(|kingdom_id| {
-                        if self.settings.map_scan_radius == 0 {
-                            if kingdom_id == 1 {
-                                sands_viewport_from_bootstrap(&packet.payload)
-                            } else {
-                                viewport_from_bootstrap(&packet.payload, kingdom_id)
-                            }
-                        } else {
-                            radius_viewport_from_bootstrap(
-                                &packet.payload,
-                                kingdom_id,
-                                self.settings.map_scan_radius,
-                            )
-                        }
-                    })
-                    .collect();
+                self.kingdom_maps = self.kingdom_plan(&packet.payload);
                 self.bootstrap_sent = true;
                 self.phase = SessionPhase::LoadingCastle;
                 self.bootstrap_packets()
@@ -224,6 +286,37 @@ impl SessionMachine {
             }
             _ => Ok(Vec::new()),
         }
+    }
+
+    /// Kingdoms this session walks, in order.
+    ///
+    /// The handshake opens on Green, so it leads whenever it is switched on;
+    /// the outer kingdoms then follow in the account's own order. Skipping a
+    /// kingdom shortens the walk and stops it costing requests entirely.
+    fn kingdom_plan(&self, payload: &Value) -> Vec<MapViewport> {
+        let mut plan = Vec::new();
+        if self.settings.kingdom_enabled(0) {
+            let radius = self.settings.kingdom_radius(0);
+            let green = if radius == 0 {
+                viewport_from_bootstrap(payload, 0)
+            } else {
+                radius_viewport_from_bootstrap(payload, 0, radius)
+            };
+            plan.extend(green);
+        }
+        for scan in self.settings.outer_kingdom_scans() {
+            let view = if scan.radius == 0 {
+                if scan.kingdom_id == 1 {
+                    sands_viewport_from_bootstrap(payload)
+                } else {
+                    viewport_from_bootstrap(payload, scan.kingdom_id)
+                }
+            } else {
+                radius_viewport_from_bootstrap(payload, scan.kingdom_id, scan.radius)
+            };
+            plan.extend(view);
+        }
+        plan
     }
 
     fn map_transition_packets(&self, map: MapViewport) -> Result<Vec<String>, PacketError> {
@@ -553,5 +646,122 @@ mod tests {
         let mut session = machine();
         session.phase = SessionPhase::LoadingSands;
         assert_ne!(session.phase(), SessionPhase::SandsReady);
+    }
+
+    fn credentials() -> LoginCredentials {
+        LoginCredentials {
+            player_name: "Player".to_owned(),
+            portal_account_id: "portal-id".to_owned(),
+            password: Some("password-secret".to_owned()),
+            login_token: None,
+            registration_token: None,
+        }
+    }
+
+    fn four_kingdom_bootstrap() -> Value {
+        json!({
+            "gcl": {"C": [
+                {"KID": 0, "AI": [{"AI": [1, 509, 405, 16011862]}]},
+                {"KID": 1, "AI": [{"AI": [12, 593, 613, 16366514]}]},
+                {"KID": 2, "AI": [{"AI": [12, 654, 696, 16366513]}]},
+                {"KID": 3, "AI": [{"AI": [12, 688, 582, 16681051]}]}
+            ]}
+        })
+    }
+
+    /// The account chooses which kingdoms are walked and in what order, so one
+    /// kingdom can finish before the next starts costing requests.
+    #[test]
+    fn a_kingdom_plan_decides_what_is_scanned_and_in_what_order() {
+        let settings = SessionSettings {
+            kingdom_scans: vec![
+                KingdomScan {
+                    kingdom_id: 0,
+                    enabled: true,
+                    radius: 50,
+                },
+                KingdomScan {
+                    kingdom_id: 2,
+                    enabled: true,
+                    radius: 50,
+                },
+                KingdomScan {
+                    kingdom_id: 1,
+                    enabled: true,
+                    radius: 50,
+                },
+                KingdomScan {
+                    kingdom_id: 3,
+                    enabled: false,
+                    radius: 50,
+                },
+            ],
+            ..SessionSettings::default()
+        };
+        let session = SessionMachine::new(credentials(), settings);
+        let plan = session.kingdom_plan(&four_kingdom_bootstrap());
+        assert_eq!(
+            plan.iter().map(|view| view.kingdom_id).collect::<Vec<_>>(),
+            vec![0, 2, 1],
+            "Ice before Sands, and Fire switched off"
+        );
+        // Radius 50 is an 8×8 grid per kingdom.
+        assert!(plan.iter().all(|view| view.columns == 8 && view.rows == 8));
+    }
+
+    /// The radius is per kingdom, so one kingdom can be learned far and another
+    /// left at the plain sign-in viewport.
+    #[test]
+    fn each_kingdom_carries_its_own_radius() {
+        let settings = SessionSettings {
+            kingdom_scans: vec![
+                KingdomScan {
+                    kingdom_id: 2,
+                    enabled: true,
+                    radius: 6,
+                },
+                KingdomScan {
+                    kingdom_id: 1,
+                    enabled: true,
+                    radius: 50,
+                },
+                KingdomScan {
+                    kingdom_id: 3,
+                    enabled: true,
+                    radius: 0,
+                },
+            ],
+            ..SessionSettings::default()
+        };
+        let session = SessionMachine::new(credentials(), settings);
+        let plan = session.kingdom_plan(&four_kingdom_bootstrap());
+        let grid = |kingdom_id: i64| {
+            plan.iter()
+                .find(|view| view.kingdom_id == kingdom_id)
+                .map(|view| (view.columns, view.rows))
+        };
+        assert_eq!(grid(2), Some((1, 1)));
+        assert_eq!(grid(1), Some((8, 8)));
+        assert_eq!(grid(3), Some((3, 2)));
+    }
+
+    /// A caller that set no plan still gets every outer kingdom at one shared
+    /// radius, which is what every earlier release did.
+    #[test]
+    fn without_a_plan_the_shared_radius_applies_everywhere() {
+        let settings = SessionSettings {
+            map_scan_radius: 50,
+            ..SessionSettings::default()
+        };
+        assert_eq!(
+            settings
+                .outer_kingdom_scans()
+                .iter()
+                .map(|scan| scan.kingdom_id)
+                .collect::<Vec<_>>(),
+            vec![2, 1, 3]
+        );
+        assert_eq!(settings.kingdom_radius(1), 50);
+        assert!(settings.kingdom_enabled(2));
     }
 }

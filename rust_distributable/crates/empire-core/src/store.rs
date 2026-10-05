@@ -110,6 +110,17 @@ pub struct KingdomHealth {
     pub target_count: i64,
     pub scan_window_count: i64,
     pub last_scanned_at_ms: Option<i64>,
+    /// Fortresses observed in this kingdom. Green never has any, so zero there
+    /// is a fact rather than a sign that scanning has not happened yet.
+    pub fortress_count: i64,
+    /// Discovery windows in this kingdom that have not been probed yet.
+    pub fortress_probes_pending: i64,
+    /// Every discovery window in this kingdom, probed or not. One window is one
+    /// `gaa` request, so this is the denominator of the walk's progress.
+    pub fortress_probes_total: i64,
+    /// Whether a fortress task is assigned here. Only these kingdoms are ever
+    /// walked, so the UI must not promise fortress scanning anywhere else.
+    pub fortress_task: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,13 +131,6 @@ pub struct ReservedTarget {
     pub level: Option<i64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FortressProbe {
-    pub kingdom_id: i64,
-    pub center_x: i64,
-    pub center_y: i64,
-}
-
 #[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
@@ -134,7 +138,24 @@ pub struct Store {
 }
 
 pub const SCAN_REFRESH_BASE_MS: i64 = 12 * 60 * 60 * 1_000;
-const REQUEST_TIMEOUT_FOR_STORE_MS: i64 = 40_000;
+
+/// A fortress is never re-read until its last observation is at least this old.
+///
+/// Without a floor a read schedules the next read: the response re-observes the
+/// row and clears `refresh_due_ms`, so the queue would never drain and the runner
+/// would spend every cycle confirming the same cooldown.
+const FORTRESS_RECHECK_MIN_MS: i64 = 5 * 60 * 1_000;
+
+/// Confirm a cooldown once its window is this close.
+///
+/// The projected time is already authoritative — the server handed it to us — so
+/// a read is only worth making to catch a fortress somebody else took, which
+/// resets it to 24 hours.
+const FORTRESS_CONFIRM_LEAD_MS: i64 = 10 * 60 * 1_000;
+
+/// One background read for a fortress nobody has looked at in this long, so a
+/// stale row cannot stay wrong forever.
+const FORTRESS_SANITY_INTERVAL_MS: i64 = 6 * 60 * 60 * 1_000;
 
 /// A stable per-window offset prevents every stored map window becoming due at
 /// once after a restart while keeping tests and scheduling reproducible.
@@ -298,6 +319,41 @@ impl Store {
         Ok(())
     }
 
+    /// Remove RBC observations outside the initialization square for each
+    /// owned permanent kingdom. Fortress discovery may read the whole kingdom,
+    /// but those opportunistic responses must not silently enlarge the user's
+    /// configured farming radius — and a kingdom that is not being scanned at
+    /// all keeps nothing. The radius travels with each kingdom because the
+    /// account sets it per kingdom.
+    pub async fn prune_rbc_targets_outside_radius(
+        &self,
+        account_id: &str,
+        origins: &[(i64, i64, i64, i64)],
+    ) -> Result<u64, sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        let mut tx = self.pool.begin().await?;
+        let mut deleted = 0;
+        for (kingdom_id, origin_x, origin_y, radius) in origins {
+            let radius = (*radius).max(0);
+            deleted += sqlx::query(
+                "DELETE FROM rbc_target
+                 WHERE lower(account_id) = lower(?) AND kingdom_id = ?
+                   AND (abs(x - ?) > ? OR abs(y - ?) > ?)",
+            )
+            .bind(&account_id)
+            .bind(kingdom_id)
+            .bind(origin_x)
+            .bind(radius)
+            .bind(origin_y)
+            .bind(radius)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        }
+        tx.commit().await?;
+        Ok(deleted)
+    }
+
     pub async fn upsert_fortress_targets(
         &self,
         account_id: &str,
@@ -343,37 +399,6 @@ impl Store {
             .bind(observed_at_ms)
             .execute(&mut *tx)
             .await?;
-            // A discovered fortress seeds a persistent graph walk. Seventeen
-            // tiles places the next 13x13 GAA beside the current one; diagonal
-            // probes cover the alternating fortress lattice seen in Sands and
-            // Fire. Completed probes remain as durable "already scanned" data.
-            for (dx, dy) in [
-                (-17, -17),
-                (0, -17),
-                (17, -17),
-                (-17, 0),
-                (17, 0),
-                (-17, 17),
-                (0, 17),
-                (17, 17),
-            ] {
-                let center_x = target.x + dx;
-                let center_y = target.y + dy;
-                if !(0..=2_000).contains(&center_x) || !(0..=2_000).contains(&center_y) {
-                    continue;
-                }
-                sqlx::query(
-                    "INSERT OR IGNORE INTO fortress_scan_frontier
-                        (account_id, kingdom_id, center_x, center_y)
-                     VALUES (?, ?, ?, ?)",
-                )
-                .bind(&account_id)
-                .bind(target.kingdom_id)
-                .bind(center_x)
-                .bind(center_y)
-                .execute(&mut *tx)
-                .await?;
-            }
         }
         tx.commit().await?;
         Ok(())
@@ -530,6 +555,45 @@ impl Store {
         Ok(count > 0)
     }
 
+    pub async fn account_has_fortresses(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+    ) -> Result<bool, sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM fortress_target
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ?",
+        )
+        .bind(&account_id)
+        .bind(kingdom_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count > 0)
+    }
+
+    /// `(done, pending)` blocks across both grids of one kingdom.
+    pub async fn fortress_probe_progress(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+    ) -> Result<(u64, u64), sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        let row = sqlx::query(
+            "SELECT COALESCE(SUM(blocks_done), 0) done,
+                    COALESCE(SUM(blocks_total - blocks_done), 0) pending
+             FROM fortress_scan_state
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ?",
+        )
+        .bind(&account_id)
+        .bind(kingdom_id)
+        .fetch_one(&self.pool)
+        .await?;
+        let done = row.try_get::<i64, _>("done")?.max(0);
+        let pending = row.try_get::<i64, _>("pending")?.max(0);
+        Ok((done as u64, pending as u64))
+    }
+
     /// Claim one eligible target before its handshake starts. The reservation
     /// survives a runner restart and prevents two tasks choosing the same tower.
     #[allow(clippy::too_many_arguments)]
@@ -669,70 +733,162 @@ impl Store {
         Ok((updated.rows_affected() > 0).then_some(target))
     }
 
-    pub async fn reserve_fortress_probe(
+    /// Read the bounds of a kingdom's sweep out of a state row.
+    fn scan_bounds(row: &sqlx::sqlite::SqliteRow) -> crate::fortress::Bounds {
+        crate::fortress::Bounds {
+            left: row.get("left_bound"),
+            top: row.get("top_bound"),
+            right: row.get("right_bound"),
+            bottom: row.get("bottom_bound"),
+        }
+    }
+
+    /// Start the sweep of one grid in one kingdom, or leave a running one alone.
+    ///
+    /// The bounds are the map rectangle this kingdom is walked over and the
+    /// cursor starts at its low corner. `INSERT OR IGNORE` is what makes the
+    /// sweep resumable: a second call never resets a cursor that has moved.
+    pub async fn start_fortress_scan(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+        lattice_offset: i64,
+    ) -> Result<bool, sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        let bounds =
+            crate::fortress::align_bounds(crate::fortress::Bounds::outer_kingdom(), lattice_offset);
+        let inserted = sqlx::query(
+            "INSERT OR IGNORE INTO fortress_scan_state (
+                account_id, kingdom_id, lattice_offset,
+                left_bound, top_bound, right_bound, bottom_bound,
+                next_x, next_y, blocks_total
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&account_id)
+        .bind(kingdom_id)
+        .bind(lattice_offset)
+        .bind(bounds.left)
+        .bind(bounds.top)
+        .bind(bounds.right)
+        .bind(bounds.bottom)
+        .bind(bounds.left)
+        .bind(bounds.top)
+        .bind(bounds.block_count())
+        .execute(&self.pool)
+        .await?;
+        Ok(inserted.rows_affected() > 0)
+    }
+
+    /// The block the sweep is on, or `None` once the kingdom is finished.
+    ///
+    /// This only reads. The cursor moves in [`Self::advance_fortress_scan`],
+    /// which the runner calls once the server has answered, so a request that
+    /// never comes back is retried instead of skipping four slots.
+    pub async fn next_fortress_block(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+        lattice_offset: i64,
+    ) -> Result<Option<crate::fortress::FortressBlock>, sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        let row = self
+            .fortress_scan_row(&account_id, kingdom_id, lattice_offset)
+            .await?;
+        let Some(row) = row else { return Ok(None) };
+        let cursor = crate::fortress::FortressScanCursor {
+            x: row.get("next_x"),
+            y: row.get("next_y"),
+        };
+        Ok(cursor.block(Self::scan_bounds(&row)))
+    }
+
+    /// Move the sweep on by one block, after the server has answered.
+    pub async fn advance_fortress_scan(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+        lattice_offset: i64,
+    ) -> Result<(), sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        let row = self
+            .fortress_scan_row(&account_id, kingdom_id, lattice_offset)
+            .await?;
+        let Some(row) = row else { return Ok(()) };
+        let mut cursor = crate::fortress::FortressScanCursor {
+            x: row.get("next_x"),
+            y: row.get("next_y"),
+        };
+        cursor.advance(Self::scan_bounds(&row));
+        sqlx::query(
+            "UPDATE fortress_scan_state
+             SET next_x = ?, next_y = ?, blocks_done = blocks_done + 1
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND lattice_offset = ?",
+        )
+        .bind(cursor.x)
+        .bind(cursor.y)
+        .bind(&account_id)
+        .bind(kingdom_id)
+        .bind(lattice_offset)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn fortress_scan_row(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+        lattice_offset: i64,
+    ) -> Result<Option<sqlx::sqlite::SqliteRow>, sqlx::Error> {
+        sqlx::query(
+            "SELECT left_bound, top_bound, right_bound, bottom_bound, next_x, next_y
+             FROM fortress_scan_state
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND lattice_offset = ?",
+        )
+        .bind(account_id)
+        .bind(kingdom_id)
+        .bind(lattice_offset)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    /// Queue a cooldown re-read for each fortress in this kingdom that is worth
+    /// re-reading.
+    ///
+    /// Initialization learns *where* the fortresses are and, from the same
+    /// responses, *when* each one opens. After that a request is only justified
+    /// to confirm a window that is about to open, or to sanity-check a row that
+    /// has not been looked at for hours. Both are gated behind
+    /// [`FORTRESS_RECHECK_MIN_MS`], which is what keeps this idempotent: a read
+    /// refreshes the observation, so it cannot schedule its own successor. (The
+    /// response clears `refresh_due_ms` again, so gating on that flag alone makes
+    /// the runner read the same cooldown forever.)
+    pub async fn queue_fortress_recheck(
         &self,
         account_id: &str,
         kingdom_id: i64,
         now_ms: i64,
-    ) -> Result<Option<FortressProbe>, sqlx::Error> {
+    ) -> Result<u64, sqlx::Error> {
         let account_id = canonical_account_id(account_id);
-        let row = sqlx::query(
-            "SELECT kingdom_id, center_x, center_y
-             FROM fortress_scan_frontier
+        let queued = sqlx::query(
+            "UPDATE fortress_target SET refresh_due_ms = ?
              WHERE lower(account_id) = lower(?) AND kingdom_id = ?
-               AND completed_at_ms = 0 AND claimed_until_ms <= ?
-             ORDER BY abs(center_x - 640) + abs(center_y - 640), center_x, center_y
-             LIMIT 1",
+               AND refresh_due_ms = 0
+               AND observed_at_ms <= ? - ?
+               AND (available_at_ms - ? <= ? OR observed_at_ms <= ? - ?)",
         )
+        .bind(now_ms)
         .bind(&account_id)
         .bind(kingdom_id)
         .bind(now_ms)
-        .fetch_optional(&self.pool)
-        .await?;
-        let Some(row) = row else { return Ok(None) };
-        let probe = FortressProbe {
-            kingdom_id: row.get("kingdom_id"),
-            center_x: row.get("center_x"),
-            center_y: row.get("center_y"),
-        };
-        let updated = sqlx::query(
-            "UPDATE fortress_scan_frontier SET claimed_until_ms = ?
-             WHERE lower(account_id) = lower(?) AND kingdom_id = ?
-               AND center_x = ? AND center_y = ?
-               AND completed_at_ms = 0 AND claimed_until_ms <= ?",
-        )
-        .bind(now_ms.saturating_add(REQUEST_TIMEOUT_FOR_STORE_MS))
-        .bind(&account_id)
-        .bind(probe.kingdom_id)
-        .bind(probe.center_x)
-        .bind(probe.center_y)
+        .bind(FORTRESS_RECHECK_MIN_MS)
         .bind(now_ms)
+        .bind(FORTRESS_CONFIRM_LEAD_MS)
+        .bind(now_ms)
+        .bind(FORTRESS_SANITY_INTERVAL_MS)
         .execute(&self.pool)
         .await?;
-        Ok((updated.rows_affected() > 0).then_some(probe))
-    }
-
-    pub async fn complete_fortress_probe(
-        &self,
-        account_id: &str,
-        probe: &FortressProbe,
-        observed_at_ms: i64,
-    ) -> Result<(), sqlx::Error> {
-        let account_id = canonical_account_id(account_id);
-        sqlx::query(
-            "UPDATE fortress_scan_frontier
-             SET completed_at_ms = ?, claimed_until_ms = 0
-             WHERE lower(account_id) = lower(?) AND kingdom_id = ?
-               AND center_x = ? AND center_y = ?",
-        )
-        .bind(observed_at_ms)
-        .bind(&account_id)
-        .bind(probe.kingdom_id)
-        .bind(probe.center_x)
-        .bind(probe.center_y)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        Ok(queued.rows_affected())
     }
 
     pub async fn reserve_due_fortress_refresh(
@@ -958,7 +1114,17 @@ impl Store {
                         (SELECT COUNT(DISTINCT printf('%d:%d:%d:%d', s.ax1, s.ay1, s.ax2, s.ay2)) FROM map_scan_window s
                          WHERE lower(s.account_id) = lower(c.account_id) AND s.kingdom_id = c.kingdom_id) scan_window_count,
                         (SELECT MAX(scanned_at_ms) FROM map_scan_window s
-                         WHERE lower(s.account_id) = lower(c.account_id) AND s.kingdom_id = c.kingdom_id) last_scanned_at_ms
+                         WHERE lower(s.account_id) = lower(c.account_id) AND s.kingdom_id = c.kingdom_id) last_scanned_at_ms,
+                        (SELECT COUNT(*) FROM fortress_target f
+                         WHERE lower(f.account_id) = lower(c.account_id) AND f.kingdom_id = c.kingdom_id) fortress_count,
+                        (SELECT COALESCE(SUM(s.blocks_total - s.blocks_done), 0) FROM fortress_scan_state s
+                         WHERE lower(s.account_id) = lower(c.account_id) AND s.kingdom_id = c.kingdom_id) fortress_probes_pending,
+                        (SELECT COALESCE(SUM(s.blocks_total), 0) FROM fortress_scan_state s
+                         WHERE lower(s.account_id) = lower(c.account_id) AND s.kingdom_id = c.kingdom_id) fortress_probes_total,
+                        (SELECT COUNT(*) FROM task_definition t
+                         JOIN task_subscription s ON s.task_id = t.task_id
+                         WHERE s.target_kind = 'fortress' AND t.enabled = 1
+                           AND t.kingdom_id = c.kingdom_id) fortress_task
                  FROM owned_castle c
                  WHERE lower(c.account_id) = lower(?)
                    AND ((c.kingdom_id = 0 AND c.area_type = 1)
@@ -980,6 +1146,10 @@ impl Store {
                     target_count: row.get("target_count"),
                     scan_window_count: row.get("scan_window_count"),
                     last_scanned_at_ms: row.get("last_scanned_at_ms"),
+                    fortress_count: row.get("fortress_count"),
+                    fortress_probes_pending: row.get("fortress_probes_pending"),
+                    fortress_probes_total: row.get("fortress_probes_total"),
+                    fortress_task: row.get::<i64, _>("fortress_task") > 0,
                 })
                 .collect();
         }

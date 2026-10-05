@@ -116,6 +116,17 @@ pub enum Destination {
     },
 }
 
+impl Destination {
+    /// Whether this destination selects fortresses rather than ordinary
+    /// rebels.
+    pub const fn is_fortress(&self) -> bool {
+        matches!(
+            self,
+            Self::Fortress { .. } | Self::FortressLevelRange { .. }
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TargetAlgorithm {

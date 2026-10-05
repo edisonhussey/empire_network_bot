@@ -7,6 +7,10 @@
     "scan_total": 0,
     "scan_sent": 0,
     "scan_cached": 0,
+    "scan_kingdom_id": null,
+    "current_kingdom_id": null,
+    "current_castle_id": null,
+    "map_mode": false,
     "bot_state": "stopped",
     "bot_detail": null,
     "connected_at_ms": null

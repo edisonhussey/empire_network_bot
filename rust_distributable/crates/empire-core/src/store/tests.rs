@@ -779,7 +779,7 @@ async fn fortress_reservation_has_a_strict_one_minute_dispatch_window() {
 }
 
 #[tokio::test]
-async fn fortress_discovery_frontier_is_durable_and_does_not_repeat_completed_probes() {
+async fn fortress_discovery_sweep_is_durable_and_never_repeats_a_block() {
     let store = Store::open("sqlite::memory:").await.unwrap();
     seed_account(&store, "ventrilo").await;
     store
@@ -795,13 +795,14 @@ async fn fortress_discovery_frontier_is_durable_and_does_not_repeat_completed_pr
         )
         .await
         .unwrap();
-    let before: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM fortress_scan_frontier WHERE account_id = 'ventrilo'",
+    let rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM fortress_scan_state WHERE account_id = 'ventrilo'",
     )
     .fetch_one(&store.pool)
     .await
     .unwrap();
-    assert_eq!(before, 0, "ordinary RBCs must never seed fortress scanning");
+    assert_eq!(rows, 0, "ordinary RBCs must never start a fortress sweep");
+
     store
         .upsert_fortress_targets(
             "ventrilo",
@@ -817,34 +818,400 @@ async fn fortress_discovery_frontier_is_durable_and_does_not_repeat_completed_pr
         )
         .await
         .unwrap();
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM fortress_scan_frontier WHERE account_id = 'ventrilo'",
+    let rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM fortress_scan_state WHERE account_id = 'ventrilo'",
     )
     .fetch_one(&store.pool)
     .await
     .unwrap();
-    assert_eq!(count, 8);
+    assert_eq!(rows, 0, "observations do not define scan completeness");
 
-    let probe = store
-        .reserve_fortress_probe("ventrilo", 1, NOW)
+    assert!(store.start_fortress_scan("ventrilo", 1, 9).await.unwrap());
+    let total: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(blocks_total), 0) FROM fortress_scan_state
+         WHERE account_id = 'ventrilo'",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(total, 289, "one grid of the kingdom, in blocks");
+
+    let block = store
+        .next_fortress_block("ventrilo", 1, 9)
         .await
         .unwrap()
         .unwrap();
+    assert_eq!((block.x, block.y), (9, 9));
+    // Reading is idempotent: the same block comes back until it is advanced,
+    // so a request that never arrives is retried rather than skipped.
+    let again = store
+        .next_fortress_block("ventrilo", 1, 9)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((again.x, again.y), (9, 9));
+    store.advance_fortress_scan("ventrilo", 1, 9).await.unwrap();
+    let next = store
+        .next_fortress_block("ventrilo", 1, 9)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((next.x, next.y), (87, 9));
+
+    // Starting again must not reset a cursor that has already moved.
+    assert!(!store.start_fortress_scan("ventrilo", 1, 9).await.unwrap());
+    let still = store
+        .next_fortress_block("ventrilo", 1, 9)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(still.x, 87);
+}
+
+#[tokio::test]
+async fn a_fortress_task_can_start_a_sweep_without_an_observed_fortress() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    // A fresh account knows of no fortress and has no sweep, so there is
+    // nothing to scan. Starting the sweep is the bootstrap that gives the task
+    // its first map request; before it existed the task idled forever.
+    assert!(
+        store
+            .next_fortress_block("ventrilo", 1, 9)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(store.start_fortress_scan("ventrilo", 1, 9).await.unwrap());
+    let block = store
+        .next_fortress_block("ventrilo", 1, 9)
+        .await
+        .unwrap()
+        .expect("the aligned corner is the first block");
+    // The sweep starts on the lattice, not at map 0:0.
+    assert_eq!((block.x, block.y), (9, 9));
+    for slot in block.slots() {
+        assert!(crate::fortress::is_slot(slot.0, slot.1));
+    }
+}
+
+#[tokio::test]
+async fn each_grid_of_a_kingdom_gets_its_own_cursor() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    store.start_fortress_scan("ventrilo", 1, 9).await.unwrap();
+    store.start_fortress_scan("ventrilo", 1, 29).await.unwrap();
+    let nine = store
+        .next_fortress_block("ventrilo", 1, 9)
+        .await
+        .unwrap()
+        .unwrap();
+    let other = store
+        .next_fortress_block("ventrilo", 1, 29)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((nine.x, nine.y), (9, 9));
+    assert_eq!((other.x, other.y), (29, 29));
+    // Advancing one grid leaves the other exactly where it was.
+    store.advance_fortress_scan("ventrilo", 1, 9).await.unwrap();
+    let other = store
+        .next_fortress_block("ventrilo", 1, 29)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((other.x, other.y), (29, 29));
+}
+
+/// The sweep is a cursor over the rectangle, so it walks a row at a time and
+/// wraps. It deliberately does not order by distance from the castle any more:
+/// every block is visited, so the order only decides what is seen first.
+#[tokio::test]
+async fn the_sweep_walks_row_by_row_and_wraps() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    store.start_fortress_scan("ventrilo", 1, 9).await.unwrap();
+    let mut seen = Vec::new();
+    for _ in 0..18 {
+        let block = store
+            .next_fortress_block("ventrilo", 1, 9)
+            .await
+            .unwrap()
+            .unwrap();
+        seen.push((block.x, block.y));
+        store.advance_fortress_scan("ventrilo", 1, 9).await.unwrap();
+    }
+    assert_eq!(seen[0], (9, 9));
+    assert_eq!(seen[16], (1_257, 9), "seventeen 78-unit columns");
+    assert_eq!(seen[17], (9, 87), "the next block starts the second row");
+}
+
+#[tokio::test]
+async fn the_reservation_serves_the_fortress_whose_window_closes_first() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    let fortress = |x: i64, y: i64, cooldown_remaining_s: i64| FortressTarget {
+        kingdom_id: 1,
+        x,
+        y,
+        level: 45,
+        cooldown_remaining_s,
+        occupier_player_id: 1,
+    };
+    // Three fortresses came off cooldown at different moments. Whichever has
+    // been available longest is closest to losing its one-minute window.
     store
-        .complete_fortress_probe("ventrilo", &probe, NOW + 1)
+        .upsert_fortress_targets(
+            "ventrilo",
+            &[
+                fortress(600, 600, 10),
+                fortress(601, 600, 5),
+                fortress(700, 700, 0),
+            ],
+            NOW,
+        )
         .await
         .unwrap();
-    let completed: i64 = sqlx::query_scalar(
-        "SELECT completed_at_ms FROM fortress_scan_frontier
-         WHERE account_id = 'ventrilo' AND kingdom_id = ? AND center_x = ? AND center_y = ?",
+    let now = NOW + 60_000;
+    let reserve = |at: i64| {
+        let store = &store;
+        async move {
+            store
+                .reserve_fortress_target("ventrilo", 1, None, None, (600, 600), at, at + 1_000)
+                .await
+                .unwrap()
+        }
+    };
+    // The oldest-ready fortress is served first, so with only a few commanders
+    // the newest is the one that gets dropped.
+    assert_eq!(
+        reserve(now).await.map(|target| (target.x, target.y)),
+        Some((700, 700))
+    );
+    assert_eq!(
+        reserve(now).await.map(|target| (target.x, target.y)),
+        Some((601, 600))
+    );
+    assert_eq!(
+        reserve(now).await.map(|target| (target.x, target.y)),
+        Some((600, 600))
+    );
+    // Every window is gone a minute after it opened, so nothing is eligible.
+    assert!(reserve(now + 60_001).await.is_none());
+}
+
+#[tokio::test]
+async fn the_sweep_does_not_depend_on_where_fortresses_were_found() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    let fortress = |x: i64, y: i64| FortressTarget {
+        kingdom_id: 1,
+        x,
+        y,
+        level: 45,
+        cooldown_remaining_s: 1,
+        occupier_player_id: 1,
+    };
+    store
+        .upsert_fortress_targets("ventrilo", &[fortress(594, 594)], NOW)
+        .await
+        .unwrap();
+    // An observation on its own neither starts a sweep nor shapes one.
+    let rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM fortress_scan_state WHERE account_id = 'ventrilo'",
     )
-    .bind(probe.kingdom_id)
-    .bind(probe.center_x)
-    .bind(probe.center_y)
     .fetch_one(&store.pool)
     .await
     .unwrap();
-    assert_eq!(completed, NOW + 1);
+    assert_eq!(rows, 0);
+
+    store.start_fortress_scan("ventrilo", 1, 9).await.unwrap();
+    let bounds_query = || {
+        sqlx::query(
+            "SELECT left_bound, top_bound, right_bound, bottom_bound FROM fortress_scan_state
+             WHERE account_id = 'ventrilo' AND kingdom_id = 1 AND lattice_offset = 9",
+        )
+    };
+    let row = bounds_query().fetch_one(&store.pool).await.unwrap();
+    let recorded = (
+        row.get::<i64, _>("left_bound"),
+        row.get::<i64, _>("top_bound"),
+        row.get::<i64, _>("right_bound"),
+        row.get::<i64, _>("bottom_bound"),
+    );
+    assert_eq!(recorded, (9, 9, 1_285, 1_285));
+
+    // A later observation must not move the bounds or restart the sweep.
+    store
+        .upsert_fortress_targets("ventrilo", &[fortress(672, 594)], NOW + 3)
+        .await
+        .unwrap();
+    assert!(!store.start_fortress_scan("ventrilo", 1, 9).await.unwrap());
+    let row = bounds_query().fetch_one(&store.pool).await.unwrap();
+    assert_eq!(
+        (
+            row.get::<i64, _>("left_bound"),
+            row.get::<i64, _>("top_bound"),
+            row.get::<i64, _>("right_bound"),
+            row.get::<i64, _>("bottom_bound"),
+        ),
+        recorded
+    );
+}
+
+/// The sweep covers the whole observed map, so it has to finish at the far
+/// corner rather than anywhere near the castle.
+#[tokio::test]
+async fn the_sweep_reaches_the_observed_map_boundary() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    store.start_fortress_scan("ventrilo", 1, 29).await.unwrap();
+    let total: i64 = sqlx::query_scalar(
+        "SELECT blocks_total FROM fortress_scan_state
+         WHERE account_id = 'ventrilo' AND kingdom_id = 1 AND lattice_offset = 29",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(total, 289);
+
+    let mut last = (0_i64, 0_i64);
+    while let Some(block) = store.next_fortress_block("ventrilo", 1, 29).await.unwrap() {
+        last = (block.x, block.y);
+        store
+            .advance_fortress_scan("ventrilo", 1, 29)
+            .await
+            .unwrap();
+    }
+    assert_eq!(last, (1_277, 1_277));
+    let (done, pending) = store.fortress_probe_progress("ventrilo", 1).await.unwrap();
+    assert_eq!((done, pending), (289, 0));
+}
+
+/// The sweep is the complete enumeration of a kingdom, so walking both grids
+/// has to visit every block. An earlier version narrowed the queue to the
+/// rectangle around the fortresses it had already found, which quietly ended a
+/// kingdom's search at the handful of fortresses near its castle.
+#[tokio::test]
+async fn the_sweep_exhausts_the_whole_kingdom() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    let fortress = |x: i64, y: i64| FortressTarget {
+        kingdom_id: 1,
+        x,
+        y,
+        level: 45,
+        cooldown_remaining_s: 1,
+        occupier_player_id: 1,
+    };
+    // A couple of hits near the castle - the shape that used to end the walk.
+    store
+        .upsert_fortress_targets("ventrilo", &[fortress(594, 594), fortress(633, 633)], NOW)
+        .await
+        .unwrap();
+
+    let mut probed = 0_usize;
+    let mut furthest = (0_i64, 0_i64);
+    for offset in [9_i64, 29] {
+        store
+            .start_fortress_scan("ventrilo", 1, offset)
+            .await
+            .unwrap();
+        while let Some(block) = store
+            .next_fortress_block("ventrilo", 1, offset)
+            .await
+            .unwrap()
+        {
+            probed += 1;
+            assert!(probed <= 578, "the sweep has to terminate");
+            if block.x + block.y > furthest.0 + furthest.1 {
+                furthest = (block.x, block.y);
+            }
+            store
+                .advance_fortress_scan("ventrilo", 1, offset)
+                .await
+                .unwrap();
+        }
+    }
+    assert_eq!(probed, 578, "every block in the kingdom has to be visited");
+    assert_eq!(
+        furthest,
+        (1_277, 1_277),
+        "the sweep has to reach the corner of the map, not stop at the castle"
+    );
+    let (done, pending) = store.fortress_probe_progress("ventrilo", 1).await.unwrap();
+    assert_eq!((done, pending), (578, 0));
+}
+
+#[tokio::test]
+async fn rechecking_a_cooldown_does_not_schedule_another_immediately() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    let observed = |cooldown_remaining_s: i64| FortressTarget {
+        kingdom_id: 1,
+        x: 594,
+        y: 594,
+        level: 45,
+        cooldown_remaining_s,
+        occupier_player_id: 1,
+    };
+    // Long cooldown, just observed: the coordinates are known and the server
+    // already told us when it opens, so there is nothing to re-read yet.
+    store
+        .upsert_fortress_targets("ventrilo", &[observed(30_000)], NOW)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .queue_fortress_recheck("ventrilo", 1, NOW)
+            .await
+            .unwrap(),
+        0,
+        "a fortress whose cooldown we just read must not be read again"
+    );
+
+    // Nothing has been seen for seven hours, so a sanity read is worthwhile.
+    store
+        .upsert_fortress_targets("ventrilo", &[observed(29_000)], NOW - 7 * 3_600_000)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .queue_fortress_recheck("ventrilo", 1, NOW)
+            .await
+            .unwrap(),
+        1
+    );
+
+    // Reading it refreshes the observation, which must NOT queue another read -
+    // that would spin forever and starve discovery and attacks.
+    store
+        .upsert_fortress_targets("ventrilo", &[observed(28_900)], NOW)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .queue_fortress_recheck("ventrilo", 1, NOW + 1)
+            .await
+            .unwrap(),
+        0,
+        "a just-read cooldown must not be queued again"
+    );
+
+    // The window is approaching and the observation is stale enough to be worth
+    // confirming: read from six minutes ago, opening in five.
+    store
+        .upsert_fortress_targets("ventrilo", &[observed(300)], NOW - 6 * 60_000)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .queue_fortress_recheck("ventrilo", 1, NOW)
+            .await
+            .unwrap(),
+        1,
+        "a fortress opening shortly is worth confirming"
+    );
 }
 
 #[tokio::test]
@@ -1829,4 +2196,277 @@ async fn upgrading_sweeps_children_whose_parent_is_gone() {
         vec![100],
         "the reachable castle survives and both orphans are swept"
     );
+}
+
+/// Give an account a fortress task for one kingdom.
+///
+/// The runner only walks and attacks kingdoms it has a fortress task for, so
+/// anything that expects fortress work has to set this up first. Tasks are
+/// global objects here; a mode is what binds one to an account.
+async fn seed_fortress_task(store: &Store, kingdom_id: i64) {
+    store
+        .upsert_task(
+            &TaskRecord {
+                task_id: "fortress-task".into(),
+                name: "Fortress".into(),
+                kind: "attack".into(),
+                kingdom_id,
+                profile_id: None,
+                target_level_min: None,
+                target_level_max: None,
+                commander_count: 5,
+                max_active: None,
+                priority: 10,
+                enabled: true,
+                tags: vec!["fortress".into()],
+                notes: String::new(),
+            },
+            NOW,
+        )
+        .await
+        .unwrap();
+    store
+        .replace_subscriptions(
+            "fortress-task",
+            &[SubscriptionRecord {
+                task_id: "fortress-task".into(),
+                target_kind: "fortress".into(),
+                filter: json!({"kingdom_id": kingdom_id}),
+            }],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn the_dashboard_counts_down_to_the_next_fortress_window() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    seed_fortress_task(&store, 1).await;
+    // Two fortresses: one free in five minutes, one in three hours.
+    store
+        .upsert_fortress_targets(
+            "ventrilo",
+            &[
+                FortressTarget {
+                    kingdom_id: 1,
+                    x: 594,
+                    y: 594,
+                    level: 45,
+                    cooldown_remaining_s: 300,
+                    occupier_player_id: 0,
+                },
+                FortressTarget {
+                    kingdom_id: 1,
+                    x: 600,
+                    y: 600,
+                    level: 45,
+                    cooldown_remaining_s: 10_800,
+                    occupier_player_id: 0,
+                },
+            ],
+            NOW,
+        )
+        .await
+        .unwrap();
+
+    let summary = store.dashboard_summary_for(Some("ventrilo")).await.unwrap();
+    assert_eq!(summary.fortress_count, 2);
+    assert_eq!(
+        summary.fortress_next_available_at_ms,
+        Some(NOW + 300_000),
+        "the soonest window is the one the dashboard counts down to"
+    );
+
+    // Cooldowns belong to the account that observed them.
+    let other = store.dashboard_summary_for(Some("pingpoko")).await.unwrap();
+    assert_eq!(other.fortress_count, 0);
+    assert_eq!(other.fortress_next_available_at_ms, None);
+}
+
+#[tokio::test]
+async fn the_dashboard_ignores_fortresses_in_untasked_kingdoms() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    seed_fortress_task(&store, 1).await;
+    // A fortress observed while the map happened to be open in Ice. The runner
+    // has no Ice task, so it is not something the dashboard may advertise.
+    store
+        .upsert_fortress_targets(
+            "ventrilo",
+            &[FortressTarget {
+                kingdom_id: 2,
+                x: 692,
+                y: 575,
+                level: 55,
+                cooldown_remaining_s: 0,
+                occupier_player_id: 1,
+            }],
+            NOW,
+        )
+        .await
+        .unwrap();
+    let summary = store.dashboard_summary_for(Some("ventrilo")).await.unwrap();
+    assert_eq!(
+        summary.fortress_count, 0,
+        "an Ice fortress is not a Sands target"
+    );
+    assert_eq!(summary.fortress_next_available_at_ms, None);
+}
+
+#[tokio::test]
+async fn a_fortress_mode_queues_a_cooldown_read_for_every_known_fortress() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    store
+        .upsert_fortress_targets(
+            "ventrilo",
+            &[
+                FortressTarget {
+                    kingdom_id: 1,
+                    x: 594,
+                    y: 594,
+                    level: 45,
+                    cooldown_remaining_s: 30_000,
+                    occupier_player_id: 1,
+                },
+                FortressTarget {
+                    kingdom_id: 1,
+                    x: 614,
+                    y: 614,
+                    level: 45,
+                    cooldown_remaining_s: 0,
+                    occupier_player_id: 1,
+                },
+                FortressTarget {
+                    kingdom_id: 3,
+                    x: 692,
+                    y: 575,
+                    level: 55,
+                    cooldown_remaining_s: 30_000,
+                    occupier_player_id: 1,
+                },
+            ],
+            NOW - 7 * 3_600_000,
+        )
+        .await
+        .unwrap();
+    // Fortresses nobody has looked at for hours are queued, so a mode starts
+    // from real state rather than from a timer another player may have reset.
+    assert_eq!(
+        store
+            .queue_fortress_recheck("ventrilo", 1, NOW + 1_000)
+            .await
+            .unwrap(),
+        2
+    );
+    // A second pass changes nothing, because the queue is already populated.
+    assert_eq!(
+        store
+            .queue_fortress_recheck("ventrilo", 1, NOW + 2_000)
+            .await
+            .unwrap(),
+        0
+    );
+    // The kingdom with no fortress task was left alone.
+    assert_eq!(
+        store
+            .queue_fortress_recheck("ventrilo", 3, NOW + 2_000)
+            .await
+            .unwrap(),
+        1
+    );
+    // The runner can now drain what was queued instead of guessing.
+    assert!(
+        store
+            .reserve_due_fortress_refresh("ventrilo", 1, NOW + 3_000)
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn kingdom_health_counts_fortresses_per_kingdom() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    store
+        .upsert_account_profile("ventrilo", "Ventrilo", "wss://example/", "EmpireEx_21", NOW)
+        .await
+        .unwrap();
+    store
+        .replace_account_bootstrap(
+            "ventrilo",
+            &[
+                OwnedCastle {
+                    kingdom_id: 0,
+                    castle_id: 1,
+                    area_type: 1,
+                    x: 509,
+                    y: 405,
+                    name: "Green".into(),
+                },
+                OwnedCastle {
+                    kingdom_id: 1,
+                    castle_id: 2,
+                    area_type: 12,
+                    x: 593,
+                    y: 613,
+                    name: "Sands".into(),
+                },
+                OwnedCastle {
+                    kingdom_id: 3,
+                    castle_id: 3,
+                    area_type: 12,
+                    x: 688,
+                    y: 582,
+                    name: "Fire".into(),
+                },
+            ],
+            &[11, 22],
+            NOW,
+        )
+        .await
+        .unwrap();
+    seed_fortress_task(&store, 3).await;
+    for (kingdom_id, level) in [(1, 45), (3, 55)] {
+        store
+            .upsert_fortress_targets(
+                "ventrilo",
+                &[FortressTarget {
+                    kingdom_id,
+                    x: 594,
+                    y: 594,
+                    level,
+                    cooldown_remaining_s: 100,
+                    occupier_player_id: 1,
+                }],
+                NOW,
+            )
+            .await
+            .unwrap();
+        store
+            .start_fortress_scan("ventrilo", kingdom_id, 9)
+            .await
+            .unwrap();
+    }
+
+    let accounts = store.account_summaries().await.unwrap();
+    let health = &accounts[0].kingdom_health;
+    let row = |kingdom_id: i64| {
+        health
+            .iter()
+            .find(|entry| entry.kingdom_id == kingdom_id)
+            .expect("every owned permanent kingdom has a row")
+    };
+    assert_eq!(row(1).fortress_count, 1);
+    assert_eq!(row(3).fortress_count, 1);
+    // Green has no fortresses at all, so this zero is a fact about the kingdom
+    // rather than a scan that never ran.
+    assert_eq!(row(0).fortress_count, 0);
+    // Initialization walks every owned outer kingdom, independently of which
+    // kingdom later receives a fortress attack task.
+    assert!(row(3).fortress_task);
+    assert!(!row(1).fortress_task);
+    assert!(row(1).fortress_probes_pending > 0);
+    assert_eq!(row(0).fortress_probes_pending, 0);
 }

@@ -4,6 +4,9 @@
 pub mod account;
 #[cfg(feature = "application")]
 pub mod event;
+#[cfg(feature = "application")]
+pub mod fortress;
+#[cfg(feature = "application")]
 pub mod hunt;
 #[cfg(feature = "application")]
 pub mod injection;

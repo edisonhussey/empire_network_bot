@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 15;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -448,6 +448,9 @@ pub const V11: Migration = &[
         ON fortress_target (account_id, kingdom_id, available_at_ms, reserved_until_ms)",
     "CREATE INDEX IF NOT EXISTS fortress_target_refresh_idx
         ON fortress_target (account_id, refresh_due_ms)",
+    // Legacy fortress work queue, superseded by `fortress_scan_state` (V15).
+    // Kept because this list is applied on every launch and V13/V14 reference
+    // it, so removing it would break a fresh database. Nothing reads it.
     "CREATE TABLE IF NOT EXISTS fortress_scan_frontier (
         account_id TEXT NOT NULL,
         kingdom_id INTEGER NOT NULL,
@@ -460,9 +463,73 @@ pub const V11: Migration = &[
     )",
     "CREATE INDEX IF NOT EXISTS fortress_scan_frontier_pending_idx
         ON fortress_scan_frontier (account_id, kingdom_id, completed_at_ms, claimed_until_ms)",
+    "CREATE TABLE IF NOT EXISTS fortress_scan_state (
+        account_id TEXT NOT NULL,
+        kingdom_id INTEGER NOT NULL,
+        lattice_offset INTEGER NOT NULL,
+        left_bound INTEGER NOT NULL,
+        top_bound INTEGER NOT NULL,
+        right_bound INTEGER NOT NULL,
+        bottom_bound INTEGER NOT NULL,
+        next_x INTEGER NOT NULL,
+        next_y INTEGER NOT NULL,
+        blocks_total INTEGER NOT NULL,
+        blocks_done INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (account_id, kingdom_id, lattice_offset),
+        FOREIGN KEY (account_id) REFERENCES account_profile(account_id) ON DELETE CASCADE
+    )",
 ];
 
-pub const MIGRATIONS: &[Migration] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11];
+/// A fortress is attackable only inside a one-minute window, so fortress work
+/// must never queue behind routine farming. New tasks are promoted as they are
+/// written; this repairs the rows that predate that rule. `10` is the
+/// `Priority::ExtraHigh` scheduler band, spelled out because a released
+/// migration must not depend on code that can still change.
+pub const V12: Migration = &["UPDATE task_definition SET priority = 10
+     WHERE priority > 10 AND task_id IN (
+        SELECT task_id FROM task_subscription WHERE target_kind = 'fortress'
+     )"];
+
+/// Discard discovery windows that are not on the fortress lattice.
+///
+/// The first discovery implementation stepped a flat ±17, which lands between
+/// slots, so those rows can never find anything and only consume requests.
+/// Fortresses sit where `x ≡ y (mod 39)` and `x mod 39 ∈ {9, 29}`; anything else
+/// is provably empty ground.
+pub const V13: Migration = &["DELETE FROM fortress_scan_frontier
+     WHERE (center_x % 39) <> (center_y % 39)
+        OR (center_x % 39) NOT IN (9, 29)"];
+
+pub const V14: Migration = &["DELETE FROM fortress_scan_frontier"];
+
+/// Fortress discovery stops being a queue of one row per coordinate and becomes
+/// one cursor row per (kingdom, grid): the bounds of the sweep and where it has
+/// reached.
+///
+/// `fortress_scan_frontier` is left in place rather than dropped. The
+/// declarative list above re-creates every table it names on each launch, so a
+/// drop here would only resurrect an empty table on the next start, and V13/V14
+/// still reference it, so it has to exist for a fresh database. Nothing reads
+/// it any more; the fortresses it found are in `fortress_target`.
+pub const V15: Migration = &["CREATE TABLE IF NOT EXISTS fortress_scan_state (
+        account_id TEXT NOT NULL,
+        kingdom_id INTEGER NOT NULL,
+        lattice_offset INTEGER NOT NULL,
+        left_bound INTEGER NOT NULL,
+        top_bound INTEGER NOT NULL,
+        right_bound INTEGER NOT NULL,
+        bottom_bound INTEGER NOT NULL,
+        next_x INTEGER NOT NULL,
+        next_y INTEGER NOT NULL,
+        blocks_total INTEGER NOT NULL,
+        blocks_done INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (account_id, kingdom_id, lattice_offset),
+        FOREIGN KEY (account_id) REFERENCES account_profile(account_id) ON DELETE CASCADE
+    )"];
+
+pub const MIGRATIONS: &[Migration] = &[
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15,
+];
 
 /// Every table that holds user data, for the storage report and full wipe.
 /// Order matters for deletion: children before parents.
@@ -489,7 +556,7 @@ pub const DATA_TABLES: &[&str] = &[
     "recruit_castle_state",
     "account_navigation",
     "map_scan_window",
-    "fortress_scan_frontier",
+    "fortress_scan_state",
     "fortress_target",
     "rbc_target",
     "account_commander",

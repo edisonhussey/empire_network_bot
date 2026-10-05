@@ -125,6 +125,21 @@ targets separately from RBCs, and converts the observed remaining seconds into
 an absolute availability time. The exact human-facing meaning of field 6 is not
 required for classification; it is retained as the raw occupier/player id.
 
+### Outer-kingdom map boundary and fortress coverage
+
+Direct `gaa` boundary probes returned ordinary map rows at coordinates through
+`1285` on both axes. A window at `1286` was partial or empty depending on its
+other axis, and windows at `1290` and above returned an empty `AI` list. The
+last coordinate on the observed fortress lattice inside that map is `1277`.
+
+The fortress lattice contains two interleaved grids, so the bounded rectangle
+from `0:0` through `1285:1285` contains 2,178 candidate coordinates per outer
+kingdom. Captures also show populated fortress bands separated by empty lattice
+slots. Consequently, an empty ring around the currently known targets does not
+establish that all fortresses have been found; complete discovery requires
+visiting every candidate coordinate in the bounded rectangle. Green has no
+fortress type in the captured game data and is excluded from this traversal.
+
 ## Stable level and attack travel options
 
 The `HBW` field in `cra` is not one universal coin-horse identifier. Captured

@@ -102,6 +102,30 @@ impl Default for DaemonConfig {
 /// Common bind address, so the window can find the service it started.
 pub const DEFAULT_BIND: &str = "127.0.0.1:47821";
 
+/// The HTTP contract the window relies on.
+///
+/// The window probes `/v1/health` and replaces any service answering with an
+/// older number, so this has to be bumped whenever behaviour the window depends
+/// on changes - not only when routes are added. Missing a bump means a freshly
+/// installed window keeps talking to the previous service, which looks exactly
+/// like the new code never shipped.
+///
+/// 21: a fortress task seeds its own discovery walk from its castle, so a cold
+/// account starts scanning instead of idling.
+/// 22: `kingdom_health` carries per-kingdom fortress counts, and the dashboard
+/// fortress summary is scoped to kingdoms that actually have a fortress task.
+/// 23: fortress discovery probes the real fortress lattice instead of stepping a
+/// flat ±17 between slots, so it can actually find fortresses.
+/// 24: a fortress mode queues a cooldown read for every fortress initialization
+/// discovered, so it starts with real state instead of learning it by attacking.
+/// 25: that recheck is gated on observation age, so a cooldown read can no longer
+/// schedule the next one and spin forever.
+/// 26: the cold-start fortress walk widens to the map instead of stopping six
+/// lattice steps from the castle.
+/// 27: queued fortress probes far from any known fortress are pruned, so a
+/// historic widening cannot leave thousands of pointless requests queued.
+pub const API_VERSION: u16 = 30;
+
 /// Is something already listening on the service port?
 ///
 /// Reusing a running service is what keeps one game session alive across window
@@ -288,7 +312,7 @@ async fn health(State(state): State<AppState>) -> Json<Health> {
     let licence_active = state.licence.status().await.active;
     Json(Health {
         status: "ok",
-        api_version: 19,
+        api_version: API_VERSION,
         service_pid: std::process::id(),
         licence_active,
         transport_connected: state.active_transport.read().await.is_some(),

@@ -112,7 +112,10 @@ fn service_is_compatible() -> bool {
         return false;
     };
     let response = String::from_utf8_lossy(&response);
-    response.starts_with("HTTP/1.1 200") && response.contains("\"api_version\":19")
+    // Same constant the service reports, so the window and the service cannot
+    // drift apart: anything that is not this build gets replaced.
+    let expected = format!("\"api_version\":{}", empire_daemon::API_VERSION);
+    response.starts_with("HTTP/1.1 200") && response.contains(&expected)
 }
 
 /// Stop only a process conclusively identified as our legacy macOS service.
