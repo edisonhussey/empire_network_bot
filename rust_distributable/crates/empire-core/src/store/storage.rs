@@ -51,6 +51,8 @@ const ACCOUNT_TABLES: &[&str] = &[
     "account_castle_unit",
     "recruit_castle_state",
     "account_navigation",
+    "fortress_scan_frontier",
+    "fortress_target",
     "rbc_target",
     "account_commander",
     "owned_castle",

@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -425,7 +425,44 @@ pub const V10: Migration = &["CREATE TABLE IF NOT EXISTS licence_activation (
         updated_at_ms INTEGER NOT NULL
     )"];
 
-pub const MIGRATIONS: &[Migration] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9, V10];
+/// Fortress knowledge remains distinct from RBC knowledge because the two map
+/// objects have different wire types and cooldown behavior.
+pub const V11: Migration = &[
+    "CREATE TABLE IF NOT EXISTS fortress_target (
+        account_id TEXT NOT NULL,
+        kingdom_id INTEGER NOT NULL,
+        x INTEGER NOT NULL,
+        y INTEGER NOT NULL,
+        level INTEGER NOT NULL,
+        cooldown_remaining_s INTEGER NOT NULL,
+        available_at_ms INTEGER NOT NULL,
+        occupier_player_id INTEGER NOT NULL,
+        reserved_until_ms INTEGER NOT NULL DEFAULT 0,
+        refresh_due_ms INTEGER NOT NULL DEFAULT 0,
+        last_attacked_ms INTEGER NOT NULL DEFAULT 0,
+        observed_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (account_id, kingdom_id, x, y),
+        FOREIGN KEY (account_id) REFERENCES account_profile(account_id) ON DELETE CASCADE
+    )",
+    "CREATE INDEX IF NOT EXISTS fortress_target_ready_idx
+        ON fortress_target (account_id, kingdom_id, available_at_ms, reserved_until_ms)",
+    "CREATE INDEX IF NOT EXISTS fortress_target_refresh_idx
+        ON fortress_target (account_id, refresh_due_ms)",
+    "CREATE TABLE IF NOT EXISTS fortress_scan_frontier (
+        account_id TEXT NOT NULL,
+        kingdom_id INTEGER NOT NULL,
+        center_x INTEGER NOT NULL,
+        center_y INTEGER NOT NULL,
+        claimed_until_ms INTEGER NOT NULL DEFAULT 0,
+        completed_at_ms INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (account_id, kingdom_id, center_x, center_y),
+        FOREIGN KEY (account_id) REFERENCES account_profile(account_id) ON DELETE CASCADE
+    )",
+    "CREATE INDEX IF NOT EXISTS fortress_scan_frontier_pending_idx
+        ON fortress_scan_frontier (account_id, kingdom_id, completed_at_ms, claimed_until_ms)",
+];
+
+pub const MIGRATIONS: &[Migration] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11];
 
 /// Every table that holds user data, for the storage report and full wipe.
 /// Order matters for deletion: children before parents.
@@ -452,6 +489,8 @@ pub const DATA_TABLES: &[&str] = &[
     "recruit_castle_state",
     "account_navigation",
     "map_scan_window",
+    "fortress_scan_frontier",
+    "fortress_target",
     "rbc_target",
     "account_commander",
     "owned_castle",

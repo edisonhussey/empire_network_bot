@@ -18,6 +18,7 @@ let cachedHunt = null;
 let huntFetchedAt = 0;
 let cachedDashboard = null;
 let dashboardFetchedAt = 0;
+let dashboardAccountId = null;
 let addingAccount = false;
 const fallbackKingdoms = [
   { id: 0, name: "green_kingdom" }, { id: 1, name: "sand_kingdom" },
@@ -93,6 +94,7 @@ function showApplication(licence) {
   activation.hidden = true;
   appShell.hidden = false;
   $("#licence-expiry").textContent = expiryLabel(licence.expires_at);
+  $("#plan-badge").hidden = licence.tier !== "pro";
   if (licence.stage === "unactivated") {
     switchView("initialize");
     $("#direct-result").textContent = "Access accepted. Initialize the matching account to activate this installation.";
@@ -119,9 +121,11 @@ const viewTitles = {
   modes: ["Attack", "Create attack bot"],
   recruitments: ["Recruit", "Create recruitment"],
   "recruit-bots": ["Recruit", "Create recruit bot"],
-  accounts: ["Workspace", "Start"],
+  accounts: ["Workspace", "Control Panel"],
   initialize: ["Workspace", "Initialize"],
+  presets: ["Library", "Manage presets"],
   logs: ["Diagnostics", "Logs"],
+  support: ["Help", "Support"],
 };
 
 function switchView(name) {
@@ -295,7 +299,7 @@ function updateTargetKinds() {
   $("#target-level-min").required = !isFortress;
   $("#target-level-max").required = !isFortress;
   $("#target-hint").textContent = $("#target-kind").value === "fortress"
-    ? "This kingdom has one fortress target type, so no level range is needed."
+    ? "OpenAuto chooses a learned fortress in this kingdom."
     : "OpenAuto chooses a learned Robber Baron in this level range; no destination coordinate is required.";
   updateSourceCoordinates();
 }
@@ -305,6 +309,7 @@ function updateSourceCoordinates() {
   const kingdomId = Number($("#source-kid").value);
   const health = connectedAccounts.flatMap((account) => account.kingdom_health || []).find((value) => value.kingdom_id === kingdomId);
   for (const input of [$("#source-x"), $("#source-y")]) input.disabled = automatic;
+  $(".source-coordinates").hidden = automatic;
   if (automatic && health) {
     $("#source-x").value = health.x;
     $("#source-y").value = health.y;
@@ -416,11 +421,12 @@ function taskToDraft(task) {
   const subscription = library.subscriptions.find((value) => value.task_id === task.task_id);
   if (!runtime) return null;
   const targetKind = subscription?.target_kind || "rbc";
+  const sourceKind = runtime.source_kind || "coordinate";
   return {
     name: task.name,
     attack_profile_id: task.profile_id,
-    source: { kingdom_id: runtime.source_kingdom_id, x: runtime.source_x, y: runtime.source_y },
-    source_kind: runtime.source_kind || "coordinate",
+    source: { kingdom_id: runtime.source_kingdom_id, x: sourceKind === "main_castle" ? 0 : runtime.source_x, y: sourceKind === "main_castle" ? 0 : runtime.source_y },
+    source_kind: sourceKind,
     destination: targetKind === "fortress" ? {
       kind: "fortress", kingdom_id: task.kingdom_id,
     } : task.target_level_min !== null ? {
@@ -506,6 +512,92 @@ function renderLibrary() {
   if (!library.tasks.length) taskList.append(element("p", "empty-copy", "Create an attack first, then add a task."));
   renderAvailableTasks();
   renderModes();
+  renderPresets();
+}
+
+function portableTask(task) {
+  const profile = library.attacks.find((value) => value.profile_id === task.profile_id);
+  return { schema: 2, kind: "task", attack: profileToDraft(profile), task: taskToDraft(task) };
+}
+
+function portableRecruitBot(bot) {
+  const recruitmentIds = new Set(bot.castles.map((value) => value.recruitment_id));
+  const recruitments = library.recruitments.filter((value) => recruitmentIds.has(value.recruitment_id));
+  const subscriptions = bot.castles.map((value) => {
+    const castle = library.castles.find((item) => item.account_id.toLowerCase() === value.account_id.toLowerCase() && item.castle_id === value.castle_id);
+    const peers = library.castles.filter((item) => item.account_id.toLowerCase() === value.account_id.toLowerCase() && item.kingdom_id === castle?.kingdom_id && item.area_type === castle?.area_type).sort((a, b) => a.castle_id - b.castle_id);
+    return { kingdom_id: castle?.kingdom_id, castle_role: castle?.area_type === 4 ? "outpost" : castle?.kingdom_id === 0 ? "main_castle" : "kingdom_castle", occurrence: Math.max(0, peers.findIndex((item) => item.castle_id === castle?.castle_id)), recruitment: library.recruitments.find((item) => item.recruitment_id === value.recruitment_id)?.name };
+  });
+  return { schema: 2, kind: "recruit_bot", recruit_bot: { name: bot.name, algorithm: bot.algorithm, recruitments: recruitments.map((value) => ({ name: value.name, troop_id: value.troop_id, quantity: value.quantity, slot_count: value.slot_count, ask_alliance_help: value.ask_alliance_help })), subscriptions } };
+}
+
+function presetRow(name, detail, copied, deletePath) {
+  const row = element("article", "library-row");
+  const identity = element("div"); identity.append(element("b", "", name), element("small", "", detail));
+  const actions = element("span", "row-actions");
+  actions.append(actionButton("Copy config", () => copyJson(copied, $("#preset-result"))));
+  if (deletePath) actions.append(actionButton("Delete", () => deleteEntry(deletePath, "#preset-result"), true));
+  row.append(identity, actions); return row;
+}
+
+function presetGroup(title, rows) {
+  const section = element("section", "card preset-group");
+  const head = element("div", "card-title"); const copy = element("div");
+  copy.append(element("p", "eyebrow", "Reusable component"), element("h2", "", title)); head.append(copy); section.append(head);
+  const list = element("div", "library-list");
+  list.append(...(rows.length ? rows : [element("p", "empty-copy", `No ${title.toLowerCase()} saved yet.`)])); section.append(list); return section;
+}
+
+function renderPresets() {
+  const container = $("#preset-groups");
+  if (!container) return;
+  const attacks = library.attacks.map((value) => presetRow(value.name, "Attack structure", { schema: 2, kind: "attack", attack: profileToDraft(value) }, `/plans/attacks/${value.profile_id}`));
+  const tasks = library.tasks.map((value) => presetRow(value.name, `${kingdomLabel(value.kingdom_id)} task`, portableTask(value), `/plans/tasks/${value.task_id}`));
+  const modes = library.modes.map((value) => { const allocations = value.allocations?.length ? value.allocations : value.task_ids.map((task_id) => ({ task_id, commander_count: 1 })); return presetRow(value.name, `${value.commander_count} commanders · includes attacks and tasks`, bundleForMode(value.name, allocations), `/plans/modes/${value.mode_id}`); });
+  const recruitments = library.recruitments.map((value) => presetRow(value.name, `${itemName(value.troop_id)} · ${value.quantity} × ${value.slot_count}`, { schema: 2, kind: "recruitment", recruitment: { name: value.name, troop_id: value.troop_id, quantity: value.quantity, slot_count: value.slot_count, ask_alliance_help: value.ask_alliance_help } }, `/plans/recruitments/${value.recruitment_id}`));
+  const recruitBots = library.recruit_bots.map((value) => presetRow(value.name, `${value.castles.length} logical castle subscriptions`, portableRecruitBot(value), `/plans/recruit-bots/${value.recruit_bot_id}`));
+  const combinations = library.account_modes.map((assignment) => {
+    const mode = library.modes.find((value) => value.mode_id === assignment.mode_id);
+    if (!mode) return null;
+    const allocations = mode.allocations?.length ? mode.allocations : mode.task_ids.map((task_id) => ({ task_id, commander_count: 1 }));
+    const recruitAssignment = library.account_recruit_bots.find((value) => value.account_id.toLowerCase() === assignment.account_id.toLowerCase());
+    const recruitBot = recruitAssignment && library.recruit_bots.find((value) => value.recruit_bot_id === recruitAssignment.recruit_bot_id);
+    const config = { schema: 2, kind: "complete_bot", name: `${mode.name}${recruitBot ? ` + ${recruitBot.name}` : ""}`, attack_bot: bundleForMode(mode.name, allocations), recruit_bot: recruitBot ? portableRecruitBot(recruitBot).recruit_bot : null };
+    return presetRow(config.name, recruitBot ? "Attack and recruitment configuration" : "Complete attack configuration", config, null);
+  }).filter(Boolean);
+  container.replaceChildren(presetGroup("Complete bots", combinations), presetGroup("Attacks", attacks), presetGroup("Tasks", tasks), presetGroup("Attack bots", modes), presetGroup("Recruitments", recruitments), presetGroup("Recruit bots", recruitBots));
+}
+
+async function importPreset(config) {
+  if (config.schema === 1 && Array.isArray(config.tasks)) return api("/plans/import", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(config) });
+  if (config.schema !== 2) throw new Error("Unsupported config schema.");
+  if (config.kind === "complete_bot") {
+    const mode = await api("/plans/import", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(config.attack_bot) });
+    const recruit = config.recruit_bot ? await importPreset({ schema: 2, kind: "recruit_bot", recruit_bot: config.recruit_bot }) : null;
+    return { mode_id: mode.mode_id, recruit_bot_id: recruit?.id || null };
+  }
+  if (config.kind === "attack") return api("/plans/attacks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(config.attack) });
+  if (config.kind === "recruitment") return api("/plans/recruitments", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(config.recruitment) });
+  if (config.kind === "task") {
+    const attack = await api("/plans/attacks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(config.attack) });
+    return api("/plans/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...config.task, attack_profile_id: attack.id }) });
+  }
+  if (config.kind === "recruit_bot") {
+    const account = connectedAccounts[0];
+    if (!account) throw new Error("Initialize an account before importing a recruit bot.");
+    const ids = new Map();
+    for (const recruitment of config.recruit_bot.recruitments || []) {
+      const created = await api("/plans/recruitments", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(recruitment) }); ids.set(recruitment.name, created.id);
+    }
+    const castles = (config.recruit_bot.subscriptions || []).map((subscription, position) => {
+      const candidates = library.castles.filter((castle) => castle.account_id.toLowerCase() === account.account_id.toLowerCase() && castle.kingdom_id === subscription.kingdom_id && (subscription.castle_role !== "outpost" || castle.area_type === 4)).sort((a, b) => a.castle_id - b.castle_id);
+      const castle = candidates[subscription.occurrence || 0];
+      if (!castle) throw new Error(`No matching ${kingdomLabel(subscription.kingdom_id)} castle exists on this account.`);
+      return { account_id: account.account_id, castle_id: castle.castle_id, recruitment_id: ids.get(subscription.recruitment), position };
+    });
+    return api("/plans/recruit-bots", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: config.recruit_bot.name, algorithm: config.recruit_bot.algorithm, castles }) });
+  }
+  throw new Error(`Unsupported preset kind: ${config.kind}`);
 }
 
 function renderAvailableTasks() {
@@ -767,6 +859,7 @@ async function refreshAccounts(knownDirect = null) {
     connection.append(element("p", "list-label", "Step 1 · Connection"));
     const password = document.createElement("input"); password.type = "password"; password.placeholder = "Password"; password.autocomplete = "current-password";
     const connectionResult = element("span", "connection-result", isConnected ? "Connected. Cached map data is being used." : "Not connected. Your castles and targets are still shown from the last visit.");
+    const connectionState = element("span", isConnected ? "control-state live" : "control-state", isConnected ? "● Connected" : "● Disconnected");
     const login = actionButton("Start connection", async () => {
       try { await connectSavedAccount(account, password.value, 0, true, connectionResult); password.value = ""; }
       catch (error) { password.value = ""; connectionResult.textContent = error.message; }
@@ -780,8 +873,8 @@ async function refreshAccounts(knownDirect = null) {
     // Scanning has its own home in Initialize, next to the radius it uses, so
     // this step is only about opening and closing the socket.
     const scanRow = element("div", "connection-scan");
-    scanRow.append(close);
-    connection.append(password, login, scanRow, connectionResult);
+    scanRow.append(login, close, connectionState);
+    connection.append(password, scanRow, connectionResult);
     // Only one socket exists, so signing in here ends whoever holds it.
     if (!isConnected && direct.connected) connection.append(element("p", "empty-copy", "Another account holds the connection. Starting this one replaces that session."));
 
@@ -816,7 +909,7 @@ async function refreshAccounts(knownDirect = null) {
     };
     recruitSelect.addEventListener("change", describeRecruit);
     describeRecruit();
-    const summary = element("span", running ? "bot-state running" : "bot-state", running ? `Running${currentRecruit?.running ? " with recruitment" : ""}` : "Stopped");
+    const summary = element("span", running ? "bot-state running" : "bot-state", running ? `● Running${currentRecruit?.running ? " with recruitment" : ""}` : "● Stopped");
     const controls = element("div", "bot-start-actions");
     const start = actionButton(running ? "Bot running" : "Start bot", async () => {
       try {
@@ -853,7 +946,8 @@ function dashboardStat(value, label) {
 }
 
 // STYLE: ruby chart redrawn as a single 1px white line over dashed hairline gridlines.
-// No area fill, no gradient, no colour. Y axis starts at zero with round tick values.
+// No area fill, no gradient, no colour. Both vertical bounds follow the
+// lifetime data so a large historic total does not flatten recent changes.
 // The viewBox is close to the width it is rendered at - the chart lives in the
 // right-hand dashboard column - so the axis text stays legible instead of being
 // scaled down with the drawing.
@@ -861,22 +955,25 @@ function renderRubyChart(series) {
   const container = $("#ruby-chart");
   if (!series?.length) { container.replaceChildren(element("p", "empty-copy", "No ruby returns recorded yet.")); return; }
   const width = 440; const height = 300; const left = 40; const right = 8; const top = 12; const bottom = 34;
-  const maximum = Math.max(1, ...series.map((point) => point.value));
-  const rough = maximum / 4; const magnitude = 10 ** Math.floor(Math.log10(rough));
+  const minimumValue = Math.min(...series.map((point) => point.value));
+  const maximumValue = Math.max(1, ...series.map((point) => point.value));
+  const spread = Math.max(1, maximumValue - minimumValue);
+  const rough = spread / 4; const magnitude = 10 ** Math.floor(Math.log10(rough));
   const step = [1, 2, 5, 10].map((unit) => unit * magnitude).find((value) => value >= rough);
-  const ceiling = Math.ceil(maximum / step) * step;
+  const floor = Math.max(0, Math.floor(minimumValue / step) * step);
+  const ceiling = Math.max(floor + step, Math.ceil(maximumValue / step) * step);
   const plotW = width - left - right; const plotH = height - top - bottom;
   const px = (index) => left + index * plotW / Math.max(1, series.length - 1);
-  const py = (value) => top + plotH - value * plotH / ceiling;
+  const py = (value) => top + plotH - (value - floor) * plotH / (ceiling - floor);
   const points = series.map((point, index) => `${px(index).toFixed(1)},${py(point.value).toFixed(1)}`).join(" ");
   let grid = "";
-  for (let tick = 0; tick <= ceiling; tick += step) {
+  for (let tick = floor; tick <= ceiling; tick += step) {
     grid += `<line class="grid" x1="${left}" y1="${py(tick)}" x2="${width - right}" y2="${py(tick)}"/><text x="${left - 10}" y="${py(tick) + 4}" text-anchor="end">${tick >= 1000 ? `${tick / 1000}k` : tick}</text>`;
   }
   const labels = 4; let axis = "";
   for (let i = 0; i < labels; i += 1) {
     const index = Math.round(i * (series.length - 1) / (labels - 1));
-    axis += `<text x="${px(index)}" y="${height - 8}" text-anchor="${i === 0 ? "start" : i === labels - 1 ? "end" : "middle"}">${new Date(series[index].at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}</text>`;
+    axis += `<text x="${px(index)}" y="${height - 8}" text-anchor="${i === 0 ? "start" : i === labels - 1 ? "end" : "middle"}">${new Date(series[index].at_ms).toLocaleDateString([], { month: "short", day: "numeric" })}</text>`;
   }
   container.innerHTML = `<svg viewBox="0 0 ${width} ${height}">${grid}${axis}<polyline class="line" points="${points}"/></svg>`;
 }
@@ -884,10 +981,15 @@ function renderRubyChart(series) {
 async function refreshDashboard(knownDirect = null, force = false) {
   try {
     const now = Date.now();
-    const huntRequest = force || !cachedHunt || now - huntFetchedAt >= 10000 ? api("/hunt").then((value) => { cachedHunt = value; huntFetchedAt = Date.now(); return value; }) : Promise.resolve(cachedHunt);
-    const summaryRequest = force || !cachedDashboard || now - dashboardFetchedAt >= 60000 ? api("/dashboard").then((value) => { cachedDashboard = value; dashboardFetchedAt = Date.now(); return value; }) : Promise.resolve(cachedDashboard);
-    const [hunt, direct, summary] = await Promise.all([huntRequest, knownDirect ? Promise.resolve(knownDirect) : api("/direct"), summaryRequest]);
-    const runningAssignments = library.account_modes.filter((value) => value.running);
+    const direct = knownDirect || await api("/direct");
+    const accountId = direct.account_id || connectedAccounts[0]?.account_id || "";
+    const query = accountId ? `?account_id=${encodeURIComponent(accountId)}` : "";
+    if (dashboardAccountId !== accountId) { cachedHunt = null; cachedDashboard = null; dashboardAccountId = accountId; }
+    const huntRequest = force || !cachedHunt || now - huntFetchedAt >= 10000 ? api(`/hunt${query}`).then((value) => { cachedHunt = value; huntFetchedAt = Date.now(); return value; }) : Promise.resolve(cachedHunt);
+    const summaryRequest = force || !cachedDashboard || now - dashboardFetchedAt >= 60000 ? api(`/dashboard${query}`).then((value) => { cachedDashboard = value; dashboardFetchedAt = Date.now(); return value; }) : Promise.resolve(cachedDashboard);
+    const [hunt, summary] = await Promise.all([huntRequest, summaryRequest]);
+    const activeAccountId = direct.account_id || connectedAccounts[0]?.account_id || null;
+    const runningAssignments = library.account_modes.filter((value) => value.running && (!activeAccountId || value.account_id.toLowerCase() === activeAccountId.toLowerCase()));
     const runnerActive = hunt.active && direct.connected && runningAssignments.length > 0;
     const connected = direct.connected;
     const state = runnerActive ? "Bot running" : connected ? "Account connected" : "Automation stopped";
@@ -895,7 +997,7 @@ async function refreshDashboard(knownDirect = null, force = false) {
     $("#dashboard-dot").className = `live-dot${runnerActive ? " running" : direct.phase === "failed" ? " error" : ""}`;
     const assignment = runningAssignments[0];
     const mode = assignment && library.modes.find((value) => value.mode_id === assignment.mode_id);
-    const scanProgress = direct.scan_total ? `Sands scan ${direct.scan_sent + direct.scan_cached}/${direct.scan_total} · ${direct.scan_cached} cached` : null;
+    const scanProgress = direct.scan_total ? `${kingdomLabel(direct.scan_kingdom_id)} scan ${direct.scan_sent + direct.scan_cached}/${direct.scan_total} · ${direct.scan_cached} cached` : null;
     $("#dashboard-subtitle").textContent = scanProgress || (runnerActive ? `${mode?.name || hunt.label || "Automation"} · ${direct.account_id || hunt.account_id || "connected account"}` : connected ? "Connected and ready to run a bot" : phaseCopy[direct.phase] || "No active session");
     $("#metric-attacks").textContent = compactNumber(hunt.marches);
     $("#metric-returned").textContent = `${compactNumber(hunt.returned)} returned`;
@@ -909,14 +1011,17 @@ async function refreshDashboard(knownDirect = null, force = false) {
     $("#chart-updated").textContent = `Updated ${new Date(summary.generated_at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
     renderRubyChart(summary.ruby_series);
 
-    const totals = connectedAccounts.reduce((value, account) => {
+    const dashboardAccounts = activeAccountId ? connectedAccounts.filter((account) => account.account_id.toLowerCase() === activeAccountId.toLowerCase()) : connectedAccounts.slice(0, 1);
+    const totals = dashboardAccounts.reduce((value, account) => {
       value.castles += account.castle_count || 0; value.commanders += account.commander_count || 0; value.targets += account.rbc_count || 0;
       return value;
     }, { castles: 0, commanders: 0, targets: 0 });
     $("#dashboard-health").replaceChildren(dashboardStat(totals.castles, "Castles"), dashboardStat(totals.commanders, "Commanders"), dashboardStat(totals.targets, "Targets"));
 
     const setup = $("#dashboard-assignment"); setup.replaceChildren();
-    for (const [label, value] of [["Account", assignment?.account_id || hunt.account_id || connectedAccounts[0]?.player_name || "None"], ["Attack bot", mode?.name || hunt.label || "None"], ["Session", connected ? "Connected" : "Disconnected"]]) {
+    const currentKingdom = direct.current_kingdom_id == null ? "Unknown" : kingdomLabel(direct.current_kingdom_id);
+    const currentView = direct.map_mode ? "Map View" : direct.current_castle_id ? "Inside Castle" : "Loading";
+    for (const [label, value] of [["Account", dashboardAccounts[0]?.player_name || assignment?.account_id || hunt.account_id || "None"], ["Attack bot", mode?.name || hunt.label || "None"], ["Current kingdom", currentKingdom], ["View", currentView], ["Session", connected ? "Connected" : "Disconnected"]]) {
       const line = element("div", "assignment-line"); line.append(element("span", "", label), element("b", "", value)); setup.append(line);
     }
 
@@ -1007,7 +1112,7 @@ function updateScanEstimate() {
   const minimumMinutes = Math.ceil(areas * 0.7 / 60);
   const maximumMinutes = Math.ceil(areas * 1.3 / 60);
   const grid = radius === 0 ? "the observed 3×2 viewport" : `a ${side}×${side} grid`;
-  $("#scan-estimate").textContent = `Radius ${radius} uses ${grid} (${areas} paced map requests) · roughly ${minimumMinutes}–${maximumMinutes} min if none are cached.`;
+  $("#scan-estimate").textContent = `Radius ${radius} uses ${grid} per available permanent kingdom (${areas} paced requests each) · roughly ${minimumMinutes}–${maximumMinutes} min per kingdom if none are cached.`;
 }
 
 /// Map areas a scan has to walk: the client asks in 13-area windows, so the grid
@@ -1022,23 +1127,12 @@ function clampRadius(value) {
   return Math.max(0, Math.min(500, Math.floor(Number(value) || 0)));
 }
 
-const SANDS_KINGDOM_ID = 1;
-/// Chosen radii, per castle. Seeded from the setup radius so the first scan here
-/// matches the one Initialize used.
-const scanRadii = {};
-
-function scanRadiusFor(entry) {
-  const stored = scanRadii[entry.castle_id];
-  if (stored !== undefined) return stored;
-  const fromSetup = clampRadius($("#scan-radius").value);
-  return fromSetup > 0 ? fromSetup : 50;
-}
+const PERMANENT_KINGDOM_IDS = new Set([0, 1, 2, 3]);
 
 /// How far the map around each castle is learned, and how far it should be.
 ///
-/// One row per kingdom, because a scan is measured from the main castle in that
-/// kingdom. Only Burning Sands can be scanned today, so the other rows report
-/// what has been learned rather than offering a control that would do nothing.
+/// One row per owned permanent kingdom. The single setup radius is deliberately
+/// shared: initialization walks every existing kingdom with the same policy.
 function renderScanPlan() {
   const container = $("#scan-castles");
   if (!container) return;
@@ -1047,8 +1141,8 @@ function renderScanPlan() {
   $("#scan-actions").hidden = !health.length;
   if (!health.length) { container.append(element("p", "empty-copy", "Initialize an account to set a scan radius per castle.")); return; }
   for (const entry of health) {
-    const scannable = entry.kingdom_id === SANDS_KINGDOM_ID;
-    const radius = scanRadiusFor(entry);
+    const scannable = PERMANENT_KINGDOM_IDS.has(entry.kingdom_id);
+    const radius = clampRadius($("#scan-radius").value) || 50;
     const target = scanAreasFor(radius);
     const learned = entry.scan_window_count || 0;
     const name = entry.castle_name || `Castle ${entry.castle_id}`;
@@ -1056,7 +1150,7 @@ function renderScanPlan() {
     const info = element("div");
     info.append(element("b", "", `${name} · ${kingdomLabel(entry.kingdom_id)}`));
     info.append(element("small", "", scannable
-      ? `Radius ${radius} covers ${target} map areas · ${learned} learned`
+      ? `Shared radius ${radius} covers ${target} map areas · ${learned} learned`
       : `${learned} map areas learned · ${entry.last_scanned_at_ms ? `last scanned ${relativeTime(entry.last_scanned_at_ms)}` : "not scanned yet"}`));
     const bar = element("div", "scan-coverage");
     const fill = element("i");
@@ -1064,13 +1158,7 @@ function renderScanPlan() {
     bar.append(fill);
     info.append(bar);
     const control = element("div", "scan-radius");
-    if (scannable) {
-      const input = document.createElement("input");
-      input.type = "number"; input.min = "0"; input.max = "500"; input.value = String(radius);
-      input.setAttribute("aria-label", `Scan radius around ${name}`);
-      input.addEventListener("change", () => { scanRadii[entry.castle_id] = clampRadius(input.value); renderScanPlan(); });
-      control.append(input, element("span", "scan-tag", "radius"));
-    }
+    if (scannable) control.append(element("span", "scan-tag", `radius ${radius}`));
     row.append(info, control);
     container.append(row);
   }
@@ -1084,7 +1172,7 @@ function renderScanProgress(direct) {
   $("#scan-bar-fill").style.width = total ? `${Math.round(Math.min(1, done / total) * 100)}%` : "0%";
   $("#scan-state").textContent = !total ? "Idle" : done >= total ? "Complete" : "Scanning";
   $("#scan-progress-copy").textContent = total
-    ? `${done} of ${total} map areas processed · ${direct.scan_cached || 0} reused from cache`
+    ? `${kingdomLabel(direct.scan_kingdom_id)} · ${done} of ${total} map areas processed · ${direct.scan_cached || 0} reused from cache`
     : "No scan running.";
 }
 
@@ -1135,6 +1223,7 @@ document.querySelectorAll("nav [data-view]").forEach((button) => button.addEvent
   if (button.dataset.view === "dashboard") await refreshDashboard();
   if (button.dataset.view === "accounts") await refreshAccounts();
   if (button.dataset.view === "initialize") { renderScanPlan(); renderScanProgress(latestDirect); }
+  if (button.dataset.view === "presets") renderPresets();
   if (button.dataset.view === "logs") await refreshLogs();
 }));
 $("#wave-tabs").addEventListener("click", (event) => { const button = event.target.closest("[data-wave]"); if (!button) return; activeWave = Number(button.dataset.wave); document.querySelectorAll("#wave-tabs button").forEach((value) => value.classList.toggle("selected", value === button)); renderWave(); });
@@ -1197,16 +1286,22 @@ $("#scan-now").addEventListener("click", async () => {
   const account = connectedAccounts[0];
   const output = $("#scan-result");
   if (!account) { output.textContent = "Initialize an account first."; return; }
-  const sands = (account.kingdom_health || []).find((value) => value.kingdom_id === SANDS_KINGDOM_ID);
   const password = $("#scan-password").value;
   if (!password) { output.textContent = "Enter the account password to re-scan."; return; }
-  const radius = sands ? scanRadiusFor(sands) : 0;
-  output.textContent = `Scanning around ${sands?.castle_name || "the main castle"}…`;
+  const radius = clampRadius($("#scan-radius").value) || 50;
+  output.textContent = `Scanning every available permanent kingdom at radius ${radius}…`;
   try {
     await connectSavedAccount(account, password, radius, false, output);
     $("#scan-password").value = "";
     renderScanPlan();
   } catch (error) { output.textContent = error.message; }
+});
+$("#import-preset").addEventListener("click", async () => {
+  try {
+    await importPreset(JSON.parse($("#preset-json").value));
+    $("#preset-result").textContent = "Config imported with new internal IDs.";
+    await loadLibrary();
+  } catch (error) { $("#preset-result").textContent = error.message; }
 });
 $("#dashboard-refresh").addEventListener("click", () => refreshDashboard(null, true));
 $("#refresh-logs").addEventListener("click", refreshLogs);

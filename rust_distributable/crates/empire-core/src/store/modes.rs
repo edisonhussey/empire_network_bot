@@ -69,6 +69,7 @@ pub struct ActiveModeTask {
     pub source_y: i64,
     pub travel_mode: TravelMode,
     pub algorithm: String,
+    pub target_kind: String,
     pub commander_lids: Vec<i64>,
 }
 
@@ -491,7 +492,8 @@ impl Store {
                              OR (r.source_kingdom_id <> 0 AND c.area_type = 12))
                          ORDER BY c.castle_id LIMIT 1)
                         ELSE r.source_y END AS resolved_source_y,
-                    r.source_kind, r.source_kingdom_id, r.travel_mode, s.filter_json,
+                    r.source_kind, r.source_kingdom_id, r.travel_mode,
+                    s.target_kind, s.filter_json,
                     mt.commander_count
              FROM account_mode am
              JOIN automation_mode_task mt ON mt.mode_id = am.mode_id
@@ -568,6 +570,9 @@ impl Store {
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("advanced")
                     .to_owned(),
+                target_kind: row
+                    .try_get::<Option<String>, _>("target_kind")?
+                    .unwrap_or_else(|| "rbc".to_owned()),
                 commander_lids: commanders,
             });
         }

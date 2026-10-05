@@ -6,7 +6,7 @@ use sqlx::{Row, SqlitePool, sqlite::SqlitePoolOptions};
 
 use crate::{
     RECENT_MESSAGE_LIMIT,
-    account::{AttackTravel, CastleTravelOptions, OwnedCastle, RbcTarget},
+    account::{AttackTravel, CastleTravelOptions, FortressTarget, OwnedCastle, RbcTarget},
     event::Direction,
     planning::TravelMode,
 };
@@ -120,6 +120,13 @@ pub struct ReservedTarget {
     pub level: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FortressProbe {
+    pub kingdom_id: i64,
+    pub center_x: i64,
+    pub center_y: i64,
+}
+
 #[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
@@ -127,6 +134,7 @@ pub struct Store {
 }
 
 pub const SCAN_REFRESH_BASE_MS: i64 = 12 * 60 * 60 * 1_000;
+const REQUEST_TIMEOUT_FOR_STORE_MS: i64 = 40_000;
 
 /// A stable per-window offset prevents every stored map window becoming due at
 /// once after a restart while keeping tests and scheduling reproducible.
@@ -285,6 +293,87 @@ impl Store {
             .bind(now_ms)
             .execute(&mut *tx)
             .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn upsert_fortress_targets(
+        &self,
+        account_id: &str,
+        targets: &[FortressTarget],
+        observed_at_ms: i64,
+    ) -> Result<(), sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        let mut tx = self.pool.begin().await?;
+        for target in targets {
+            let available_at_ms =
+                observed_at_ms.saturating_add(target.cooldown_remaining_s.saturating_mul(1_000));
+            sqlx::query(
+                "INSERT INTO fortress_target (
+                    account_id, kingdom_id, x, y, level, cooldown_remaining_s,
+                    available_at_ms, occupier_player_id, observed_at_ms
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(account_id, kingdom_id, x, y) DO UPDATE SET
+                    level = excluded.level,
+                    cooldown_remaining_s = excluded.cooldown_remaining_s,
+                    available_at_ms = CASE
+                        WHEN excluded.cooldown_remaining_s = 0
+                         AND fortress_target.available_at_ms <= excluded.observed_at_ms
+                        THEN fortress_target.available_at_ms
+                        ELSE excluded.available_at_ms
+                    END,
+                    occupier_player_id = excluded.occupier_player_id,
+                    refresh_due_ms = CASE
+                        WHEN excluded.cooldown_remaining_s = 0
+                         AND fortress_target.available_at_ms < excluded.observed_at_ms - 60000
+                        THEN excluded.observed_at_ms + 1800000
+                        ELSE 0
+                    END,
+                    observed_at_ms = excluded.observed_at_ms",
+            )
+            .bind(&account_id)
+            .bind(target.kingdom_id)
+            .bind(target.x)
+            .bind(target.y)
+            .bind(target.level)
+            .bind(target.cooldown_remaining_s)
+            .bind(available_at_ms)
+            .bind(target.occupier_player_id)
+            .bind(observed_at_ms)
+            .execute(&mut *tx)
+            .await?;
+            // A discovered fortress seeds a persistent graph walk. Seventeen
+            // tiles places the next 13x13 GAA beside the current one; diagonal
+            // probes cover the alternating fortress lattice seen in Sands and
+            // Fire. Completed probes remain as durable "already scanned" data.
+            for (dx, dy) in [
+                (-17, -17),
+                (0, -17),
+                (17, -17),
+                (-17, 0),
+                (17, 0),
+                (-17, 17),
+                (0, 17),
+                (17, 17),
+            ] {
+                let center_x = target.x + dx;
+                let center_y = target.y + dy;
+                if !(0..=2_000).contains(&center_x) || !(0..=2_000).contains(&center_y) {
+                    continue;
+                }
+                sqlx::query(
+                    "INSERT OR IGNORE INTO fortress_scan_frontier
+                        (account_id, kingdom_id, center_x, center_y)
+                     VALUES (?, ?, ?, ?)",
+                )
+                .bind(&account_id)
+                .bind(target.kingdom_id)
+                .bind(center_x)
+                .bind(center_y)
+                .execute(&mut *tx)
+                .await?;
+            }
         }
         tx.commit().await?;
         Ok(())
@@ -512,6 +601,297 @@ impl Store {
         // different username casing. Reserve every matching copy together and
         // treat any update as one successful logical target claim.
         Ok((updated.rows_affected() > 0).then_some(target))
+    }
+
+    /// Reserve the fortress whose one-minute dispatch window expires first.
+    /// A fortress that has been available for over a minute is intentionally
+    /// ignored until a fresh server observation gives it a new cooldown.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn reserve_fortress_target(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+        level_min: Option<i64>,
+        level_max: Option<i64>,
+        source: (i64, i64),
+        now_ms: i64,
+        reserved_until_ms: i64,
+    ) -> Result<Option<ReservedTarget>, sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        let row = sqlx::query(
+            "SELECT kingdom_id, x, y, level
+             FROM fortress_target
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ?
+               AND available_at_ms <= ? AND available_at_ms >= ?
+               AND reserved_until_ms <= ?
+               AND (? IS NULL OR level >= ?)
+               AND (? IS NULL OR level <= ?)
+             ORDER BY available_at_ms,
+                      abs(x - ?) + abs(y - ?), x, y
+             LIMIT 1",
+        )
+        .bind(&account_id)
+        .bind(kingdom_id)
+        .bind(now_ms)
+        .bind(now_ms.saturating_sub(60_000))
+        .bind(now_ms)
+        .bind(level_min)
+        .bind(level_min)
+        .bind(level_max)
+        .bind(level_max)
+        .bind(source.0)
+        .bind(source.1)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else { return Ok(None) };
+        let target = ReservedTarget {
+            kingdom_id: row.get("kingdom_id"),
+            x: row.get("x"),
+            y: row.get("y"),
+            level: Some(row.get("level")),
+        };
+        let updated = sqlx::query(
+            "UPDATE fortress_target SET reserved_until_ms = ?
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND x = ? AND y = ?
+               AND reserved_until_ms <= ?
+               AND available_at_ms <= ? AND available_at_ms >= ?",
+        )
+        .bind(reserved_until_ms)
+        .bind(&account_id)
+        .bind(target.kingdom_id)
+        .bind(target.x)
+        .bind(target.y)
+        .bind(now_ms)
+        .bind(now_ms)
+        .bind(now_ms.saturating_sub(60_000))
+        .execute(&self.pool)
+        .await?;
+        Ok((updated.rows_affected() > 0).then_some(target))
+    }
+
+    pub async fn reserve_fortress_probe(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+        now_ms: i64,
+    ) -> Result<Option<FortressProbe>, sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        let row = sqlx::query(
+            "SELECT kingdom_id, center_x, center_y
+             FROM fortress_scan_frontier
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ?
+               AND completed_at_ms = 0 AND claimed_until_ms <= ?
+             ORDER BY abs(center_x - 640) + abs(center_y - 640), center_x, center_y
+             LIMIT 1",
+        )
+        .bind(&account_id)
+        .bind(kingdom_id)
+        .bind(now_ms)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else { return Ok(None) };
+        let probe = FortressProbe {
+            kingdom_id: row.get("kingdom_id"),
+            center_x: row.get("center_x"),
+            center_y: row.get("center_y"),
+        };
+        let updated = sqlx::query(
+            "UPDATE fortress_scan_frontier SET claimed_until_ms = ?
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ?
+               AND center_x = ? AND center_y = ?
+               AND completed_at_ms = 0 AND claimed_until_ms <= ?",
+        )
+        .bind(now_ms.saturating_add(REQUEST_TIMEOUT_FOR_STORE_MS))
+        .bind(&account_id)
+        .bind(probe.kingdom_id)
+        .bind(probe.center_x)
+        .bind(probe.center_y)
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok((updated.rows_affected() > 0).then_some(probe))
+    }
+
+    pub async fn complete_fortress_probe(
+        &self,
+        account_id: &str,
+        probe: &FortressProbe,
+        observed_at_ms: i64,
+    ) -> Result<(), sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        sqlx::query(
+            "UPDATE fortress_scan_frontier
+             SET completed_at_ms = ?, claimed_until_ms = 0
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ?
+               AND center_x = ? AND center_y = ?",
+        )
+        .bind(observed_at_ms)
+        .bind(&account_id)
+        .bind(probe.kingdom_id)
+        .bind(probe.center_x)
+        .bind(probe.center_y)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn reserve_due_fortress_refresh(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+        now_ms: i64,
+    ) -> Result<Option<ReservedTarget>, sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        // Once the strict dispatch minute is gone, drop that opportunity but
+        // keep a lightweight truth refresh so a later attack by another player
+        // and its new 24-hour cooldown are eventually learned.
+        sqlx::query(
+            "UPDATE fortress_target SET refresh_due_ms = ?
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ?
+               AND available_at_ms < ? AND refresh_due_ms = 0",
+        )
+        .bind(now_ms)
+        .bind(&account_id)
+        .bind(kingdom_id)
+        .bind(now_ms.saturating_sub(60_000))
+        .execute(&self.pool)
+        .await?;
+        let row = sqlx::query(
+            "SELECT kingdom_id, x, y, level FROM fortress_target
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ?
+               AND refresh_due_ms > 0 AND refresh_due_ms <= ?
+             ORDER BY refresh_due_ms LIMIT 1",
+        )
+        .bind(&account_id)
+        .bind(kingdom_id)
+        .bind(now_ms)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else { return Ok(None) };
+        let target = ReservedTarget {
+            kingdom_id: row.get("kingdom_id"),
+            x: row.get("x"),
+            y: row.get("y"),
+            level: Some(row.get("level")),
+        };
+        sqlx::query(
+            "UPDATE fortress_target SET refresh_due_ms = ?
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND x = ? AND y = ?",
+        )
+        .bind(now_ms.saturating_add(10 * 60 * 1_000))
+        .bind(&account_id)
+        .bind(target.kingdom_id)
+        .bind(target.x)
+        .bind(target.y)
+        .execute(&self.pool)
+        .await?;
+        Ok(Some(target))
+    }
+
+    /// Require a live observation made after the revalidation request and keep
+    /// enforcing the one-minute dispatch window through ADI and CRA.
+    pub async fn fortress_is_dispatchable(
+        &self,
+        account_id: &str,
+        target: &ReservedTarget,
+        now_ms: i64,
+        observed_since_ms: Option<i64>,
+    ) -> Result<bool, sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM fortress_target
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND x = ? AND y = ?
+               AND available_at_ms <= ? AND available_at_ms >= ?
+               AND (? IS NULL OR observed_at_ms >= ?)",
+        )
+        .bind(&account_id)
+        .bind(target.kingdom_id)
+        .bind(target.x)
+        .bind(target.y)
+        .bind(now_ms)
+        .bind(now_ms.saturating_sub(60_000))
+        .bind(observed_since_ms)
+        .bind(observed_since_ms)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count > 0)
+    }
+
+    pub async fn release_fortress_target(
+        &self,
+        account_id: &str,
+        target: &ReservedTarget,
+    ) -> Result<(), sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        sqlx::query(
+            "UPDATE fortress_target SET reserved_until_ms = 0
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND x = ? AND y = ?",
+        )
+        .bind(&account_id)
+        .bind(target.kingdom_id)
+        .bind(target.x)
+        .bind(target.y)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn mark_fortress_attack_sent(
+        &self,
+        account_id: &str,
+        target: &ReservedTarget,
+        sent_at_ms: i64,
+        expected_landing_ms: i64,
+        refresh_delay_ms: i64,
+    ) -> Result<(), sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        sqlx::query(
+            "UPDATE fortress_target
+             SET last_attacked_ms = ?, reserved_until_ms = 0, refresh_due_ms = ?
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND x = ? AND y = ?",
+        )
+        .bind(sent_at_ms)
+        .bind(expected_landing_ms.saturating_add(refresh_delay_ms))
+        .bind(&account_id)
+        .bind(target.kingdom_id)
+        .bind(target.x)
+        .bind(target.y)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Rubies prove our fortress hit succeeded; otherwise retain the scheduled
+    /// live refresh because another player may have won the race.
+    pub async fn record_fortress_result(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+        x: i64,
+        y: i64,
+        ruby_loot: Option<i64>,
+        landed_at_ms: i64,
+    ) -> Result<(), sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        if ruby_loot.is_some_and(|rubies| rubies > 0) {
+            let cooldown_s = 100 * 60 * 60;
+            sqlx::query(
+                "UPDATE fortress_target
+                 SET cooldown_remaining_s = ?, available_at_ms = ?, refresh_due_ms = 0,
+                     reserved_until_ms = 0, observed_at_ms = ?
+                 WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND x = ? AND y = ?",
+            )
+            .bind(cooldown_s)
+            .bind(landed_at_ms.saturating_add(cooldown_s * 1_000))
+            .bind(landed_at_ms)
+            .bind(&account_id)
+            .bind(kingdom_id)
+            .bind(x)
+            .bind(y)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
     }
 
     pub async fn mark_target_attacked(

@@ -39,7 +39,7 @@
 
     <div id="app-shell" class="shell" hidden>
       <aside>
-        <div class="brand"><svg class="logo small" aria-hidden="true"><use href="#logo"/></svg><div>OpenAuto<small>Automation, simplified.</small></div></div>
+        <div class="brand"><svg class="logo small" aria-hidden="true"><use href="#logo"/></svg><div>OpenAuto<small>Automation, simplified.</small><b id="plan-badge" class="plan-badge" hidden>Pro</b></div></div>
         <nav aria-label="Primary navigation">
           <button class="active" data-view="dashboard"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-dashboard"/></svg></span>Dashboard</button>
           <div class="nav-group" data-group="attack">
@@ -57,9 +57,11 @@
               <button data-view="recruit-bots">Create recruit bot</button>
             </div>
           </div>
-          <button data-view="accounts"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-accounts"/></svg></span>Start</button>
+          <button data-view="accounts"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-accounts"/></svg></span>Control Panel</button>
           <button data-view="initialize"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-initialize"/></svg></span>Initialize</button>
+          <button data-view="presets"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-modes"/></svg></span>Manage presets</button>
           <button data-view="logs"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-logs"/></svg></span>Logs</button>
+          <button data-view="support"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-accounts"/></svg></span>Support</button>
         </nav>
         <div class="side-footer">
           <button id="add-credits" class="licence-button"><span>OpenAuto plan</span><b id="licence-expiry">Checking…</b></button>
@@ -89,7 +91,7 @@
           <section class="dashboard-grid">
             <article class="card dashboard-panel health-panel"><div class="card-title"><div><p class="eyebrow">Account health</p><h2>Discovered state</h2></div></div><div id="dashboard-health" class="health-stat-grid"></div></article>
             <article class="card dashboard-panel setup-panel"><div class="card-title"><div><p class="eyebrow">Current setup</p><h2>Automation assignment</h2></div></div><div id="dashboard-assignment" class="assignment-summary"></div></article>
-            <article class="card dashboard-panel ruby-chart-panel"><div class="card-title"><div><p class="eyebrow">Database history</p><h2>Recorded ruby returns · last 24 hours</h2></div><span id="chart-updated" class="chart-updated">Updating…</span></div><div class="hourly-rates"><div><b id="rate-attacks">—</b><span>Attacks / hour</span></div><div><b id="rate-returns">—</b><span>Returns / hour</span></div><div><b id="rate-rubies">—</b><span>Rubies / hour</span></div><div><b id="rate-coins">—</b><span>Coins / hour</span></div></div><div id="ruby-chart" class="ruby-chart" role="img" aria-label="Cumulative recorded rubies over the last 24 hours"></div></article>
+            <article class="card dashboard-panel ruby-chart-panel"><div class="card-title"><div><p class="eyebrow">Database history</p><h2>Lifetime cumulative rubies</h2></div><span id="chart-updated" class="chart-updated">Updating…</span></div><div class="hourly-rates"><div><b id="rate-attacks">—</b><span>Attacks / hour</span></div><div><b id="rate-returns">—</b><span>Returns / hour</span></div><div><b id="rate-rubies">—</b><span>Rubies / hour</span></div><div><b id="rate-coins">—</b><span>Coins / hour</span></div></div><div id="ruby-chart" class="ruby-chart" role="img" aria-label="Lifetime cumulative recorded rubies"></div></article>
             <article class="card dashboard-panel activity-panel"><div class="card-title"><div><p class="eyebrow">Database history</p><h2>Recent activity</h2></div><span class="chart-updated">Scrollable</span></div><div id="dashboard-activity" class="activity-list"></div></article>
           </section>
         </section>
@@ -97,7 +99,7 @@
         <section id="view-attacks" class="view" hidden>
           <section class="welcome-card compact-welcome">
             <div class="welcome-copy"><p class="eyebrow">Army template</p><h2>Build one reusable attack</h2><p>Choose troops and tools by name. OpenAuto handles game IDs and the packet structure.</p></div>
-            <div class="welcome-actions"><button id="clear-attack" class="secondary-action danger-outline" type="button">Reset attack</button><button id="copy-attack" class="secondary-action" type="button">Copy JSON</button></div>
+            <div class="welcome-actions"><button id="clear-attack" class="secondary-action danger-outline" type="button">Reset attack</button><button id="copy-attack" type="button" hidden>Copy JSON</button></div>
           </section>
           <form id="attack-form" class="card builder-card">
             <div class="builder-name"><label for="attack-name">Attack name</label><input id="attack-name" placeholder="e.g. Kunai flank clear" required /></div>
@@ -105,7 +107,7 @@
             <div id="wave-builder" class="wave-builder"></div>
             <div class="form-actions"><output id="attack-result"></output><button class="primary-action" type="submit">Save attack</button></div>
           </form>
-          <section class="card library-card"><div class="card-title"><div><p class="eyebrow">Attack library</p><h2>Saved attacks</h2></div></div><div id="attack-library" class="library-list"></div></section>
+          <section class="card library-card" hidden><div id="attack-library" class="library-list"></div></section>
         </section>
 
         <section id="view-tasks" class="view" hidden>
@@ -115,15 +117,15 @@
             <div class="field wide"><label for="task-attack">Attack</label><div class="select-wrap"><select id="task-attack" required></select></div></div>
             <fieldset class="wide"><legend>Farm from</legend><div class="farm-source"><label>Kingdom<div class="select-wrap"><select id="source-kid" required></select></div></label><label class="source-default"><input id="use-main-castle" type="checkbox" checked /><span>Use main castle automatically</span></label><div class="source-coordinates"><label>X<input id="source-x" type="number" value="0" disabled required /></label><label>Y<input id="source-y" type="number" value="0" disabled required /></label></div></div><p class="field-hint">Uncheck the automatic castle to use exact coordinates. Farming attacks stay inside their kingdom.</p></fieldset>
             <fieldset class="wide"><legend>Dynamic target</legend><div class="target-grid"><label>Target type<div class="select-wrap"><select id="target-kind"><option value="rbc">Robber Baron</option><option value="fortress">Fortress</option></select></div></label><label>Algorithm<div class="select-wrap"><select id="target-algorithm"><option value="advanced">Advanced</option><option value="closest">Closest</option><option value="random">Random</option></select></div></label><div id="target-level-fields" class="level-fields"><label>Minimum level<input id="target-level-min" type="number" min="1" value="35" required /></label><label>Maximum level<input id="target-level-max" type="number" min="1" value="60" required /></label></div></div><p id="target-hint" class="field-hint">OpenAuto chooses a learned target in this level range; no destination coordinate is required.</p></fieldset>
-            <div class="field"><label for="travel">Travel</label><div class="select-wrap"><select id="travel"><option value="coin">Coin</option><option value="ruby_1">Ruby 1</option><option value="ruby_2">Ruby 2</option><option value="feather">Feather</option></select></div><p class="field-hint">OpenAuto maps this choice to the source castle's available travel option.</p></div>
+            <div class="field"><label for="travel">Travel</label><div class="select-wrap"><select id="travel"><option value="coin">Coin</option><option value="ruby_1">Ruby slow</option><option value="ruby_2">Ruby fast</option><option value="feather">Feather</option></select></div><p class="field-hint">OpenAuto maps this choice to the source castle's available travel option.</p></div>
             <div class="field wide priority-field"><label>Priority</label><div id="priority-buttons" class="segmented priority-buttons"><button type="button" data-priority="extra_high">Extra high</button><button type="button" data-priority="high">High</button><button type="button" class="selected" data-priority="medium">Medium</button><button type="button" data-priority="low">Low</button></div></div>
-            <div class="form-actions wide"><output id="task-result"></output><button class="primary-action" type="submit">Save task</button></div>
+            <div class="form-actions wide save-left"><button class="primary-action" type="submit">Save task</button><output id="task-result"></output></div>
           </form>
-          <section class="card library-card"><div class="card-title"><div><p class="eyebrow">Task library</p><h2>Saved tasks</h2></div></div><div id="task-library" class="library-list"></div></section>
+          <section class="card library-card" hidden><div id="task-library" class="library-list"></div></section>
         </section>
 
         <section id="view-modes" class="view" hidden>
-          <section class="welcome-card compact-welcome"><div class="welcome-copy"><p class="eyebrow">Attack bot</p><h2>Give tasks to commanders</h2><p>Add reusable tasks, choose how many commanders each one gets, and read the schedule left to right. Commanders are numbered from 1 across the whole bot.</p></div><button id="copy-mode" class="secondary-action" type="button">Copy JSON</button></section>
+          <section class="welcome-card compact-welcome"><div class="welcome-copy"><p class="eyebrow">Attack bot</p><h2>Give tasks to commanders</h2><p>Add reusable tasks, choose how many commanders each one gets, and read the schedule left to right. Commanders are numbered from 1 across the whole bot.</p></div><button id="copy-mode" type="button" hidden>Copy JSON</button></section>
           <form id="mode-form" class="card mode-builder">
             <div class="builder-name"><label for="mode-name">Attack bot name</label><input id="mode-name" placeholder="e.g. Sands farming" required /></div>
             <div><p class="list-label">Available reusable tasks — press Add to place one</p><div id="available-tasks" class="task-pool available-task-list"></div></div>
@@ -131,8 +133,8 @@
             <div id="commander-warning" class="capacity-note">0 commanders allocated</div>
             <div class="form-actions"><output id="mode-result"></output><button class="primary-action" type="submit">Save attack bot</button></div>
           </form>
-          <section class="card import-card"><div><p class="eyebrow">Attack bot JSON</p><h2>Import a complete attack bot</h2><p>Attacks and tasks inside the JSON receive new internal IDs automatically.</p></div><textarea id="mode-json" placeholder="Paste attack bot JSON" spellcheck="false"></textarea><div class="form-actions"><button id="load-example" class="secondary-action" type="button">Load example</button><button id="import-mode" class="primary-action" type="button">Import attack bot</button></div><output id="import-result"></output></section>
-          <section class="card library-card"><div class="card-title"><div><p class="eyebrow">Attack bot library</p><h2>Saved attack bots</h2></div></div><div id="mode-library" class="library-list"></div></section>
+          <section class="card import-card" hidden><textarea id="mode-json"></textarea><button id="load-example" type="button">Example</button><button id="import-mode" type="button">Import</button><output id="import-result"></output></section>
+          <section class="card library-card" hidden><div id="mode-library" class="library-list"></div></section>
         </section>
 
         <section id="view-recruitments" class="view" hidden>
@@ -146,7 +148,7 @@
             <p class="field-hint wide">Each slot is sent separately and confirmed before the next. Queue completion comes from the server’s cumulative time estimate.</p>
             <div class="form-actions wide"><output id="recruitment-result"></output><button class="primary-action" type="submit">Save recruitment</button></div>
           </form>
-          <section class="card library-card"><div class="card-title"><div><p class="eyebrow">Recruitment library</p><h2>Saved recruitments</h2></div></div><div id="recruitment-library" class="library-list"></div></section>
+          <section class="card library-card" hidden><div id="recruitment-library" class="library-list"></div></section>
         </section>
 
         <section id="view-recruit-bots" class="view" hidden>
@@ -157,7 +159,7 @@
             <div><p class="list-label">Castle subscriptions</p><div id="recruit-castles" class="castle-subscriptions"></div></div>
             <div class="form-actions"><output id="recruit-bot-result"></output><button class="primary-action" type="submit">Save recruit bot</button></div>
           </form>
-          <section class="card library-card"><div class="card-title"><div><p class="eyebrow">Recruit bot library</p><h2>Saved recruit bots</h2></div></div><div id="recruit-bot-library" class="library-list"></div></section>
+          <section class="card library-card" hidden><div id="recruit-bot-library" class="library-list"></div></section>
         </section>
 
         <section id="view-initialize" class="view" hidden>
@@ -173,7 +175,7 @@
             <div id="account-profiles" class="account-profiles"><p class="empty-copy">No account yet — sign in above.</p></div>
           </section>
           <section class="card scan-card">
-            <div class="card-title"><div><p class="eyebrow">Map scan</p><h2>How far around each castle the map is learned</h2></div><span id="scan-state" class="chart-updated">Idle</span></div>
+            <div class="card-title"><div><p class="eyebrow">Map scan</p><h2>One radius across every permanent kingdom</h2></div><span id="scan-state" class="chart-updated">Idle</span></div>
             <div class="scan-progress"><div class="scan-bar"><i id="scan-bar-fill"></i></div><p id="scan-progress-copy" class="field-hint">No scan running.</p></div>
             <div id="scan-castles" class="scan-castles"><p class="empty-copy">Initialize an account to set a scan radius per castle.</p></div>
             <div class="form-actions" id="scan-actions" hidden><input id="scan-password" type="password" placeholder="Password" autocomplete="current-password" /><output id="scan-result"></output><button id="scan-now" class="primary-action" type="button">Scan map</button></div>
@@ -181,11 +183,21 @@
         </section>
 
         <section id="view-accounts" class="view" hidden>
-          <section class="card accounts-card"><div class="card-title"><div><p class="eyebrow">Connection and automation</p><h2>Start</h2></div><button id="refresh-accounts" class="icon-button" type="button" aria-label="Refresh accounts">↻</button></div><div id="accounts" class="account-grid"><div class="empty-state"><i>＋</i><p>Your saved accounts will appear here.</p></div></div></section>
+          <section class="card accounts-card"><div class="card-title"><div><p class="eyebrow">Connection and automation</p><h2>Control Panel</h2></div><button id="refresh-accounts" class="icon-button" type="button" aria-label="Refresh accounts">↻</button></div><div id="accounts" class="account-grid"><div class="empty-state"><i>＋</i><p>Your saved accounts will appear here.</p></div></div></section>
+        </section>
+
+        <section id="view-presets" class="view" hidden>
+          <section class="welcome-card compact-welcome"><div class="welcome-copy"><p class="eyebrow">Portable configuration</p><h2>Manage presets</h2><p>Copy, import, or remove reusable components here. Attack-bot exports include their attacks and tasks, so they are independent of an account.</p></div></section>
+          <section class="card preset-import"><div><p class="eyebrow">Import config</p><h2>Paste a portable preset</h2></div><textarea id="preset-json" placeholder="Paste an OpenAuto config" spellcheck="false"></textarea><div class="form-actions save-left"><button id="import-preset" class="primary-action" type="button">Import config</button><output id="preset-result"></output></div></section>
+          <div id="preset-groups" class="preset-groups"></div>
         </section>
 
         <section id="view-logs" class="view" hidden>
           <section class="card log-card"><div class="card-title"><div><p class="eyebrow">Support console</p><h2>Connection logs</h2></div><div class="row-actions"><span id="log-live" class="log-live offline"><i></i><span id="log-live-label">Offline</span></span><button id="refresh-logs" class="secondary-action" type="button">Refresh now</button><button id="copy-logs" class="secondary-action" type="button">Copy logs</button></div></div><p class="log-note">Updates automatically only while a game socket is connected. Passwords and session tokens are removed.</p><pre id="account-logs" class="log-console">No active connection. Stored events remain available below.</pre><output id="log-result"></output></section>
+        </section>
+
+        <section id="view-support" class="view" hidden>
+          <section class="welcome-card"><div class="welcome-copy"><p class="eyebrow">OpenAuto</p><h2>Support</h2></div></section>
         </section>
       </main>
     </div>

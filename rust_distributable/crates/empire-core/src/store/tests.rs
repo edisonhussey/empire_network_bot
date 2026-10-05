@@ -12,7 +12,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 
 use super::schema;
 use super::*;
-use crate::account::{CastleTravelOptions, OwnedCastle, RbcTarget};
+use crate::account::{CastleTravelOptions, FortressTarget, OwnedCastle, RbcTarget};
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -672,6 +672,221 @@ async fn storage_report_counts_rows_and_reports_the_schema_version() {
 }
 
 #[tokio::test]
+async fn fortress_observation_persists_the_server_cooldown_as_an_absolute_time() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    store
+        .upsert_fortress_targets(
+            "Ventrilo",
+            &[FortressTarget {
+                kingdom_id: 1,
+                x: 594,
+                y: 594,
+                level: 45,
+                cooldown_remaining_s: 38_421,
+                occupier_player_id: 17_185_267,
+            }],
+            NOW,
+        )
+        .await
+        .unwrap();
+    let row = sqlx::query(
+        "SELECT account_id, level, available_at_ms, occupier_player_id
+         FROM fortress_target WHERE kingdom_id = 1 AND x = 594 AND y = 594",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(row.get::<String, _>("account_id"), "ventrilo");
+    assert_eq!(row.get::<i64, _>("level"), 45);
+    assert_eq!(row.get::<i64, _>("available_at_ms"), NOW + 38_421_000);
+    assert_eq!(row.get::<i64, _>("occupier_player_id"), 17_185_267);
+}
+
+#[tokio::test]
+async fn fortress_reservation_has_a_strict_one_minute_dispatch_window() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    let ready = FortressTarget {
+        kingdom_id: 3,
+        x: 692,
+        y: 575,
+        level: 55,
+        cooldown_remaining_s: 0,
+        occupier_player_id: 16_859_207,
+    };
+    store
+        .upsert_fortress_targets("ventrilo", std::slice::from_ref(&ready), NOW)
+        .await
+        .unwrap();
+
+    let first = store
+        .reserve_fortress_target(
+            "ventrilo",
+            3,
+            None,
+            None,
+            (700, 580),
+            NOW + 60_000,
+            NOW + 61_000,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        first.as_ref().map(|target| (target.x, target.y)),
+        Some((692, 575))
+    );
+    store
+        .release_fortress_target("ventrilo", first.as_ref().unwrap())
+        .await
+        .unwrap();
+    assert!(
+        store
+            .reserve_fortress_target(
+                "ventrilo",
+                3,
+                None,
+                None,
+                (700, 580),
+                NOW + 60_001,
+                NOW + 61_001,
+            )
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // Re-reading an already-ready fortress must not restart its minute.
+    store
+        .upsert_fortress_targets("ventrilo", &[ready], NOW + 120_000)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .reserve_fortress_target(
+                "ventrilo",
+                3,
+                None,
+                None,
+                (700, 580),
+                NOW + 120_000,
+                NOW + 121_000,
+            )
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn fortress_discovery_frontier_is_durable_and_does_not_repeat_completed_probes() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    store
+        .upsert_rbc_targets(
+            "ventrilo",
+            &[RbcTarget {
+                kingdom_id: 1,
+                x: 600,
+                y: 610,
+                level: Some(61),
+            }],
+            NOW,
+        )
+        .await
+        .unwrap();
+    let before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM fortress_scan_frontier WHERE account_id = 'ventrilo'",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(before, 0, "ordinary RBCs must never seed fortress scanning");
+    store
+        .upsert_fortress_targets(
+            "ventrilo",
+            &[FortressTarget {
+                kingdom_id: 1,
+                x: 594,
+                y: 633,
+                level: 45,
+                cooldown_remaining_s: 1,
+                occupier_player_id: 1,
+            }],
+            NOW,
+        )
+        .await
+        .unwrap();
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM fortress_scan_frontier WHERE account_id = 'ventrilo'",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 8);
+
+    let probe = store
+        .reserve_fortress_probe("ventrilo", 1, NOW)
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .complete_fortress_probe("ventrilo", &probe, NOW + 1)
+        .await
+        .unwrap();
+    let completed: i64 = sqlx::query_scalar(
+        "SELECT completed_at_ms FROM fortress_scan_frontier
+         WHERE account_id = 'ventrilo' AND kingdom_id = ? AND center_x = ? AND center_y = ?",
+    )
+    .bind(probe.kingdom_id)
+    .bind(probe.center_x)
+    .bind(probe.center_y)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(completed, NOW + 1);
+}
+
+#[tokio::test]
+async fn successful_fortress_loot_sets_the_internal_hundred_hour_cooldown() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    store
+        .upsert_fortress_targets(
+            "ventrilo",
+            &[FortressTarget {
+                kingdom_id: 3,
+                x: 731,
+                y: 575,
+                level: 55,
+                cooldown_remaining_s: 0,
+                occupier_player_id: 1,
+            }],
+            NOW,
+        )
+        .await
+        .unwrap();
+    store
+        .record_fortress_result("ventrilo", 3, 731, 575, Some(100), NOW + 5_000)
+        .await
+        .unwrap();
+    let row = sqlx::query(
+        "SELECT cooldown_remaining_s, available_at_ms, refresh_due_ms
+         FROM fortress_target WHERE account_id = 'ventrilo' AND kingdom_id = 3
+           AND x = 731 AND y = 575",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(row.get::<i64, _>("cooldown_remaining_s"), 360_000);
+    assert_eq!(
+        row.get::<i64, _>("available_at_ms"),
+        NOW + 5_000 + 100 * 60 * 60 * 1_000
+    );
+    assert_eq!(row.get::<i64, _>("refresh_due_ms"), 0);
+}
+
+#[tokio::test]
 async fn prune_removes_only_history_older_than_the_cutoff() {
     let store = Store::open("sqlite::memory:").await.unwrap();
     seed_account(&store, "ventrilo").await;
@@ -934,6 +1149,60 @@ async fn dashboard_rates_series_and_scan_activity_come_from_the_database() {
 }
 
 #[tokio::test]
+async fn dashboard_and_hunt_summaries_are_scoped_to_the_selected_account() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    seed_account(&store, "pingpoko").await;
+    let real_now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let mut ventrilo = march(Some("sand_kunai"), 88, 25);
+    ventrilo.sent_at_ms = real_now - 30_000;
+    store.record_march(&ventrilo).await.unwrap();
+    store
+        .finish_march(
+            "ventrilo",
+            88,
+            MARCH_RETURNING,
+            Some(0),
+            Some(500),
+            Some(7),
+            real_now,
+        )
+        .await
+        .unwrap();
+    let mut pingpoko = march(Some("ice_kunai"), 99, 26);
+    pingpoko.account_id = "pingpoko".to_owned();
+    pingpoko.sent_at_ms = real_now - 20_000;
+    store.record_march(&pingpoko).await.unwrap();
+    store
+        .finish_march(
+            "pingpoko",
+            99,
+            MARCH_RETURNING,
+            Some(0),
+            Some(900),
+            Some(13),
+            real_now,
+        )
+        .await
+        .unwrap();
+
+    let dashboard = store.dashboard_summary_for(Some("Ventrilo")).await.unwrap();
+    let hunt = store.hunt_summary_for(Some("Ventrilo"), 5).await.unwrap();
+    assert_eq!(dashboard.rubies_last_hour, 7);
+    assert_eq!(dashboard.ruby_series.last().unwrap().value, 7);
+    assert_eq!(hunt.marches, 1);
+    assert_eq!(hunt.coins, 500);
+    assert!(
+        hunt.recent
+            .iter()
+            .all(|march| march.account_id == "ventrilo")
+    );
+}
+
+#[tokio::test]
 async fn a_march_that_never_comes_back_stops_counting_as_in_flight() {
     let store = Store::open("sqlite::memory:").await.unwrap();
     seed_account(&store, "ventrilo").await;
@@ -1091,6 +1360,7 @@ async fn a_running_mode_compiles_tasks_and_reserves_each_target_once() {
     let tasks = store.active_mode_tasks("ventrilo").await.unwrap();
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].commander_lids, vec![0, 2]);
+    assert_eq!(tasks[0].target_kind, "rbc");
     assert!(tasks[0].payload.is_array());
     assert_eq!((tasks[0].source_x, tasks[0].source_y), (593, 613));
 

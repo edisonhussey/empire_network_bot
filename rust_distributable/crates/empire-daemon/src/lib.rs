@@ -58,6 +58,11 @@ struct MessageQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct AccountQuery {
+    account_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct InjectBody {
     packet: String,
     ttl_ms: Option<i64>,
@@ -283,7 +288,7 @@ async fn health(State(state): State<AppState>) -> Json<Health> {
     let licence_active = state.licence.status().await.active;
     Json(Health {
         status: "ok",
-        api_version: 18,
+        api_version: 19,
         service_pid: std::process::id(),
         licence_active,
         transport_connected: state.active_transport.read().await.is_some(),
@@ -311,24 +316,36 @@ async fn messages(
 /// Aggregated view of the automation run, for the desktop overview.
 async fn hunt(
     State(state): State<AppState>,
+    Query(query): Query<AccountQuery>,
 ) -> Result<Json<empire_core::store::HuntSummary>, ApiError> {
     state
         .licence
         .require("account_initialize")
         .await
         .map_err(ApiError::forbidden)?;
-    Ok(Json(state.store.hunt_summary(20).await?))
+    Ok(Json(
+        state
+            .store
+            .hunt_summary_for(query.account_id.as_deref(), 20)
+            .await?,
+    ))
 }
 
 async fn dashboard(
     State(state): State<AppState>,
+    Query(query): Query<AccountQuery>,
 ) -> Result<Json<empire_core::store::DashboardSummary>, ApiError> {
     state
         .licence
         .require("account_initialize")
         .await
         .map_err(ApiError::forbidden)?;
-    Ok(Json(state.store.dashboard_summary().await?))
+    Ok(Json(
+        state
+            .store
+            .dashboard_summary_for(query.account_id.as_deref())
+            .await?,
+    ))
 }
 
 async fn accounts(

@@ -5,6 +5,7 @@ use crate::planning::TravelMode;
 
 pub const SANDS_KINGDOM_ID: i64 = 1;
 pub const RBC_AREA_TYPE: i64 = 2;
+pub const FORTRESS_AREA_TYPE: i64 = 11;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OwnedCastle {
@@ -22,6 +23,20 @@ pub struct RbcTarget {
     pub x: i64,
     pub y: i64,
     pub level: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FortressTarget {
+    pub kingdom_id: i64,
+    pub x: i64,
+    pub y: i64,
+    /// NPC level carried by the map row: 45 in Sands and 55 in Fire captures.
+    pub level: i64,
+    /// Remaining server cooldown at observation time. Captures show this field
+    /// decreasing in lockstep with wall time.
+    pub cooldown_remaining_s: i64,
+    /// Raw player/occupier id from the wire row.
+    pub occupier_player_id: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -175,6 +190,36 @@ pub fn rbc_targets(payload: &Value) -> Vec<RbcTarget> {
         .collect()
 }
 
+/// Captured fortress rows have the stable shape
+/// `[11, x, y, -1, level, remaining_seconds, player_id, kingdom_id]`.
+/// Requiring both type 11 and the trailing kingdom marker prevents them from
+/// being confused with ordinary type-2 RBC towers or another map object.
+pub fn fortress_targets(payload: &Value) -> Vec<FortressTarget> {
+    let Some(kingdom_id) = payload.get("KID").and_then(Value::as_i64) else {
+        return Vec::new();
+    };
+    payload
+        .get("AI")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|value| {
+            let row = value.as_array()?;
+            if row.first()?.as_i64()? != FORTRESS_AREA_TYPE || row.get(7)?.as_i64()? != kingdom_id {
+                return None;
+            }
+            Some(FortressTarget {
+                kingdom_id,
+                x: row.get(1)?.as_i64()?,
+                y: row.get(2)?.as_i64()?,
+                level: row.get(4)?.as_i64()?,
+                cooldown_remaining_s: row.get(5)?.as_i64()?.max(0),
+                occupier_player_id: row.get(6)?.as_i64()?,
+            })
+        })
+        .collect()
+}
+
 fn castle_row(kingdom_id: i64, row: &[Value]) -> Option<OwnedCastle> {
     Some(OwnedCastle {
         kingdom_id,
@@ -207,6 +252,46 @@ mod tests {
         let targets = rbc_targets(&map);
         assert_eq!(targets.len(), 1);
         assert_eq!((targets[0].x, targets[0].y), (600, 610));
+    }
+
+    #[test]
+    fn gaa_distinguishes_fortress_rows_from_rbc_rows() {
+        let map = json!({"KID":1,"AI":[
+            [2,593,593,-1,112,-1800,1],
+            [11,594,594,-1,45,38421,17185267,1],
+            [11,614,614,-1,45,9100,15185330,2]
+        ]});
+        assert_eq!(rbc_targets(&map).len(), 1);
+        assert_eq!(
+            fortress_targets(&map),
+            vec![FortressTarget {
+                kingdom_id: 1,
+                x: 594,
+                y: 594,
+                level: 45,
+                cooldown_remaining_s: 38_421,
+                occupier_player_id: 17_185_267,
+            }]
+        );
+    }
+
+    #[test]
+    fn fire_gaa_rows_are_level_55_fortresses_with_server_cooldowns() {
+        let map = serde_json::json!({"KID": 3, "AI": [
+            [11,692,575,-1,55,47500,16859207,3],
+            [11,672,594,-1,55,54673,17381830,3],
+            [11,711,594,-1,55,54301,15185330,3],
+            [11,731,575,-1,55,21252,15185330,3],
+            [2,732,581,-1,0,-1,3]
+        ]});
+        let targets = fortress_targets(&map);
+        assert_eq!(targets.len(), 4);
+        assert!(targets.iter().all(|target| {
+            target.kingdom_id == 3 && target.level == 55 && target.cooldown_remaining_s > 0
+        }));
+        assert_eq!((targets[0].x, targets[0].y), (692, 575));
+        assert_eq!(targets[0].cooldown_remaining_s, 47_500);
+        assert!(rbc_targets(&map).iter().all(|target| target.x != 692));
     }
 
     #[test]

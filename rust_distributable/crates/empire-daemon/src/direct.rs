@@ -3,7 +3,8 @@ use std::{sync::Arc, time::Duration};
 use anyhow::Context;
 use empire_core::{
     account::{
-        account_identity, castle_travel_options, commander_lids, owned_castles, rbc_targets,
+        account_identity, castle_travel_options, commander_lids, fortress_targets, owned_castles,
+        rbc_targets,
     },
     event::Direction,
     hunt::{self, MapTarget},
@@ -13,8 +14,8 @@ use empire_core::{
     session::{LoginCredentials, SessionMachine, SessionPhase, SessionSettings},
     store::{
         ActiveModeTask, ActiveRecruitment, COMMANDER_AVAILABLE, COMMANDER_OUTBOUND, CommanderState,
-        HUNT_HEARTBEAT_KEY, MARCH_SENT, MarchRecord, NavigationState, RecruitCastleState,
-        ReservedTarget, Store,
+        FortressProbe, HUNT_HEARTBEAT_KEY, MARCH_SENT, MarchRecord, NavigationState,
+        RecruitCastleState, ReservedTarget, Store,
     },
 };
 use futures_util::{SinkExt, StreamExt};
@@ -143,13 +144,7 @@ mod server_tests {
     async fn jaa_and_gaa_are_authoritative_castle_and_map_context() {
         let store = Store::open("sqlite::memory:").await.unwrap();
         store
-            .upsert_account_profile(
-                "ventrilo",
-                "Ventrilo",
-                US1_ENDPOINT,
-                US1_SERVER_HEADER,
-                1,
-            )
+            .upsert_account_profile("ventrilo", "Ventrilo", US1_ENDPOINT, US1_SERVER_HEADER, 1)
             .await
             .unwrap();
         persist_navigation_packet(
@@ -169,15 +164,9 @@ mod server_tests {
         assert_eq!(castle.current_kingdom_id, Some(0));
         assert_eq!(castle.current_castle_id, Some(16011862));
 
-        persist_navigation_packet(
-            &store,
-            "ventrilo",
-            "gaa",
-            &json!({"KID": 1, "AI": []}),
-            20,
-        )
-        .await
-        .unwrap();
+        persist_navigation_packet(&store, "ventrilo", "gaa", &json!({"KID": 1, "AI": []}), 20)
+            .await
+            .unwrap();
         let map = store.navigation("ventrilo").await.unwrap().unwrap();
         assert!(map.map_mode);
         assert_eq!(map.current_kingdom_id, Some(1));
@@ -206,6 +195,10 @@ pub struct DirectStatus {
     pub scan_total: u64,
     pub scan_sent: u64,
     pub scan_cached: u64,
+    pub scan_kingdom_id: Option<i64>,
+    pub current_kingdom_id: Option<i64>,
+    pub current_castle_id: Option<i64>,
+    pub map_mode: bool,
     pub bot_state: String,
     pub bot_detail: Option<String>,
     /// When the socket was established. The UI shows how long the session has
@@ -225,6 +218,10 @@ impl Default for DirectStatus {
             scan_total: 0,
             scan_sent: 0,
             scan_cached: 0,
+            scan_kingdom_id: None,
+            current_kingdom_id: None,
+            current_castle_id: None,
+            map_mode: false,
             bot_state: "stopped".to_owned(),
             bot_detail: None,
             connected_at_ms: None,
@@ -298,6 +295,10 @@ async fn run_inner(
         scan_total: 0,
         scan_sent: 0,
         scan_cached: 0,
+        scan_kingdom_id: None,
+        current_kingdom_id: None,
+        current_castle_id: None,
+        map_mode: false,
         bot_state: "stopped".to_owned(),
         bot_detail: None,
         connected_at_ms: Some(now_ms()),
@@ -310,6 +311,7 @@ async fn run_inner(
     let mut automation = Automation::new();
     let mut recruitment = RecruitmentAutomation::new();
     let mut identity_verified = false;
+    let mut active_scan_kingdom = None;
     heartbeat.tick().await;
     entitlement_check.tick().await;
     loop {
@@ -323,7 +325,8 @@ async fn run_inner(
                     _ => None,
                 };
                 if let Some(text) = text {
-                    if let Ok(packet) = parse_xt_packet(&text)
+                    let parsed_packet = parse_xt_packet(&text).ok();
+                    if let Some(packet) = parsed_packet.as_ref()
                         && packet.command == "gbd"
                         && packet.status.as_deref().is_none_or(|status| status == "0")
                     {
@@ -348,6 +351,16 @@ async fn run_inner(
                         );
                     }
                     observe_account_packet(store, &account_id, &text).await;
+                    if parsed_packet
+                        .as_ref()
+                        .is_some_and(|packet| matches!(packet.command.as_str(), "jaa" | "gaa"))
+                        && let Some(navigation) = store.navigation(&account_id).await?
+                    {
+                        let mut current = status.write().await;
+                        current.current_kingdom_id = navigation.current_kingdom_id;
+                        current.current_castle_id = navigation.current_castle_id;
+                        current.map_mode = navigation.map_mode;
+                    }
                     record_text(store, Direction::ServerToClient, &text).await;
                     automation.observe(store, &account_id, &text).await;
                     recruitment.observe(store, &account_id, &text).await;
@@ -358,10 +371,24 @@ async fn run_inner(
                         .filter(|frame| map_request(frame).is_some())
                         .count() as u64;
                     if map_request_count > 0 {
+                        let scan_kingdom_id = frames.iter().find_map(|frame| {
+                            map_request(frame).map(|(kingdom_id, _, _, _, _)| kingdom_id)
+                        });
+                        if active_scan_kingdom.is_some()
+                            && active_scan_kingdom != scan_kingdom_id
+                        {
+                            let kingdom_id = scan_kingdom_id.unwrap_or_default();
+                            tokio::time::sleep(Duration::from_millis(
+                                1_800 + (kingdom_id.unsigned_abs() * 347) % 1_401,
+                            ))
+                            .await;
+                        }
+                        active_scan_kingdom = scan_kingdom_id;
                         let mut current = status.write().await;
                         current.scan_total = map_request_count;
                         current.scan_sent = 0;
                         current.scan_cached = 0;
+                        current.scan_kingdom_id = scan_kingdom_id;
                     }
                     let mut sent_map_requests = 0_u64;
                     for frame in frames {
@@ -859,6 +886,15 @@ enum AutomationPhase {
     AwaitMap {
         task: ActiveModeTask,
         target: ReservedTarget,
+        requested_at_ms: i64,
+        deadline_ms: i64,
+    },
+    AwaitFortressProbe {
+        probe: FortressProbe,
+        deadline_ms: i64,
+    },
+    AwaitFortressRefresh {
+        target: ReservedTarget,
         deadline_ms: i64,
     },
     ReadyAdi {
@@ -910,6 +946,8 @@ impl Automation {
         let state = match self.phase {
             AutomationPhase::Idle { .. } => "waiting",
             AutomationPhase::AwaitMap { .. } => "opening_attack_map",
+            AutomationPhase::AwaitFortressProbe { .. } => "discovering_fortresses",
+            AutomationPhase::AwaitFortressRefresh { .. } => "refreshing_fortress",
             AutomationPhase::ReadyAdi { .. } => "pacing_inspection",
             AutomationPhase::AwaitAdi { .. } => "inspecting_target",
             AutomationPhase::ReadyCra { .. } => "pacing_attack",
@@ -940,6 +978,8 @@ impl Automation {
 
         match &self.phase {
             AutomationPhase::AwaitMap { deadline_ms, .. }
+            | AutomationPhase::AwaitFortressProbe { deadline_ms, .. }
+            | AutomationPhase::AwaitFortressRefresh { deadline_ms, .. }
             | AutomationPhase::AwaitAdi { deadline_ms, .. }
             | AutomationPhase::AwaitCra { deadline_ms, .. }
                 if now >= *deadline_ms =>
@@ -959,6 +999,17 @@ impl Automation {
         } = &self.phase
         {
             if now < *due_ms {
+                return Ok(None);
+            }
+            if task.target_kind == "fortress"
+                && !store
+                    .fortress_is_dispatchable(account_id, target, now, None)
+                    .await?
+            {
+                store.release_fortress_target(account_id, target).await?;
+                self.detail =
+                    "Fortress dispatch window expired before ADI; target dropped".to_owned();
+                self.phase = AutomationPhase::Idle { due_ms: now + 250 };
                 return Ok(None);
             }
             let navigation = store.navigation(account_id).await?;
@@ -998,6 +1049,17 @@ impl Automation {
         } = &self.phase
         {
             if now < *due_ms {
+                return Ok(None);
+            }
+            if task.target_kind == "fortress"
+                && !store
+                    .fortress_is_dispatchable(account_id, target, now, None)
+                    .await?
+            {
+                store.release_fortress_target(account_id, target).await?;
+                self.detail =
+                    "Fortress dispatch window expired before CRA; target dropped".to_owned();
+                self.phase = AutomationPhase::Idle { due_ms: now + 250 };
                 return Ok(None);
             }
             let navigation = store.navigation(account_id).await?;
@@ -1084,8 +1146,162 @@ impl Automation {
             return Ok(None);
         }
         let states = store.commander_states(account_id).await?;
-        for offset in 0..tasks.len() {
-            let index = (self.cursor + offset) % tasks.len();
+        let rotated = (0..tasks.len())
+            .map(|offset| (self.cursor + offset) % tasks.len())
+            .collect::<Vec<_>>();
+        let indexes = rotated
+            .iter()
+            .copied()
+            .filter(|index| tasks[*index].target_kind == "fortress")
+            .collect::<Vec<_>>();
+        for index in indexes {
+            let task = &tasks[index];
+            if task.commander_lids.iter().all(|lid| {
+                states
+                    .iter()
+                    .any(|state| state.lord_id == *lid && state.available_after_ms > now)
+            }) {
+                continue;
+            }
+            let target = if task.target_kind == "fortress" {
+                store
+                    .reserve_fortress_target(
+                        account_id,
+                        task.kingdom_id,
+                        task.level_min,
+                        task.level_max,
+                        (task.source_x, task.source_y),
+                        now,
+                        now + TARGET_LEASE_MS,
+                    )
+                    .await?
+            } else {
+                store
+                    .reserve_rbc_target(
+                        account_id,
+                        task.kingdom_id,
+                        task.level_min,
+                        task.level_max,
+                        (task.source_x, task.source_y),
+                        &task.algorithm,
+                        now,
+                        now + TARGET_LEASE_MS,
+                    )
+                    .await?
+            };
+            if let Some(target) = target {
+                self.cursor = (index + 1) % tasks.len();
+                let navigation = store.navigation(account_id).await?;
+                if task.target_kind != "fortress"
+                    && navigation.as_ref().is_some_and(|state| {
+                        state.map_mode && state.current_kingdom_id == Some(task.kingdom_id)
+                    })
+                {
+                    self.phase = AutomationPhase::ReadyAdi {
+                        task: task.clone(),
+                        target,
+                        due_ms: now,
+                    };
+                    return Ok(None);
+                }
+                let (map_x, map_y) = if task.target_kind == "fortress" {
+                    (target.x, target.y)
+                } else {
+                    (task.source_x, task.source_y)
+                };
+                let ax1 = map_x.div_euclid(13) * 13;
+                let ay1 = map_y.div_euclid(13) * 13;
+                let packet = encode_client_xt(
+                    server_header,
+                    "gaa",
+                    "1",
+                    &json!({
+                        "KID": task.kingdom_id,
+                        "AX1": ax1,
+                        "AY1": ay1,
+                        "AX2": ax1 + 12,
+                        "AY2": ay1 + 12
+                    }),
+                )?;
+                self.detail = format!(
+                    "Opening kingdom {} map and refreshing {}:{}",
+                    task.kingdom_id, target.x, target.y
+                );
+                self.phase = AutomationPhase::AwaitMap {
+                    task: task.clone(),
+                    target,
+                    requested_at_ms: now,
+                    deadline_ms: now + REQUEST_TIMEOUT_MS,
+                };
+                return Ok(Some(packet));
+            }
+        }
+
+        // A failed or unobserved fortress landing is re-read from the server
+        // before ordinary farming work. The due time was randomized 1-30
+        // minutes beyond the expected landing when CRA was acknowledged.
+        for index in rotated
+            .iter()
+            .copied()
+            .filter(|index| tasks[*index].target_kind == "fortress")
+        {
+            let task = &tasks[index];
+            if let Some(target) = store
+                .reserve_due_fortress_refresh(account_id, task.kingdom_id, now)
+                .await?
+            {
+                let packet =
+                    fortress_gaa_packet(server_header, target.kingdom_id, target.x, target.y)?;
+                self.detail = format!(
+                    "Refreshing fortress result at {}:{}:{}",
+                    target.kingdom_id, target.x, target.y
+                );
+                self.phase = AutomationPhase::AwaitFortressRefresh {
+                    target,
+                    deadline_ms: now + REQUEST_TIMEOUT_MS,
+                };
+                return Ok(Some(packet));
+            }
+        }
+
+        // Discovery is a durable graph walk seeded by every observed fortress.
+        // Completed probes survive restarts, so initialization expands outward
+        // without rescanning the same map forever.
+        for index in rotated
+            .iter()
+            .copied()
+            .filter(|index| tasks[*index].target_kind == "fortress")
+        {
+            let task = &tasks[index];
+            if let Some(probe) = store
+                .reserve_fortress_probe(account_id, task.kingdom_id, now)
+                .await?
+            {
+                let packet = fortress_gaa_packet(
+                    server_header,
+                    probe.kingdom_id,
+                    probe.center_x,
+                    probe.center_y,
+                )?;
+                self.detail = format!(
+                    "Discovering fortress map near {}:{}:{}",
+                    probe.kingdom_id, probe.center_x, probe.center_y
+                );
+                self.phase = AutomationPhase::AwaitFortressProbe {
+                    probe,
+                    deadline_ms: now + REQUEST_TIMEOUT_MS,
+                };
+                return Ok(Some(packet));
+            }
+        }
+
+        // Ordinary targets run only after every currently actionable fortress
+        // and due fortress maintenance request has been considered.
+        for index in rotated
+            .iter()
+            .copied()
+            .filter(|index| tasks[*index].target_kind != "fortress")
+        {
             let task = &tasks[index];
             if task.commander_lids.iter().all(|lid| {
                 states
@@ -1119,19 +1335,11 @@ impl Automation {
                     };
                     return Ok(None);
                 }
-                let ax1 = task.source_x.div_euclid(13) * 13;
-                let ay1 = task.source_y.div_euclid(13) * 13;
-                let packet = encode_client_xt(
+                let packet = fortress_gaa_packet(
                     server_header,
-                    "gaa",
-                    "1",
-                    &json!({
-                        "KID": task.kingdom_id,
-                        "AX1": ax1,
-                        "AY1": ay1,
-                        "AX2": ax1 + 12,
-                        "AY2": ay1 + 12
-                    }),
+                    task.kingdom_id,
+                    task.source_x,
+                    task.source_y,
                 )?;
                 self.detail = format!(
                     "Opening kingdom {} map before inspecting {}:{}",
@@ -1140,6 +1348,7 @@ impl Automation {
                 self.phase = AutomationPhase::AwaitMap {
                     task: task.clone(),
                     target,
+                    requested_at_ms: now,
                     deadline_ms: now + REQUEST_TIMEOUT_MS,
                 };
                 return Ok(Some(packet));
@@ -1166,6 +1375,18 @@ impl Automation {
             if !expected_rejection {
                 return;
             }
+            let rejected_fortress = match &self.phase {
+                AutomationPhase::AwaitAdi { task, target, .. }
+                | AutomationPhase::AwaitCra { task, target, .. }
+                    if task.target_kind == "fortress" =>
+                {
+                    Some(target.clone())
+                }
+                _ => None,
+            };
+            if let Some(target) = rejected_fortress {
+                let _ = store.release_fortress_target(account_id, &target).await;
+            }
             if let AutomationPhase::AwaitCra { lord_id, .. } = &self.phase {
                 let state = CommanderState {
                     account_id: account_id.to_owned(),
@@ -1190,16 +1411,62 @@ impl Automation {
 
         match packet.command.as_str() {
             "gaa" => {
-                let AutomationPhase::AwaitMap { task, target, .. } = std::mem::replace(
+                if let AutomationPhase::AwaitFortressProbe { probe, .. } = &self.phase {
+                    if packet.payload.get("KID").and_then(Value::as_i64) == Some(probe.kingdom_id) {
+                        let probe = probe.clone();
+                        let _ = store.complete_fortress_probe(account_id, &probe, now).await;
+                        let delay_ms =
+                            (self.rng.normal(2.4, 0.35).clamp(1.6, 3.4) * 1_000.0) as i64;
+                        self.detail = format!(
+                            "Fortress discovery probe completed at {}:{}:{}",
+                            probe.kingdom_id, probe.center_x, probe.center_y
+                        );
+                        self.phase = AutomationPhase::Idle {
+                            due_ms: now + delay_ms,
+                        };
+                    }
+                    return;
+                }
+                if let AutomationPhase::AwaitFortressRefresh { target, .. } = &self.phase {
+                    if packet.payload.get("KID").and_then(Value::as_i64) == Some(target.kingdom_id)
+                    {
+                        self.detail = format!(
+                            "Fortress server truth refreshed at {}:{}:{}",
+                            target.kingdom_id, target.x, target.y
+                        );
+                        self.phase = AutomationPhase::Idle { due_ms: now + 250 };
+                    }
+                    return;
+                }
+                let AutomationPhase::AwaitMap {
+                    task,
+                    target,
+                    requested_at_ms,
+                    ..
+                } = std::mem::replace(
                     &mut self.phase,
                     AutomationPhase::Idle {
                         due_ms: now + 10_000,
                     },
-                ) else {
+                )
+                else {
                     return;
                 };
                 if packet.payload.get("KID").and_then(Value::as_i64) != Some(task.kingdom_id) {
                     self.detail = "Wrong map kingdom returned; attack remains blocked".to_owned();
+                    return;
+                }
+                if task.target_kind == "fortress"
+                    && !store
+                        .fortress_is_dispatchable(account_id, &target, now, Some(requested_at_ms))
+                        .await
+                        .unwrap_or(false)
+                {
+                    let _ = store.release_fortress_target(account_id, &target).await;
+                    self.detail =
+                        "Fortress was unavailable or its one-minute window expired; dropped"
+                            .to_owned();
+                    self.phase = AutomationPhase::Idle { due_ms: now + 250 };
                     return;
                 }
                 self.detail = format!("Kingdom {} map confirmed; preparing ADI", task.kingdom_id);
@@ -1308,7 +1575,21 @@ impl Automation {
                 };
                 let _ = store.record_march(&march).await;
                 let _ = store.set_commander_state(&state, now).await;
-                let _ = store.mark_target_attacked(account_id, &target, now).await;
+                if task.target_kind == "fortress" {
+                    let outbound_s = travel.unwrap_or(300).max(0);
+                    let refresh_delay_ms = (1 + march_id.unsigned_abs() % 30) as i64 * 60 * 1_000;
+                    let _ = store
+                        .mark_fortress_attack_sent(
+                            account_id,
+                            &target,
+                            now,
+                            now.saturating_add(outbound_s.saturating_mul(1_000)),
+                            refresh_delay_ms,
+                        )
+                        .await;
+                } else {
+                    let _ = store.mark_target_attacked(account_id, &target, now).await;
+                }
                 let pause = PacingPolicy::default().after_cra_ack(&mut self.rng)
                     + Waits::attack_send(&mut self.rng);
                 self.phase = AutomationPhase::Idle {
@@ -1336,6 +1617,16 @@ impl Automation {
                         loot.map(|value| value.0),
                         loot.map(|value| value.1),
                         hunt::result_flag_from_return(&packet.payload),
+                        now,
+                    )
+                    .await;
+                let _ = store
+                    .record_fortress_result(
+                        account_id,
+                        kingdom_id,
+                        x,
+                        y,
+                        loot.map(|value| value.1),
                         now,
                     )
                     .await;
@@ -1368,6 +1659,28 @@ fn as_map_target(target: &ReservedTarget) -> MapTarget {
         y: target.y,
         level: target.level,
     }
+}
+
+fn fortress_gaa_packet(
+    server_header: &str,
+    kingdom_id: i64,
+    center_x: i64,
+    center_y: i64,
+) -> Result<String, empire_core::protocol::PacketError> {
+    let ax1 = center_x.saturating_sub(6);
+    let ay1 = center_y.saturating_sub(6);
+    encode_client_xt(
+        server_header,
+        "gaa",
+        "1",
+        &json!({
+            "KID": kingdom_id,
+            "AX1": ax1,
+            "AY1": ay1,
+            "AX2": ax1 + 12,
+            "AY2": ay1 + 12
+        }),
+    )
 }
 
 fn heartbeat_packet(server_header: &str) -> String {
@@ -1413,12 +1726,22 @@ async fn observe_account_packet(store: &Store, account_id: &str, raw: &str) {
         }
         "gaa" => {
             let targets = rbc_targets(&packet.payload);
-            if targets.is_empty() {
-                return;
+            let fortresses = fortress_targets(&packet.payload);
+            let observed_at_ms = now_ms();
+            async {
+                if !targets.is_empty() {
+                    store
+                        .upsert_rbc_targets(account_id, &targets, observed_at_ms)
+                        .await?;
+                }
+                if !fortresses.is_empty() {
+                    store
+                        .upsert_fortress_targets(account_id, &fortresses, observed_at_ms)
+                        .await?;
+                }
+                Ok::<(), sqlx::Error>(())
             }
-            store
-                .upsert_rbc_targets(account_id, &targets, now_ms())
-                .await
+            .await
         }
         _ => return,
     };

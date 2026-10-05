@@ -111,9 +111,8 @@ pub struct SessionMachine {
     settings: SessionSettings,
     phase: SessionPhase,
     bootstrap_sent: bool,
-    green_map: Option<MapViewport>,
-    green_requested: bool,
-    sands_requested: bool,
+    kingdom_maps: Vec<MapViewport>,
+    current_map_index: Option<usize>,
 }
 
 impl SessionMachine {
@@ -123,9 +122,8 @@ impl SessionMachine {
             settings,
             phase: SessionPhase::Disconnected,
             bootstrap_sent: false,
-            green_map: None,
-            green_requested: false,
-            sands_requested: false,
+            kingdom_maps: Vec::new(),
+            current_map_index: None,
         }
     }
 
@@ -177,69 +175,64 @@ impl SessionMachine {
                 Ok(Vec::new())
             }
             "gbd" if !self.bootstrap_sent => {
-                self.green_map = viewport_from_bootstrap(&packet.payload, 0).map(|mut viewport| {
-                    // One live Green tile is navigation proof; Green discovery
-                    // is not part of the user-selected Sands scan.
-                    viewport.columns = 1;
-                    viewport.rows = 1;
-                    viewport
-                });
-                let map = if self.settings.map_scan_radius == 0 {
-                    sands_viewport_from_bootstrap(&packet.payload)
-                } else {
-                    radius_viewport_from_bootstrap(
-                        &packet.payload,
-                        1,
-                        self.settings.map_scan_radius,
-                    )
-                };
-                if let Some(map) = map {
-                    self.settings.map = map;
-                }
+                self.kingdom_maps = [0, 2, 1, 3]
+                    .into_iter()
+                    .filter_map(|kingdom_id| {
+                        if self.settings.map_scan_radius == 0 {
+                            if kingdom_id == 1 {
+                                sands_viewport_from_bootstrap(&packet.payload)
+                            } else {
+                                viewport_from_bootstrap(&packet.payload, kingdom_id)
+                            }
+                        } else {
+                            radius_viewport_from_bootstrap(
+                                &packet.payload,
+                                kingdom_id,
+                                self.settings.map_scan_radius,
+                            )
+                        }
+                    })
+                    .collect();
                 self.bootstrap_sent = true;
                 self.phase = SessionPhase::LoadingCastle;
                 self.bootstrap_packets()
             }
-            "jaa" if self.bootstrap_sent && !self.green_requested => {
-                self.green_requested = true;
-                self.phase = SessionPhase::LoadingCastle;
-                let mut packets = vec![
-                    encode_client_xt(&self.settings.server_header, "gbl", "1", &json!({}))?,
-                    encode_client_xt(&self.settings.server_header, "upt", "1", &json!({}))?,
-                ];
-                if let Some(green_map) = self.green_map {
-                    packets.extend(green_map.requests(&self.settings.server_header)?);
-                } else {
-                    // A real authenticated account always has a Green main
-                    // castle. Refuse to claim Sands readiness without it.
+            "jaa" if self.bootstrap_sent && self.current_map_index.is_none() => {
+                if self.kingdom_maps.is_empty() {
                     self.phase = SessionPhase::Failed;
+                    return Ok(Vec::new());
                 }
-                Ok(packets)
-            }
-            "gaa"
-                if self.green_requested
-                    && !self.sands_requested
-                    && packet.payload.get("KID").and_then(Value::as_i64) == Some(0) =>
-            {
-                self.sands_requested = true;
+                self.current_map_index = Some(0);
                 self.phase = SessionPhase::LoadingSands;
-                let mut packets = vec![
-                    encode_client_xt(&self.settings.server_header, "gbl", "1", &json!({}))?,
-                    encode_client_xt(&self.settings.server_header, "upt", "1", &json!({}))?,
-                ];
-                packets.extend(self.settings.map.requests(&self.settings.server_header)?);
-                Ok(packets)
+                self.map_transition_packets(self.kingdom_maps[0])
             }
-            "gaa"
-                if self.sands_requested
-                    && packet.payload.get("KID").and_then(Value::as_i64)
-                        == Some(self.settings.map.kingdom_id) =>
-            {
-                self.phase = SessionPhase::SandsReady;
-                Ok(Vec::new())
+            "gaa" if self.current_map_index.is_some() => {
+                let index = self.current_map_index.expect("checked above");
+                if packet.payload.get("KID").and_then(Value::as_i64)
+                    != Some(self.kingdom_maps[index].kingdom_id)
+                {
+                    return Ok(Vec::new());
+                }
+                let next = index + 1;
+                if next < self.kingdom_maps.len() {
+                    self.current_map_index = Some(next);
+                    self.map_transition_packets(self.kingdom_maps[next])
+                } else {
+                    self.phase = SessionPhase::SandsReady;
+                    Ok(Vec::new())
+                }
             }
             _ => Ok(Vec::new()),
         }
+    }
+
+    fn map_transition_packets(&self, map: MapViewport) -> Result<Vec<String>, PacketError> {
+        let mut packets = vec![
+            encode_client_xt(&self.settings.server_header, "gbl", "1", &json!({}))?,
+            encode_client_xt(&self.settings.server_header, "upt", "1", &json!({}))?,
+        ];
+        packets.extend(map.requests(&self.settings.server_header)?);
+        Ok(packets)
     }
 
     fn login_packet(&self) -> Result<String, PacketError> {
@@ -448,9 +441,8 @@ mod tests {
         let gbd_frame = format!("%xt%gbd%1%0%{}%", gbd);
         assert_eq!(session.on_server_text(&gbd_frame).unwrap().len(), 9);
         let green = session.on_server_text("%xt%jaa%1%0%{}%").unwrap();
-        assert_eq!(green.len(), 3);
-        assert!(green[2].contains("%gaa%"));
-        assert!(green[2].contains("\"KID\":0"));
+        assert_eq!(green.len(), 8);
+        assert!(green[2..].iter().all(|packet| packet.contains("\"KID\":0")));
         assert_ne!(session.phase(), SessionPhase::SandsReady);
         let sands = session
             .on_server_text("%xt%gaa%1%0%{\"KID\":0,\"AI\":[]}%")
@@ -491,6 +483,47 @@ mod tests {
             (543, 563, 8, 8)
         );
         assert_eq!(fifty.requests(DEFAULT_SERVER_HEADER).unwrap().len(), 64);
+    }
+
+    #[test]
+    fn initialization_walks_every_owned_permanent_kingdom_at_the_shared_radius() {
+        let settings = SessionSettings {
+            map_scan_radius: 50,
+            ..SessionSettings::default()
+        };
+        let mut session = SessionMachine::new(machine().credentials, settings);
+        session.bootstrap_sent = false;
+        let payload = json!({
+            "gcl": {"C": [
+                {"KID": 0, "AI": [{"AI": [1, 500, 400, 10]}]},
+                {"KID": 1, "AI": [{"AI": [12, 600, 600, 11]}]},
+                {"KID": 2, "AI": [{"AI": [12, 700, 700, 12]}]},
+                {"KID": 3, "AI": [{"AI": [12, 800, 800, 13]}]}
+            ]}
+        });
+        session
+            .on_server_text(&format!("%xt%gbd%1%0%{}%", payload))
+            .unwrap();
+
+        let green = session.on_server_text("%xt%jaa%1%0%{}%").unwrap();
+        assert_eq!(green.len(), 66);
+        assert!(green[2..].iter().all(|packet| packet.contains("\"KID\":0")));
+
+        for (current, next) in [(0, 2), (2, 1), (1, 3)] {
+            let frames = session
+                .on_server_text(&format!("%xt%gaa%1%0%{{\"KID\":{current},\"AI\":[]}}%"))
+                .unwrap();
+            assert_eq!(frames.len(), 66);
+            assert!(
+                frames[2..]
+                    .iter()
+                    .all(|packet| packet.contains(&format!("\"KID\":{next}")))
+            );
+        }
+        session
+            .on_server_text("%xt%gaa%1%0%{\"KID\":3,\"AI\":[]}%")
+            .unwrap();
+        assert_eq!(session.phase(), SessionPhase::SandsReady);
     }
 
     /// The green origin is not a guess: the same live capture that reported the

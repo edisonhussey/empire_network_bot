@@ -72,15 +72,58 @@ client emitted `gbl`, `upt`, and groups of `gaa` reads.
 A successful `jaa` is authoritative castle context. A successful `gaa` is
 authoritative map context for exactly the returned `KID`; cached map rows prove
 what was previously discovered but do not prove where the live session is now.
-The safe initial transition is therefore Green `jaa` → live Green `gaa` → live
-Sands `gaa`. A network-only client cannot imply that a separate game webview
-has visually changed.
+The safe initial transition begins with Green `jaa`, then obtains a live `gaa`
+from each owned permanent kingdom. The observed/client-compatible order used by
+OpenAuto is Green (`KID=0`), Ice (`KID=2`), Sands (`KID=1`), then Fire
+(`KID=3`), omitting kingdoms absent from `gbd`. Each change is preceded by
+`gbl` and `upt`; only the matching live `gaa` advances the state machine. A
+network-only client cannot imply that a separate game webview has visually
+changed.
+
+The radius is measured from that kingdom's main castle and applies separately
+to every owned permanent kingdom. A radius of 50 covers an 8-by-8 grid of 64
+13-by-13 `gaa` windows per kingdom. Requests within the grid are paced with
+variance, and kingdom changes have their own short settling interval. Persisted
+windows can suppress redundant discovery reads on a normal reconnect, but one
+live `gaa` per kingdom is still required as navigation proof.
 
 Recruitment is allowed only after a `jaa` whose castle and kingdom match the
 requested subscription. Attack inspection is allowed only after a `gaa` whose
 kingdom matches the attack task, and `cra` rechecks that context before commit.
 After recruiting in a different kingdom, the attack runner must obtain a fresh
 map response for its own kingdom before sending `adi`.
+
+### Fortress rows in `gaa`
+
+Burning Sands fortresses are distinguishable from ordinary RBC towers using
+`gaa` alone. An RBC is an `AI` row whose first value is area type `2`. The
+captured fortress rows use this separate shape:
+
+`[11, x, y, -1, npc_level, cooldown_seconds, player_id, kingdom_id]`
+
+The evidence is mechanical rather than inferred from the icon name. Captured
+type-11 coordinates form the fortress lattice (`575:614`, `594:633`,
+`614:614`, `633:633`), and field 5 fell by exactly the elapsed wall-clock time
+across repeated `gaa` reads. At `575:614`, a later capture changed field 6 and
+reset field 5 from roughly 12.7 hours to 20.4 hours, consistent with another
+player defeating it and starting a new cooldown. The user-confirmed fortress at
+`594:594` therefore has the same classifier: area type `11`, not type `2`.
+
+An independent `gbl` lookup at `594:633` returned the identical `AI` row with
+`N: "Desert fortress"`. That directly confirms the area-type mapping; it is
+not merely an inference from the coordinate lattice or cooldown behaviour.
+
+A later Fire Peaks capture independently produced four type-11 rows at
+`692:575`, `672:594`, `711:594`, and `731:575`. Each ended in kingdom id `3`
+and carried NPC level `55`, rather than the Sands value `45`. Their reported
+cooldowns were respectively `47500`, `54673`, `54301`, and `21252` seconds.
+This confirms that field 4 is the kingdom-specific NPC level and that type `11`
+is the cross-kingdom fortress discriminator.
+
+OpenAuto checks the trailing kingdom id as well as area type `11`, stores these
+targets separately from RBCs, and converts the observed remaining seconds into
+an absolute availability time. The exact human-facing meaning of field 6 is not
+required for classification; it is retained as the raw occupier/player id.
 
 ## Stable level and attack travel options
 
@@ -110,7 +153,7 @@ castle immediately before constructing `cra`.
 
 Tasks store a human travel mode rather than a castle-specific number. After
 sorting the source castle's three positive UH values, OpenAuto maps them as
-coin = UH[0], ruby 1 = UH[1], and ruby 2 = UH[2]. Feather is the separate wire
+coin = UH[0], ruby slow = UH[1], and ruby fast = UH[2]. Feather is the separate wire
 mode HBW=-1, PTT=1. Coin and both ruby choices use PTT=0. This mapping is
 performed at send time so a task can retain the same semantic choice when used
 with castles at different stable levels. If no initialized castle matches the

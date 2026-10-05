@@ -417,12 +417,18 @@ pub struct DashboardSummary {
 
 impl Store {
     pub async fn dashboard_summary(&self) -> Result<DashboardSummary, sqlx::Error> {
+        self.dashboard_summary_for(None).await
+    }
+
+    pub async fn dashboard_summary_for(
+        &self,
+        account_id: Option<&str>,
+    ) -> Result<DashboardSummary, sqlx::Error> {
         const HOUR_MS: i64 = 60 * 60 * 1_000;
         const DAY_MS: i64 = 24 * HOUR_MS;
-        const BUCKET_MS: i64 = 15 * 60 * 1_000;
         let now = now_ms();
         let hour_ago = now - HOUR_MS;
-        let day_start = (now - DAY_MS).div_euclid(BUCKET_MS) * BUCKET_MS;
+        let account_id = account_id.map(canonical_account_id);
 
         let hourly = sqlx::query(
             "SELECT
@@ -430,59 +436,81 @@ impl Store {
                 COALESCE(SUM(result_at_ms >= ?), 0) returns,
                 COALESCE(SUM(CASE WHEN result_at_ms >= ? THEN ruby_loot ELSE 0 END), 0) rubies,
                 COALESCE(SUM(CASE WHEN result_at_ms >= ? THEN coin_loot ELSE 0 END), 0) coins
-             FROM attack_ledger",
+             FROM attack_ledger
+             WHERE (? IS NULL OR account_id = ?)",
         )
         .bind(hour_ago)
         .bind(hour_ago)
         .bind(hour_ago)
         .bind(hour_ago)
+        .bind(account_id.as_deref())
+        .bind(account_id.as_deref())
         .fetch_one(&self.pool)
         .await?;
 
-        let base: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(ruby_loot), 0) FROM attack_ledger
-             WHERE COALESCE(result_at_ms, sent_at_ms) < ?",
+        let first_at: Option<i64> = sqlx::query_scalar(
+            "SELECT MIN(COALESCE(result_at_ms, sent_at_ms)) FROM attack_ledger
+             WHERE (? IS NULL OR account_id = ?)",
         )
-        .bind(day_start)
+        .bind(account_id.as_deref())
+        .bind(account_id.as_deref())
         .fetch_one(&self.pool)
         .await?;
+        let span = first_at.map_or(0, |first| now.saturating_sub(first));
+        let bucket_ms = if span > 365 * DAY_MS {
+            7 * DAY_MS
+        } else if span > 30 * DAY_MS {
+            DAY_MS
+        } else if span > 2 * DAY_MS {
+            HOUR_MS
+        } else {
+            15 * 60 * 1_000
+        };
+        let lifetime_start = first_at
+            .unwrap_or(now)
+            .div_euclid(bucket_ms)
+            .saturating_mul(bucket_ms);
         let ruby_rows = sqlx::query(
             "SELECT (COALESCE(result_at_ms, sent_at_ms) / ?) * ? bucket,
                     COALESCE(SUM(ruby_loot), 0) rubies
              FROM attack_ledger
-             WHERE COALESCE(result_at_ms, sent_at_ms) >= ?
+             WHERE (? IS NULL OR account_id = ?)
              GROUP BY bucket ORDER BY bucket",
         )
-        .bind(BUCKET_MS)
-        .bind(BUCKET_MS)
-        .bind(day_start)
+        .bind(bucket_ms)
+        .bind(bucket_ms)
+        .bind(account_id.as_deref())
+        .bind(account_id.as_deref())
         .fetch_all(&self.pool)
         .await?;
         let bucket_values = ruby_rows
             .into_iter()
             .map(|row| (row.get::<i64, _>("bucket"), row.get::<i64, _>("rubies")))
             .collect::<std::collections::HashMap<_, _>>();
-        let mut cumulative = base;
-        let mut ruby_series = Vec::with_capacity(97);
-        let mut bucket = day_start;
+        let mut cumulative = 0;
+        let capacity = usize::try_from(span.div_euclid(bucket_ms).saturating_add(2)).unwrap_or(2);
+        let mut ruby_series = Vec::with_capacity(capacity);
+        let mut bucket = lifetime_start;
         while bucket <= now {
             cumulative += bucket_values.get(&bucket).copied().unwrap_or(0);
             ruby_series.push(DashboardPoint {
                 at_ms: bucket,
                 value: cumulative,
             });
-            bucket += BUCKET_MS;
+            bucket += bucket_ms;
         }
 
         let scan_activity = sqlx::query(
             "SELECT (scanned_at_ms / 60000) * 60000 bucket, kingdom_id,
                     COUNT(DISTINCT printf('%d:%d:%d:%d', ax1, ay1, ax2, ay2)) windows
              FROM map_scan_window
-             WHERE scanned_at_ms >= ?
+             WHERE scanned_at_ms >= ? AND (? IS NULL OR account_id = ?)
              GROUP BY bucket, kingdom_id
              ORDER BY bucket DESC LIMIT 30",
         )
-        .bind(day_start)
+        .bind(now - DAY_MS)
+        .bind(account_id.as_deref())
+        .bind(account_id.as_deref())
         .fetch_all(&self.pool)
         .await?
         .into_iter()
@@ -509,17 +537,29 @@ impl Store {
     /// Kept in the store rather than the daemon so the query and the shape it
     /// produces live next to the table they read.
     pub async fn hunt_summary(&self, recent_limit: i64) -> Result<HuntSummary, sqlx::Error> {
+        self.hunt_summary_for(None, recent_limit).await
+    }
+
+    pub async fn hunt_summary_for(
+        &self,
+        account_id: Option<&str>,
+        recent_limit: i64,
+    ) -> Result<HuntSummary, sqlx::Error> {
+        let account_id = account_id.map(canonical_account_id);
         let totals = sqlx::query(
             "SELECT COUNT(*) marches,
                     COALESCE(SUM(status = ?), 0) returned,
                     COALESCE(SUM(status = ? AND sent_at_ms > ?), 0) in_flight,
                     COALESCE(SUM(coin_loot), 0) coins,
                     COALESCE(SUM(ruby_loot), 0) rubies
-             FROM attack_ledger",
+             FROM attack_ledger
+             WHERE (? IS NULL OR account_id = ?)",
         )
         .bind(MARCH_RETURNING)
         .bind(MARCH_SENT)
         .bind(now_ms() - STALE_MARCH_MILLIS)
+        .bind(account_id.as_deref())
+        .bind(account_id.as_deref())
         .fetch_one(&self.pool)
         .await?;
         let task_rows = sqlx::query(
@@ -529,10 +569,13 @@ impl Store {
                     COALESCE(SUM(coin_loot), 0) coins,
                     COALESCE(SUM(ruby_loot), 0) rubies
              FROM attack_ledger
+             WHERE (? IS NULL OR account_id = ?)
              GROUP BY task_id
              ORDER BY marches DESC",
         )
         .bind(MARCH_RETURNING)
+        .bind(account_id.as_deref())
+        .bind(account_id.as_deref())
         .fetch_all(&self.pool)
         .await?;
 
@@ -544,19 +587,22 @@ impl Store {
             .and_then(|value| value.as_i64())
             .is_some_and(|beat| beat > now - HEARTBEAT_FRESH_MILLIS);
 
-        let account_row = sqlx::query(
-            "SELECT account_id FROM attack_ledger
-             ORDER BY sent_at_ms DESC LIMIT 1",
-        )
-        .fetch_optional(&self.pool)
-        .await?;
+        let account_row = if account_id.is_none() {
+            sqlx::query("SELECT account_id FROM attack_ledger ORDER BY sent_at_ms DESC LIMIT 1")
+                .fetch_optional(&self.pool)
+                .await?
+        } else {
+            None
+        };
 
         Ok(HuntSummary {
             label: self
                 .app_state("hunt.label")
                 .await?
                 .and_then(|value| value.as_str().map(str::to_owned)),
-            account_id: account_row.map(|row| row.get("account_id")),
+            account_id: account_id
+                .clone()
+                .or_else(|| account_row.map(|row| row.get("account_id"))),
             marches: totals.get("marches"),
             returned: totals.get("returned"),
             in_flight: if active { totals.get("in_flight") } else { 0 },
@@ -564,7 +610,11 @@ impl Store {
             rubies: totals.get("rubies"),
             active,
             tasks: merge_plan_with_ledger(self.app_state("hunt.plan").await?, task_rows),
-            recent: self.recent_marches_all(recent_limit).await?,
+            recent: if let Some(account_id) = account_id.as_deref() {
+                self.recent_marches(account_id, recent_limit).await?
+            } else {
+                self.recent_marches_all(recent_limit).await?
+            },
         })
     }
 
