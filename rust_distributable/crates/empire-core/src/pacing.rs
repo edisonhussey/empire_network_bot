@@ -84,7 +84,7 @@ impl Default for PacingPolicy {
             cra_min_interval: CRA_MIN_INTERVAL_SECONDS,
             cra_jitter: (0.15, 0.65),
             cra_ack_delay: (0.75, 2.25),
-            adi_to_cra: (5.5, 9.0),
+            adi_to_cra: (2.0, 4.0),
         }
     }
 }
@@ -134,8 +134,11 @@ impl Waits {
 
     /// Gap before an attack handshake. Floor 5 s; `normal(7 + 5·U, 2)`.
     pub fn attack_send(rng: &mut Rng) -> f64 {
-        let mean = 7.0 + 5.0 * rng.unit();
-        rng.normal(mean, 2.0).max(5.0)
+        // 3.2 to 8.0, heavily skewed towards 3.2.
+        // u^3 gives a very heavy skew towards 0.
+        let u = rng.unit();
+        let val = 3.2 + u * u * u * (8.0 - 3.2);
+        val.clamp(3.2, 8.0)
     }
 
     /// Gap between `adi` and `cra` when not using the policy deadline. Floor 3.3 s.
@@ -327,7 +330,8 @@ mod tests {
         let mut rng = Rng::seeded(3);
         for _ in 0..5_000 {
             assert!(Waits::scan_batch(&mut rng) >= 8.0);
-            assert!(Waits::attack_send(&mut rng) >= 5.0);
+            assert!(Waits::attack_send(&mut rng) >= 3.2);
+            assert!(Waits::attack_send(&mut rng) <= 8.0);
             assert!(Waits::adi(&mut rng) >= 3.3);
             assert!(Waits::commander_return_hold(&mut rng) >= 5.0);
             assert!(Waits::commander_return_hold(&mut rng) <= 10.0);

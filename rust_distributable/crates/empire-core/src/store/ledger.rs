@@ -521,6 +521,20 @@ pub struct FortressUpcoming {
     pub available_at_ms: i64,
 }
 
+/// Per-hour activity over the last 24 hours, oldest first, for the small bar
+/// charts under the ruby chart. Every vector always has [`HOURLY_BARS`] entries
+/// so the window can draw them without padding. The last entry is the hour
+/// ending now, which is the same window as the `*_last_hour` totals.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HourlyBars {
+    pub rubies: Vec<i64>,
+    pub coins: Vec<i64>,
+    pub attacks: Vec<i64>,
+    pub returns: Vec<i64>,
+}
+
+pub const HOURLY_BARS: usize = 24;
+
 /// Minute-cached dashboard aggregates. These queries are intentionally separate
 /// from the live connection status so UI polling cannot make ledger work hot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -531,6 +545,7 @@ pub struct DashboardSummary {
     pub rubies_last_hour: i64,
     pub coins_last_hour: i64,
     pub ruby_series: Vec<DashboardPoint>,
+    pub hourly_bars: HourlyBars,
     pub scan_activity: Vec<ScanActivity>,
     /// When the next fortress opens, if any has been observed. Fortresses are the
     /// one target the server gives a cooldown for, so this is a countdown to a
@@ -631,6 +646,60 @@ impl Store {
             bucket += bucket_ms;
         }
 
+        // Rolling hours ending now: bucket 23 is the last hour, bucket 0 the
+        // hour a day ago. Sends are bucketed by send time and returns by result
+        // time, matching how the `*_last_hour` totals are counted.
+        let bars_start = now - HOURLY_BARS as i64 * HOUR_MS;
+        let mut hourly_bars = HourlyBars {
+            rubies: vec![0; HOURLY_BARS],
+            coins: vec![0; HOURLY_BARS],
+            attacks: vec![0; HOURLY_BARS],
+            returns: vec![0; HOURLY_BARS],
+        };
+        let sent_rows = sqlx::query(
+            "SELECT (sent_at_ms - ?) / ? bucket, COUNT(*) attacks
+             FROM attack_ledger
+             WHERE sent_at_ms >= ? AND (? IS NULL OR account_id = ?)
+             GROUP BY bucket",
+        )
+        .bind(bars_start)
+        .bind(HOUR_MS)
+        .bind(bars_start)
+        .bind(account_id.as_deref())
+        .bind(account_id.as_deref())
+        .fetch_all(&self.pool)
+        .await?;
+        // An event stamped at this very instant computes to one slot past the
+        // end; it belongs in the last hour, so indexes clamp to the final slot.
+        let slot = |bucket: i64| usize::try_from(bucket).ok().map(|index| index.min(HOURLY_BARS - 1));
+        for row in sent_rows {
+            if let Some(index) = slot(row.get("bucket")) {
+                hourly_bars.attacks[index] += row.get::<i64, _>("attacks");
+            }
+        }
+        let result_rows = sqlx::query(
+            "SELECT (result_at_ms - ?) / ? bucket, COUNT(*) returns,
+                    COALESCE(SUM(ruby_loot), 0) rubies, COALESCE(SUM(coin_loot), 0) coins
+             FROM attack_ledger
+             WHERE result_at_ms >= ? AND (? IS NULL OR account_id = ?)
+             GROUP BY bucket",
+        )
+        .bind(bars_start)
+        .bind(HOUR_MS)
+        .bind(bars_start)
+        .bind(account_id.as_deref())
+        .bind(account_id.as_deref())
+        .fetch_all(&self.pool)
+        .await?;
+        for row in result_rows {
+            let Some(index) = slot(row.get("bucket")) else {
+                continue;
+            };
+            hourly_bars.returns[index] += row.get::<i64, _>("returns");
+            hourly_bars.rubies[index] += row.get::<i64, _>("rubies");
+            hourly_bars.coins[index] += row.get::<i64, _>("coins");
+        }
+
         let scan_activity = sqlx::query(
             "SELECT (scanned_at_ms / 60000) * 60000 bucket, kingdom_id,
                     COUNT(DISTINCT printf('%d:%d:%d:%d', ax1, ay1, ax2, ay2)) windows
@@ -725,6 +794,7 @@ impl Store {
             rubies_last_hour: hourly.get("rubies"),
             coins_last_hour: hourly.get("coins"),
             ruby_series,
+            hourly_bars,
             scan_activity,
             fortress_next_available_at_ms: fortress.get("soonest"),
             fortress_count: fortress.get("observed"),

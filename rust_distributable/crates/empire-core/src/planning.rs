@@ -114,6 +114,9 @@ pub enum Destination {
     Fortress {
         kingdom_id: i64,
     },
+    BerimondCamp {
+        kingdom_id: i64,
+    },
 }
 
 impl Destination {
@@ -300,6 +303,7 @@ impl TaskDraft {
                 maximum,
             } => (kingdom_id, Some(minimum), Some(maximum), true),
             Destination::Fortress { kingdom_id } => (kingdom_id, None, None, true),
+            Destination::BerimondCamp { kingdom_id } => (kingdom_id, None, None, false),
         };
         if kingdom_id != self.source.kingdom_id {
             return Err(PlanError::CrossKingdom);

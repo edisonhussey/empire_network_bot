@@ -617,11 +617,22 @@ impl Store {
              FROM rbc_target
              WHERE lower(account_id) = lower(?) AND kingdom_id = ?
                AND reserved_until_ms <= ?
+               AND NOT EXISTS (
+                   SELECT 1 FROM attack_ledger a
+                   WHERE lower(a.account_id) = lower(rbc_target.account_id)
+                     AND a.kingdom_id = rbc_target.kingdom_id
+                     AND a.x = rbc_target.x AND a.y = rbc_target.y
+                     AND rbc_target.kingdom_id != 10
+                     AND (CASE WHEN a.landed_at_ms IS NOT NULL
+                               THEN MIN(a.landed_at_ms + 10800000, a.sent_at_ms + 14400000)
+                               ELSE a.sent_at_ms + 14400000 END) + 300000 > ?
+               )
                AND (? IS NULL OR level >= ?)
                AND (? IS NULL OR level <= ?)",
         )
         .bind(&account_id)
         .bind(kingdom_id)
+        .bind(now_ms)
         .bind(now_ms)
         .bind(level_min)
         .bind(level_min)
@@ -1137,6 +1148,82 @@ impl Store {
     /// Quarantine a server-refused fortress without deleting its observed
     /// cooldown. This prevents one bad opening from consuming the whole
     /// one-minute dispatch window through immediate retries.
+    /// A tower's cooldown once its landing is observed:
+    /// `min(landed + 3h, sent + 4h) + buffer`. Overwrites (does not `MAX`) the
+    /// provisional `sent + 4h` upper bound written when the attack was sent.
+    pub async fn refine_rbc_cooldown(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+        x: i64,
+        y: i64,
+        landed_at_ms: i64,
+        buffer_ms: i64,
+    ) -> Result<(), sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        sqlx::query(
+            "UPDATE rbc_target SET reserved_until_ms = MIN(?, COALESCE((
+                 SELECT MAX(sent_at_ms) FROM attack_ledger a
+                 WHERE lower(a.account_id) = lower(rbc_target.account_id)
+                   AND a.kingdom_id = rbc_target.kingdom_id
+                   AND a.x = rbc_target.x AND a.y = rbc_target.y
+             ), ?) + 14400000) + ?
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND x = ? AND y = ?",
+        )
+        .bind(landed_at_ms.saturating_add(10_800_000))
+        .bind(landed_at_ms)
+        .bind(buffer_ms)
+        .bind(&account_id)
+        .bind(kingdom_id)
+        .bind(x)
+        .bind(y)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_rbc_target(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+        x: i64,
+        y: i64,
+    ) -> Result<(), sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        sqlx::query(
+            "DELETE FROM rbc_target
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND x = ? AND y = ?",
+        )
+        .bind(&account_id)
+        .bind(kingdom_id)
+        .bind(x)
+        .bind(y)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn defer_rbc_target(
+        &self,
+        account_id: &str,
+        target: &ReservedTarget,
+        until_ms: i64,
+    ) -> Result<(), sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        sqlx::query(
+            "UPDATE rbc_target SET reserved_until_ms = MAX(reserved_until_ms, ?)
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND x = ? AND y = ?",
+        )
+        .bind(until_ms)
+        .bind(&account_id)
+        .bind(target.kingdom_id)
+        .bind(target.x)
+        .bind(target.y)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn defer_fortress_target(
         &self,
         account_id: &str,

@@ -18,7 +18,16 @@
 #   KEEP_BACKUPS=5 scripts/fresh-start.sh
 set -euo pipefail
 
-DATA_DIR="${HOME}/Library/Application Support/com.openauto.desktop"
+if [ -n "${APPDATA:-}" ]; then
+    # Windows (Git Bash / MSYS2 / WSL)
+    DATA_DIR="$APPDATA/com.openauto.desktop"
+elif [ "$(uname)" = "Darwin" ]; then
+    # macOS
+    DATA_DIR="${HOME}/Library/Application Support/com.openauto.desktop"
+else
+    # Linux
+    DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/com.openauto.desktop"
+fi
 DATABASE_NAME="empire.sqlite3"
 KEEP_BACKUPS="${KEEP_BACKUPS:-2}"
 DRY_RUN=0

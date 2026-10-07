@@ -1,7 +1,9 @@
 import { api } from "./api.js";
 import { $, element } from "./dom.js";
 import { compactNumber, expiryLabel, humanWait, humanize, relativeTime, sessionDuration, tempoLabel } from "./format.js";
+import { createHeaderControls, modeUsesFortress } from "./views/header-controls.js";
 import { renderRubyChart } from "./views/ruby-chart.js";
+import { renderSparkBars } from "./views/spark-bars.js";
 const activation = $("#activation");
 const appShell = $("#app-shell");
 let currentLicence = null;
@@ -224,17 +226,28 @@ function renderKingdoms() {
 function updateTargetKinds() {
   const kingdomId = Number($("#source-kid").value);
   const fortress = $("#target-kind option[value='fortress']");
-  const supported = [1, 2, 3].includes(kingdomId);
-  fortress.hidden = !supported;
-  fortress.disabled = !supported;
-  if (!supported && $("#target-kind").value === "fortress") $("#target-kind").value = "rbc";
+  const berimond = $("#target-kind option[value='berimond']");
+  
+  const fortressSupported = [1, 2, 3].includes(kingdomId);
+  fortress.hidden = !fortressSupported;
+  fortress.disabled = !fortressSupported;
+  if (!fortressSupported && $("#target-kind").value === "fortress") $("#target-kind").value = "rbc";
+  
+  const berimondSupported = kingdomId === 10;
+  berimond.hidden = !berimondSupported;
+  berimond.disabled = !berimondSupported;
+  if (!berimondSupported && $("#target-kind").value === "berimond") $("#target-kind").value = "rbc";
   const isFortress = $("#target-kind").value === "fortress";
-  $("#target-level-fields").hidden = isFortress;
-  $("#target-level-min").required = !isFortress;
-  $("#target-level-max").required = !isFortress;
-  $("#target-hint").textContent = $("#target-kind").value === "fortress"
-    ? "OpenAuto chooses a learned fortress in this kingdom."
-    : "OpenAuto chooses a learned Robber Baron in this level range; no destination coordinate is required.";
+  const isBerimond = $("#target-kind").value === "berimond";
+  const hasLevels = !(isFortress || isBerimond);
+  $("#target-level-fields").hidden = !hasLevels;
+  $("#target-level-min").required = hasLevels;
+  $("#target-level-max").required = hasLevels;
+  
+  let hint = "OpenAuto chooses a learned Robber Baron in this level range; no destination coordinate is required.";
+  if (isFortress) hint = "OpenAuto chooses a learned fortress in this kingdom.";
+  if (isBerimond) hint = "OpenAuto chooses a valid Berimond camp. (Kingdom 10 only)";
+  $("#target-hint").textContent = hint;
   updateSourceCoordinates();
 }
 
@@ -261,34 +274,73 @@ function updateSourceCoordinates() {
   }
 }
 
-function slotButton(sideName, kind) {
-  const values = attackWaves[activeWave][sideName][kind];
-  const slot = values[0];
+function slotButton(sideName, kind, index) {
+  const slot = attackWaves[activeWave][sideName][kind][index];
   const button = element("button", `slot ${kind === "troops" ? "troop-slot" : "tool-slot"}`);
   button.type = "button";
-  button.append(element("small", "", kind === "troops" ? "Troops" : "Tools"));
+  button.append(element("small", "", kind === "troops" ? `Troop ${index + 1}` : `Tool ${index + 1}`));
   button.append(element("b", "", slot ? itemName(slot.item_id) : "Empty"));
   if (slot) button.append(element("span", "", `× ${slot.amount}`));
-  button.addEventListener("click", () => openPicker(sideName, kind));
+  button.addEventListener("click", () => openPicker(sideName, kind, index));
   return button;
 }
 
 function renderWave() {
   const builder = $("#wave-builder");
   builder.replaceChildren();
+
+  const actions = element("div", "wave-actions");
+  actions.style.gridColumn = "1 / -1";
+  actions.style.display = "flex";
+  actions.style.justifyContent = "flex-end";
+  actions.style.marginBottom = "-20px";
+  
+  if (activeWave > 0) {
+     const copyBtn = element("button", "secondary-action");
+     copyBtn.type = "button";
+     copyBtn.textContent = `Copy Wave 1 to Wave ${activeWave + 1}`;
+     copyBtn.addEventListener("click", () => {
+         attackWaves[activeWave] = JSON.parse(JSON.stringify(attackWaves[0]));
+         renderWave();
+     });
+     actions.append(copyBtn);
+  } else {
+     const copyAllBtn = element("button", "secondary-action");
+     copyAllBtn.type = "button";
+     copyAllBtn.textContent = "Copy to all waves";
+     copyAllBtn.addEventListener("click", () => {
+         for (let i = 1; i < 4; i++) {
+             attackWaves[i] = JSON.parse(JSON.stringify(attackWaves[0]));
+         }
+         alert("Copied Wave 1 to all subsequent waves.");
+         renderWave();
+     });
+     actions.append(copyAllBtn);
+  }
+  builder.append(actions);
+
+  const SLOTS = { left: { troops: 2, tools: 2 }, middle: { troops: 6, tools: 3 }, right: { troops: 2, tools: 2 } };
+
   for (const [key, name] of [["left", "Left flank"], ["middle", "Center"], ["right", "Right flank"]]) {
     const side = element("section", "side-builder");
     side.append(element("h3", "", name));
     const slots = element("div", "slot-grid");
-    slots.append(slotButton(key, "troops"), slotButton(key, "tools"));
+    
+    for (let i = 0; i < SLOTS[key].troops; i++) {
+      slots.append(slotButton(key, "troops", i));
+    }
+    for (let i = 0; i < SLOTS[key].tools; i++) {
+      slots.append(slotButton(key, "tools", i));
+    }
+    
     side.append(slots);
     builder.append(side);
   }
 }
 
-function openPicker(side, kind) {
-  pickerTarget = { side, kind };
-  const current = attackWaves[activeWave][side][kind][0];
+function openPicker(side, kind, index) {
+  pickerTarget = { side, kind, index };
+  const current = attackWaves[activeWave][side][kind][index];
   pickerSelection = current ? library.catalog.find((item) => item.id === current.item_id) || null : null;
   $("#picker-title").textContent = kind === "troops" ? "Choose troops" : "Choose tools";
   $("#item-search").value = "";
@@ -330,20 +382,27 @@ function choosePickerItem(item) {
 function confirmPickerItem() {
   if (!pickerTarget || !pickerSelection) return;
   const amount = Math.max(1, Number($("#item-amount").value) || 1);
-  attackWaves[activeWave][pickerTarget.side][pickerTarget.kind] = [{ item_id: pickerSelection.id, amount }];
+  attackWaves[activeWave][pickerTarget.side][pickerTarget.kind][pickerTarget.index] = { item_id: pickerSelection.id, amount };
   $("#item-picker").close();
   renderWave();
 }
 
 function clearPickerItem() {
   if (!pickerTarget) return;
-  attackWaves[activeWave][pickerTarget.side][pickerTarget.kind] = [];
+  attackWaves[activeWave][pickerTarget.side][pickerTarget.kind][pickerTarget.index] = null;
   $("#item-picker").close();
   renderWave();
 }
 
 function attackDraft() {
-  return { name: $("#attack-name").value.trim(), waves: attackWaves };
+  const waves = attackWaves.map(wave => {
+    return {
+       left: { troops: wave.left.troops.filter(Boolean), tools: wave.left.tools.filter(Boolean) },
+       middle: { troops: wave.middle.troops.filter(Boolean), tools: wave.middle.tools.filter(Boolean) },
+       right: { troops: wave.right.troops.filter(Boolean), tools: wave.right.tools.filter(Boolean) }
+    };
+  });
+  return { name: $("#attack-name").value.trim(), waves };
 }
 
 function profileToDraft(profile) {
@@ -448,8 +507,8 @@ function renderLibrary() {
     const copy = actionButton("Copy JSON", () => copyJson(taskToDraft(task), $("#task-result")));
     const remove = actionButton("Delete", () => deleteEntry(`/plans/tasks/${task.task_id}`, "#task-result"), true);
     const subscription = library.subscriptions.find((value) => value.task_id === task.task_id);
-    const targetLabel = subscription?.target_kind === "fortress" ? "Fortress" : "Robber Baron";
-    const levelLabel = subscription?.target_kind === "fortress" ? "" : task.target_level_min === null ? "fixed target" : `levels ${task.target_level_min}–${task.target_level_max}`;
+    const targetLabel = subscription?.target_kind === "fortress" ? "Fortress" : (subscription?.target_kind === "berimond_camp" ? "Berimond Camp" : "Robber Baron");
+    const levelLabel = (subscription?.target_kind === "fortress" || subscription?.target_kind === "berimond_camp") ? "" : (task.target_level_min === null ? "fixed target" : `levels ${task.target_level_min}–${task.target_level_max}`);
     const algorithm = subscription?.filter?.algorithm || "advanced";
     const identity = element("div"); identity.append(element("b", "", task.name), element("small", "", `${kingdomName((library.kingdoms.find((value) => value.id === task.kingdom_id) || fallbackKingdoms.find((value) => value.id === task.kingdom_id))?.name || `Kingdom ${task.kingdom_id}`)} · ${targetLabel} ${levelLabel} · ${humanize(algorithm)} · ${priorityName(task.priority).replace("_", " ")}`));
     const actions = element("span", "row-actions"); actions.append(copy, remove); row.append(identity, actions); return row;
@@ -790,7 +849,11 @@ async function refreshAccounts(knownDirect = null) {
   $("#account-onboarding").hidden = connectedAccounts.length > 0 && !addingAccount;
   renderAccountProfiles();
   renderAddAccount();
-  if (!connectedAccounts.length) { emptyAccounts(); renderModes(); return; }
+    const pendingAttack = new Map();
+  const pendingRecruit = new Map();
+  document.querySelectorAll("[data-account-attack]").forEach(sel => pendingAttack.set(sel.dataset.accountAttack, sel.value));
+  document.querySelectorAll("[data-account-recruit]").forEach(sel => pendingRecruit.set(sel.dataset.accountRecruit, sel.value));
+if (!connectedAccounts.length) { emptyAccounts(); renderModes(); return; }
   $("#accounts").replaceChildren(...connectedAccounts.map((account) => {
     const card = element("article", "account-steps");
     const isConnected = direct.connected && direct.account_id?.toLowerCase() === account.account_id.toLowerCase();
@@ -834,8 +897,10 @@ async function refreshAccounts(knownDirect = null) {
     assignment.append(element("p", "list-label", "Step 2 · Automation"));
     const attackLabel = document.createElement("label"); attackLabel.textContent = "Attack bot";
     const attackSelect = document.createElement("select");
+    attackSelect.dataset.accountAttack = account.account_id;
     attackSelect.append(...library.modes.map((mode) => { const option = element("option", "", `${mode.name} · ${mode.commander_count} commander${mode.commander_count === 1 ? "" : "s"}`); option.value = mode.mode_id; return option; }));
-    if (current) attackSelect.value = current.mode_id;
+    if (pendingAttack.has(account.account_id)) attackSelect.value = pendingAttack.get(account.account_id);
+    else if (current) attackSelect.value = current.mode_id;
     const recruitLabel = document.createElement("label"); recruitLabel.textContent = "Recruit bot (optional)";
     const recruitSelect = document.createElement("select");
     const usedAt = (bot) => library.account_recruit_bots.find((value) => value.recruit_bot_id === bot.recruit_bot_id)?.updated_at_ms || 0;
@@ -847,7 +912,9 @@ async function refreshAccounts(knownDirect = null) {
       const option = element("option", "", `${bot.name} · ${tempoLabel(bot.algorithm)}${used ? ` · used ${relativeTime(used)}` : ""}`);
       option.value = bot.recruit_bot_id; return option;
     }));
-    if (currentRecruit) recruitSelect.value = currentRecruit.recruit_bot_id;
+    recruitSelect.dataset.accountRecruit = account.account_id;
+    if (pendingRecruit.has(account.account_id)) recruitSelect.value = pendingRecruit.get(account.account_id);
+    else if (currentRecruit) recruitSelect.value = currentRecruit.recruit_bot_id;
     const recruitEstimate = element("p", "recruit-estimate");
     const describeRecruit = () => {
       const bot = library.recruit_bots.find((value) => String(value.recruit_bot_id) === recruitSelect.value);
@@ -968,8 +1035,8 @@ async function refreshDashboard(knownDirect = null, force = false) {
     $("#dashboard-dot").className = `live-dot${runnerActive ? " running" : direct.phase === "failed" ? " error" : ""}`;
     const assignment = runningAssignments[0];
     const mode = assignment && library.modes.find((value) => value.mode_id === assignment.mode_id);
-    const scanProgress = direct.scan_total ? `${kingdomLabel(direct.scan_kingdom_id)} scan ${direct.scan_sent + direct.scan_cached}/${direct.scan_total} · ${direct.scan_cached} cached` : null;
-    $("#dashboard-subtitle").textContent = scanProgress || (runnerActive ? `${mode?.name || hunt.label || "Automation"} · ${direct.account_id || hunt.account_id || "connected account"}` : connected ? "Connected and ready to run a bot" : phaseCopy[direct.phase] || "No active session");
+    const usesFortress = modeUsesFortress(library, mode);
+    $("#dashboard-subtitle").textContent = runnerActive ? `${mode?.name || hunt.label || "Automation"} · ${direct.account_id || hunt.account_id || "connected account"}` : connected ? "Connected and ready to run a bot" : phaseCopy[direct.phase] || "No active session";
     $("#metric-attacks").textContent = compactNumber(hunt.marches);
     $("#metric-returned").textContent = `${compactNumber(hunt.returned)} returned`;
     $("#metric-flight").textContent = compactNumber(hunt.in_flight);
@@ -981,6 +1048,7 @@ async function refreshDashboard(knownDirect = null, force = false) {
     $("#rate-coins").textContent = compactNumber(summary.coins_last_hour);
     $("#chart-updated").textContent = `Updated ${new Date(summary.generated_at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
     renderRubyChart(summary.ruby_series);
+    for (const name of ["rubies", "coins", "attacks", "returns"]) renderSparkBars($(`#bars-${name}`), summary.hourly_bars?.[name]);
 
     const dashboardAccounts = activeAccountId ? connectedAccounts.filter((account) => account.account_id.toLowerCase() === activeAccountId.toLowerCase()) : connectedAccounts.slice(0, 1);
     const totals = dashboardAccounts.reduce((value, account) => {
@@ -998,6 +1066,7 @@ async function refreshDashboard(knownDirect = null, force = false) {
     const doing = botActivity(direct);
     // Fortress availability is the one row that can be acted on right now, so it
     // carries the status colour when its window is open.
+    // Fortress rows only appear when the running bot actually has a fortress task.
     const fortress = nextFortressSummary(summary);
     const rows = [
       { label: "Account", value: dashboardAccounts[0]?.player_name || assignment?.account_id || hunt.account_id || "None" },
@@ -1006,7 +1075,7 @@ async function refreshDashboard(knownDirect = null, force = false) {
       { label: "View", value: currentView, title: "Castle view and map view are separate screens in the client; changing kingdom is a stateful transition between them." },
       { label: "Doing", value: doing.text, title: doing.detail },
       { label: "Session", value: connected ? "Connected" : "Disconnected" },
-      { label: "Next fortress", value: fortress.text, title: fortress.detail, due: fortress.imminent },
+      ...(usesFortress ? [{ label: "Next fortress", value: fortress.text, title: fortress.detail, due: fortress.imminent }] : []),
     ];
     for (const row of rows) {
       const line = element("div", row.due ? "assignment-line due" : "assignment-line");
@@ -1030,7 +1099,7 @@ async function refreshDashboard(knownDirect = null, force = false) {
     const activity = $("#dashboard-activity");
     const previousScroll = activity.scrollTop;
     activity.replaceChildren();
-    const next = (summary.fortress_upcoming || []).find((entry) => entry.available_at_ms >= Date.now() - 60_000);
+    const next = !usesFortress ? undefined : (summary.fortress_upcoming || []).find((entry) => entry.available_at_ms >= Date.now() - 60_000);
     if (next) {
       const line = element("div", "activity-row");
       const detail = element("div", "activity-detail");
@@ -1311,6 +1380,7 @@ async function refresh() {
     const scanning = direct.connected && ["loading_sands", "discovering_fortresses"].includes(direct.phase);
     if (scanning && Date.now() - scanHealthFetchedAt >= 4000) await refreshScanHealth();
     renderLinkState(direct);
+    headerControls.render();
     updateControlScanIndicators(direct);
     if (!$("#view-initialize").hidden) renderScanProgress(direct);
     $("#phase").textContent = phaseCopy[direct.phase] || "Getting ready…";
@@ -1333,6 +1403,7 @@ async function refresh() {
     if (!$("#view-dashboard").hidden) await refreshDashboard(direct);
   } catch (_) {
     renderLinkState({ connected: false });
+    headerControls.render();
   }
 }
 
@@ -1368,7 +1439,7 @@ $("#attack-form").addEventListener("submit", async (event) => { event.preventDef
 $("#copy-attack").addEventListener("click", () => copyJson(attackDraft(), $("#attack-result")));
 $("#clear-attack").addEventListener("click", () => { attackWaves = Array.from({ length: 4 }, blankWave); activeWave = 0; $("#attack-name").value = ""; document.querySelectorAll("#wave-tabs button").forEach((button) => button.classList.toggle("selected", button.dataset.wave === "0")); $("#attack-result").textContent = "Attack cleared."; renderWave(); });
 
-$("#task-form").addEventListener("submit", async (event) => { event.preventDefault(); const kingdomId = Number($("#source-kid").value); const automatic = $("#use-main-castle").checked; const fortress = $("#target-kind").value === "fortress"; const destination = fortress ? { kind: "fortress", kingdom_id: kingdomId } : { kind: "rbc_level_range", kingdom_id: kingdomId, minimum: Number($("#target-level-min").value), maximum: Number($("#target-level-max").value) }; const draft = { name: $("#task-name").value.trim(), attack_profile_id: $("#task-attack").value, source: { kingdom_id: kingdomId, x: Number($("#source-x").value), y: Number($("#source-y").value) }, source_kind: automatic ? "main_castle" : "coordinate", destination, algorithm: $("#target-algorithm").value, travel: $("#travel").value, priority, commander_count: 1 }; try { await api("/plans/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(draft) }); $("#task-result").textContent = "Dynamic farming task saved."; $("#task-name").value = ""; await loadLibrary(); } catch (error) { $("#task-result").textContent = error.message; } });
+$("#task-form").addEventListener("submit", async (event) => { event.preventDefault(); const kingdomId = Number($("#source-kid").value); const automatic = $("#use-main-castle").checked; const fortress = $("#target-kind").value === "fortress"; const destination = fortress ? { kind: "fortress", kingdom_id: kingdomId } : ($("#target-kind").value === "berimond" ? { kind: "berimond_camp", kingdom_id: kingdomId } : { kind: "rbc_level_range", kingdom_id: kingdomId, minimum: Number($("#target-level-min").value), maximum: Number($("#target-level-max").value) }); const draft = { name: $("#task-name").value.trim(), attack_profile_id: $("#task-attack").value, source: { kingdom_id: kingdomId, x: Number($("#source-x").value), y: Number($("#source-y").value) }, source_kind: automatic ? "main_castle" : "coordinate", destination, algorithm: $("#target-algorithm").value, travel: $("#travel").value, priority, commander_count: 1 }; try { await api("/plans/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(draft) }); $("#task-result").textContent = "Dynamic farming task saved."; $("#task-name").value = ""; await loadLibrary(); } catch (error) { $("#task-result").textContent = error.message; } });
 
 $("#mode-form").addEventListener("submit", async (event) => { event.preventDefault(); try { await api("/plans/modes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: $("#mode-name").value.trim(), allocations: selectedModeTasks }) }); $("#mode-result").textContent = "Attack bot saved."; selectedModeTasks = []; $("#mode-name").value = ""; await loadLibrary(); await refreshAccounts(); } catch (error) { $("#mode-result").textContent = error.message; } });
 $("#copy-mode").addEventListener("click", () => copyJson(bundleForMode($("#mode-name").value.trim(), selectedModeTasks), $("#mode-result")));
@@ -1427,9 +1498,14 @@ $("#import-preset").addEventListener("click", async () => {
     await loadLibrary();
   } catch (error) { $("#preset-result").textContent = error.message; }
 });
-$("#dashboard-refresh").addEventListener("click", () => refreshDashboard(null, true));
 $("#refresh-logs").addEventListener("click", refreshLogs);
 $("#copy-logs").addEventListener("click", async () => { if (!accountLogText) await refreshLogs(); await navigator.clipboard.writeText(accountLogText); $("#log-result").textContent = "Sanitized logs copied."; });
+
+const headerControls = createHeaderControls({
+  read: () => ({ direct: latestDirect, library, accounts: connectedAccounts }),
+  connect: (account, password, output) => connectSavedAccount(account, password, 0, true, output),
+  refreshAll: async () => { await loadLibrary(); await refreshAccounts(); await refreshDashboard(); },
+});
 
 renderKingdoms();
 renderServerOptions();

@@ -415,6 +415,18 @@ pub async fn create_task(
             "fortress",
             json!({"kingdom_id": kingdom_id, "algorithm": algorithm}),
         ),
+        Destination::BerimondCamp { kingdom_id } => (
+            kingdom_id,
+            None,
+            None,
+            empire_core::planning::Coordinate {
+                kingdom_id,
+                x: 0,
+                y: 0,
+            },
+            "berimond_camp",
+            json!({"kingdom_id": kingdom_id, "algorithm": algorithm}),
+        ),
     };
     state
         .store

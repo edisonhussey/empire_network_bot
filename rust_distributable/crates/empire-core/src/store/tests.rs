@@ -1743,6 +1743,16 @@ async fn dashboard_rates_series_and_scan_activity_come_from_the_database() {
     assert_eq!(dashboard.coins_last_hour, 500);
     assert_eq!(dashboard.ruby_series.last().unwrap().value, 7);
     assert_eq!(dashboard.scan_activity[0].windows, 1);
+    // The bars always have a full day of slots, and the hour just ended holds
+    // the one attack, return and loot recorded above.
+    let bars = &dashboard.hourly_bars;
+    for series in [&bars.rubies, &bars.coins, &bars.attacks, &bars.returns] {
+        assert_eq!(series.len(), 24);
+    }
+    assert_eq!(bars.attacks.iter().sum::<i64>(), 1);
+    assert_eq!(*bars.returns.last().unwrap(), 1);
+    assert_eq!(*bars.rubies.last().unwrap(), 7);
+    assert_eq!(*bars.coins.last().unwrap(), 500);
 }
 
 #[tokio::test]

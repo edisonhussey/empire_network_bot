@@ -197,11 +197,12 @@ pub async fn run(
     licence: LicenceGate,
 ) {
     let endpoint = request.endpoint.clone();
-    let account_id = request.credentials.player_name.trim().to_ascii_lowercase();
+    let _account_id = request.credentials.player_name.trim().to_ascii_lowercase();
     status.write().await.endpoint = Some(endpoint.clone());
     let result = run_inner(request, &store, &active_transport, &status, &licence).await;
-    let _ = store.stop_account_mode(&account_id, now_ms()).await;
-    let _ = store.stop_account_recruit_bot(&account_id, now_ms()).await;
+    // We intentionally do NOT call stop_account_mode here anymore.
+    // If the socket disconnects (e.g., daily server maintenance), we want to preserve 
+    // the user's configuration so that when they reconnect, the bot resumes automatically.
     *active_transport.write().await = None;
     let mut current = status.write().await;
     current.connected = false;

@@ -186,6 +186,18 @@ impl Store {
                     "fortress",
                     json!({"kingdom_id": kingdom_id, "algorithm": algorithm}),
                 ),
+                Destination::BerimondCamp { kingdom_id } => (
+                    kingdom_id,
+                    None,
+                    None,
+                    crate::planning::Coordinate {
+                        kingdom_id,
+                        x: 0,
+                        y: 0,
+                    },
+                    "berimond_camp",
+                    json!({"kingdom_id": kingdom_id, "algorithm": algorithm}),
+                ),
             };
             sqlx::query(
                 "INSERT INTO task_definition (
@@ -474,6 +486,20 @@ impl Store {
     }
 
     /// Compile the running mode for one account into ordered executable tasks.
+    pub async fn disable_account_automation(&self, account_id: &str) -> Result<(), sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE account_mode SET running = 0 WHERE lower(account_id) = lower(?)")
+            .bind(&account_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE account_recruit_bot SET running = 0 WHERE lower(account_id) = lower(?)")
+            .bind(&account_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
+    }
+
     pub async fn active_mode_tasks(
         &self,
         account_id: &str,

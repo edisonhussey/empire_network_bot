@@ -5,6 +5,7 @@ use crate::planning::TravelMode;
 
 pub const SANDS_KINGDOM_ID: i64 = 1;
 pub const RBC_AREA_TYPE: i64 = 2;
+pub const BERIMOND_CAMP_TYPE: i64 = 17;
 pub const FORTRESS_AREA_TYPE: i64 = 11;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -176,10 +177,15 @@ pub fn rbc_targets(payload: &Value) -> Vec<RbcTarget> {
         .flatten()
         .filter_map(|value| {
             let row = value.as_array()?;
-            if row.first()?.as_i64()? != RBC_AREA_TYPE {
+            let area_type = row.first()?.as_i64()?;
+            if area_type != RBC_AREA_TYPE && area_type != BERIMOND_CAMP_TYPE {
                 return None;
             }
-            let raw_level = row.get(4)?.as_i64()?;
+            let raw_level = if area_type == BERIMOND_CAMP_TYPE {
+                1
+            } else {
+                row.get(4)?.as_i64()?
+            };
             Some(RbcTarget {
                 kingdom_id,
                 x: row.get(1)?.as_i64()?,

@@ -74,7 +74,7 @@ impl Automation {
     /// One recoverable operational error is tolerated in a rolling five-minute
     /// window. A second pauses all attack mutations until the oldest event has
     /// aged out; stopping/starting a mode cannot bypass the window.
-    pub(super) fn record_operational_error(&mut self, now: i64, context: &str) {
+    pub(super) async fn record_operational_error(&mut self, store: &Store, account_id: &str, now: i64, context: &str) {
         while self
             .operational_errors
             .front()
@@ -83,10 +83,16 @@ impl Automation {
             self.operational_errors.pop_front();
         }
         self.operational_errors.push_back(now);
+        if self.operational_errors.len() > 4 {
+            self.detail = format!("Fatal safety trip: {context} (5 errors in rolling window). Bot disabled.");
+            let _ = store.disable_account_automation(account_id).await;
+            self.safety_pause_until_ms = now + 86400_000; // sleep until mode restarted
+            return;
+        }
         if self.operational_errors.len() > 1 {
             self.safety_pause_until_ms = self.operational_errors[0] + ERROR_WINDOW_MS;
             self.detail = format!(
-                "Safety pause after repeated errors: {context}. Resumes when the five-minute window clears"
+                "Safety pause after repeated errors: {context}. Resumes when the window clears."
             );
         }
     }
@@ -116,7 +122,13 @@ impl Automation {
     ) -> anyhow::Result<Option<String>> {
         let now = now_ms();
         if now < self.safety_pause_until_ms {
-            return Ok(None);
+            // Allow the operator to clear the safety trip by turning the mode off.
+            if store.active_mode_tasks(account_id).await?.is_empty() {
+                self.operational_errors.clear();
+                self.safety_pause_until_ms = 0;
+            } else {
+                return Ok(None);
+            }
         }
         if now.saturating_sub(self.last_heartbeat_ms) >= 5_000 {
             if store.account_mode_running(account_id).await? {
@@ -127,20 +139,54 @@ impl Automation {
             self.last_heartbeat_ms = now;
         }
 
-        match &self.phase {
-            AutomationPhase::AwaitMap { deadline_ms, .. }
-            | AutomationPhase::AwaitFortressRefresh { deadline_ms, .. }
-            | AutomationPhase::AwaitAdi { deadline_ms, .. }
-            | AutomationPhase::AwaitCra { deadline_ms, .. }
-                if now >= *deadline_ms =>
-            {
-                self.record_operational_error(now, "a game request timed out");
+        match std::mem::replace(&mut self.phase, AutomationPhase::Idle { due_ms: now }) {
+            AutomationPhase::AwaitMap { deadline_ms, .. } if now >= deadline_ms => {
+                self.record_operational_error(store, account_id, now, "a game request timed out").await;
                 self.phase = AutomationPhase::Idle {
                     due_ms: self.safety_pause_until_ms.max(now + 10_000),
                 };
                 return Ok(None);
             }
-            _ => {}
+            AutomationPhase::AwaitFortressRefresh { deadline_ms, .. } if now >= deadline_ms => {
+                self.record_operational_error(store, account_id, now, "a game request timed out").await;
+                self.phase = AutomationPhase::Idle {
+                    due_ms: self.safety_pause_until_ms.max(now + 10_000),
+                };
+                return Ok(None);
+            }
+            AutomationPhase::AwaitAdi { task, target, deadline_ms, .. } if now >= deadline_ms => {
+                // If ADI times out, it often means the target is on cooldown (e.g. towers).
+                // Quarantine the target for an hour so we don't keep hitting it.
+                if task.target_kind == "fortress" {
+                    let _ = store.defer_fortress_target(account_id, &target, now + 3600_000).await;
+                } else if target.kingdom_id == 10 {
+                    let _ = store.delete_rbc_target(account_id, target.kingdom_id, target.x, target.y).await;
+                } else {
+                    let _ = store.defer_rbc_target(account_id, &target, now + 3600_000).await;
+                    self.record_operational_error(store, account_id, now, "a game request timed out (target quarantined)").await;
+                }
+                self.phase = AutomationPhase::Idle {
+                    due_ms: self.safety_pause_until_ms.max(now + 10_000),
+                };
+                return Ok(None);
+            }
+            AutomationPhase::AwaitCra { task, target, deadline_ms, .. } if now >= deadline_ms => {
+                if task.target_kind == "fortress" {
+                    let _ = store.defer_fortress_target(account_id, &target, now + 3600_000).await;
+                } else if target.kingdom_id == 10 {
+                    let _ = store.delete_rbc_target(account_id, target.kingdom_id, target.x, target.y).await;
+                } else {
+                    let _ = store.defer_rbc_target(account_id, &target, now + 3600_000).await;
+                    self.record_operational_error(store, account_id, now, "a game request timed out (target quarantined)").await;
+                }
+                self.phase = AutomationPhase::Idle {
+                    due_ms: self.safety_pause_until_ms.max(now + 10_000),
+                };
+                return Ok(None);
+            }
+            other => {
+                self.phase = other;
+            }
         }
 
         if let AutomationPhase::ReadyAdi {
@@ -488,19 +534,32 @@ impl Automation {
             if !expected_rejection {
                 return;
             }
-            let rejected_fortress = match &self.phase {
+            let (rejected_fortress, rejected_rbc) = match &self.phase {
                 AutomationPhase::AwaitAdi { task, target, .. }
-                | AutomationPhase::AwaitCra { task, target, .. }
-                    if task.target_kind == "fortress" =>
-                {
-                    Some(target.clone())
+                | AutomationPhase::AwaitCra { task, target, .. } => {
+                    if task.target_kind == "fortress" {
+                        (Some(target.clone()), None)
+                    } else {
+                        (None, Some(target.clone()))
+                    }
                 }
-                _ => None,
+                _ => (None, None),
             };
             if let Some(target) = rejected_fortress {
                 let _ = store
                     .defer_fortress_target(account_id, &target, now + ERROR_WINDOW_MS)
                     .await;
+            }
+            if let Some(target) = rejected_rbc {
+                if target.kingdom_id == 10 {
+                    // Berimond camps don't have cooldowns. If they error, they were defeated.
+                    let _ = store.delete_rbc_target(account_id, target.kingdom_id, target.x, target.y).await;
+                } else {
+                    // Defer for 1 hour if we hit a server error on an RBC/Tower, as it's likely a cooldown.
+                    let _ = store
+                        .defer_rbc_target(account_id, &target, now + 3600_000)
+                        .await;
+                }
             }
             if let AutomationPhase::AwaitCra { lord_id, .. } = &self.phase {
                 let state = CommanderState {
@@ -518,10 +577,8 @@ impl Automation {
                 packet.command
             );
             warn!(%account_id, command = %packet.command, %status, "automation request rejected");
-            self.record_operational_error(
-                now,
-                &format!("{} was rejected with status {status}", packet.command),
-            );
+            // Do not record an operational error here! We already gracefully deferred the target
+            // or deleted it, so the bot won't spin. Game errors like 95 or 93 are expected.
             self.phase = AutomationPhase::Idle {
                 due_ms: self
                     .safety_pause_until_ms
@@ -604,12 +661,14 @@ impl Automation {
                         let _ = store
                             .defer_fortress_target(account_id, &target, now + ERROR_WINDOW_MS)
                             .await;
+                    } else if target.kingdom_id == 10 {
+                        let _ = store.delete_rbc_target(account_id, target.kingdom_id, target.x, target.y).await;
+                    } else {
+                        // Defer regular RBC target for 1 hour to prevent looping
+                        let _ = store.defer_rbc_target(account_id, &target, now + 3600_000).await;
                     }
-                    self.record_operational_error(now, "attack details were unavailable");
-                    if self.safety_pause_until_ms <= now {
-                        self.detail =
-                            "Attack details were unavailable; target quarantined".to_owned();
-                    }
+                    
+                    self.detail = "Attack details were unavailable; target deferred".to_owned();
                     self.phase = AutomationPhase::Idle {
                         due_ms: self.safety_pause_until_ms.max(now + 10_000),
                     };
@@ -719,6 +778,16 @@ impl Automation {
                         .await;
                 } else {
                     let _ = store.mark_target_attacked(account_id, &target, now).await;
+                    if target.kingdom_id != 10 {
+                        let duration_ms = travel.unwrap_or(300).max(0) as i64 * 1_000;
+                        let exact_cooldown = now + duration_ms + 3 * 3600 * 1_000;
+                        let upper_bound = now + 4 * 3600 * 1_000;
+                        let buffer_ms = self.rng.uniform(240.0, 360.0) as i64 * 1_000;
+                        let cooldown = exact_cooldown.min(upper_bound) + buffer_ms;
+                        let _ = store
+                            .defer_rbc_target(account_id, &target, cooldown)
+                            .await;
+                    }
                 }
                 let pause = PacingPolicy::default().after_cra_ack(&mut self.rng)
                     + Waits::attack_send(&mut self.rng);
@@ -741,6 +810,14 @@ impl Automation {
                     .await;
                 if let Err(error) = &applied {
                     warn!(%error, %account_id, "attack return persistence failed");
+                }
+                if matches!(applied, Ok(true))
+                    && let Some((kid, x, y)) = hunt::return_target(&packet.payload)
+                {
+                    let buffer_ms = self.rng.uniform(240.0, 360.0) as i64 * 1_000;
+                    let _ = store
+                        .refine_rbc_cooldown(account_id, kid, x, y, now, buffer_ms)
+                        .await;
                 }
                 if matches!(applied, Ok(true))
                     && let Some(seconds) = return_seconds

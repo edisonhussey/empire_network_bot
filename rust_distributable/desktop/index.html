@@ -75,23 +75,37 @@
       <main>
         <header>
           <div><p id="page-eyebrow" class="eyebrow">Overview</p><h1 id="page-title">Dashboard</h1></div>
+          <div class="header-controls">
+            <div class="login-wrap">
+              <button id="session-button" type="button">Log in</button>
+              <form id="login-form" class="login-popover" hidden>
+                <input id="login-password" type="password" placeholder="Password" autocomplete="current-password">
+                <button type="submit">Connect</button>
+                <small id="login-result"></small>
+              </form>
+            </div>
+            <div class="bot-menu-wrap">
+              <button id="bot-menu-button" type="button" aria-haspopup="menu" aria-expanded="false" disabled><i id="bot-menu-dot"></i><span id="bot-menu-label-text">Bot stopped</span><span class="nav-caret"></span></button>
+              <div id="bot-menu" class="bot-menu" role="menu" hidden></div>
+            </div>
+          </div>
         </header>
+
 
         <section id="view-dashboard" class="view active-view">
           <section class="dashboard-status-card">
             <div><p class="eyebrow">Automation status</p><h2 id="dashboard-state">Checking…</h2><span id="dashboard-dot" class="live-dot"></span><p id="dashboard-subtitle">Reading the background service</p></div>
-            <button id="dashboard-refresh" class="secondary-action" type="button">Refresh</button>
           </section>
           <section class="dashboard-metrics">
             <article class="metric-card"><div><p>Attacks sent</p><strong id="metric-attacks">—</strong><small id="metric-returned">— returned</small></div></article>
-            <article class="metric-card"><div><p>Commanders away</p><strong id="metric-flight">—</strong><small>Outbound + returning · includes brief home rest</small></div></article>
-            <article class="metric-card"><div><p>Coins collected</p><strong id="metric-coins">—</strong><small>Recorded attack returns</small></div></article>
-            <article class="metric-card"><div><p>Rubies collected</p><strong id="metric-rubies">—</strong><small>Recorded attack returns</small></div></article>
+            <article class="metric-card"><div><p>Commanders away</p><strong id="metric-flight">—</strong></div></article>
+            <article class="metric-card"><div><p>Coins collected</p><strong id="metric-coins">—</strong></div></article>
+            <article class="metric-card"><div><p>Rubies collected</p><strong id="metric-rubies">—</strong></div></article>
           </section>
           <section class="dashboard-grid">
-            <article class="card dashboard-panel health-panel"><div class="card-title"><div><p class="eyebrow">Account health</p><h2>Discovered state</h2></div></div><div id="dashboard-health" class="health-stat-grid"></div></article>
-            <article class="card dashboard-panel setup-panel"><div class="card-title"><div><p class="eyebrow">Current setup</p><h2>Automation assignment</h2></div></div><div id="dashboard-assignment" class="assignment-summary"></div></article>
-            <article class="card dashboard-panel ruby-chart-panel"><div class="card-title"><div><p class="eyebrow">Database history</p><h2>Lifetime cumulative rubies</h2></div><span id="chart-updated" class="chart-updated">Updating…</span></div><div class="hourly-rates"><div><b id="rate-attacks">—</b><span>Attacks / hour</span></div><div><b id="rate-returns">—</b><span>Returns / hour</span></div><div><b id="rate-rubies">—</b><span>Rubies / hour</span></div><div><b id="rate-coins">—</b><span>Coins / hour</span></div></div><div id="ruby-chart" class="ruby-chart" role="img" aria-label="Lifetime cumulative recorded rubies"></div></article>
+            <article class="card dashboard-panel health-panel"><div class="card-title"><div><h2>Discovered state</h2></div></div><div id="dashboard-health" class="health-stat-grid"></div></article>
+            <article class="card dashboard-panel setup-panel"><div class="card-title"><div><h2>Automation assignment</h2></div></div><div id="dashboard-assignment" class="assignment-summary"></div></article>
+            <article class="card dashboard-panel ruby-chart-panel"><div class="card-title"><div><h2>Rubies earned</h2></div><span id="chart-updated" class="chart-updated">Updating…</span></div><div id="ruby-chart" class="ruby-chart" role="img" aria-label="Lifetime cumulative recorded rubies"></div><div class="hourly-rates"><div><div class="rate-text"><b id="rate-rubies">—</b><span>Rubies / hour</span></div><div id="bars-rubies" class="spark-bars" aria-hidden="true"></div></div><div><div class="rate-text"><b id="rate-coins">—</b><span>Coins / hour</span></div><div id="bars-coins" class="spark-bars" aria-hidden="true"></div></div><div><div class="rate-text"><b id="rate-attacks">—</b><span>Attacks / hour</span></div><div id="bars-attacks" class="spark-bars" aria-hidden="true"></div></div><div><div class="rate-text"><b id="rate-returns">—</b><span>Returns / hour</span></div><div id="bars-returns" class="spark-bars" aria-hidden="true"></div></div></div></article>
             <article class="card dashboard-panel activity-panel"><div class="card-title"><h2>Console</h2><span class="chart-updated">Recent activity</span></div><div id="dashboard-activity" class="activity-list"></div></article>
           </section>
         </section>
@@ -116,7 +130,7 @@
             <div class="field wide"><label for="task-name">Task name</label><input id="task-name" placeholder="e.g. Sands level 61" required /></div>
             <div class="field wide"><label for="task-attack">Attack</label><div class="select-wrap"><select id="task-attack" required></select></div></div>
             <fieldset class="wide"><legend>Farm from</legend><div class="farm-source"><label>Kingdom<div class="select-wrap"><select id="source-kid" required></select></div></label><label class="source-default"><input id="use-main-castle" type="checkbox" checked /><span>Use main castle automatically</span></label><div class="source-coordinates"><label>X<input id="source-x" type="number" value="0" disabled required /></label><label>Y<input id="source-y" type="number" value="0" disabled required /></label></div></div><p class="field-hint">Uncheck the automatic castle to use exact coordinates. Farming attacks stay inside their kingdom.</p></fieldset>
-            <fieldset class="wide"><legend>Dynamic target</legend><div class="target-grid"><label>Target type<div class="select-wrap"><select id="target-kind"><option value="rbc">Robber Baron</option><option value="fortress">Fortress</option></select></div></label><label>Algorithm<div class="select-wrap"><select id="target-algorithm"><option value="advanced">Advanced</option><option value="closest">Closest</option><option value="random">Random</option></select></div></label><div id="target-level-fields" class="level-fields"><label>Minimum level<input id="target-level-min" type="number" min="1" value="35" required /></label><label>Maximum level<input id="target-level-max" type="number" min="1" value="60" required /></label></div></div><p id="target-hint" class="field-hint">OpenAuto chooses a learned target in this level range; no destination coordinate is required.</p></fieldset>
+            <fieldset class="wide"><legend>Dynamic target</legend><div class="target-grid"><label>Target type<div class="select-wrap"><select id="target-kind"><option value="rbc">Robber Baron</option><option value="fortress">Fortress</option><option value="berimond">Berimond Camp</option></select></div></label><label>Algorithm<div class="select-wrap"><select id="target-algorithm"><option value="advanced">Advanced</option><option value="closest">Closest</option><option value="random">Random</option></select></div></label><div id="target-level-fields" class="level-fields"><label>Minimum level<input id="target-level-min" type="number" min="1" value="35" required /></label><label>Maximum level<input id="target-level-max" type="number" min="1" value="60" required /></label></div></div><p id="target-hint" class="field-hint">OpenAuto chooses a learned target in this level range; no destination coordinate is required.</p></fieldset>
             <div class="field"><label for="travel">Travel</label><div class="select-wrap"><select id="travel"><option value="coin">Coin</option><option value="ruby_1">Ruby slow</option><option value="ruby_2">Ruby fast</option><option value="feather">Feather</option></select></div><p class="field-hint">OpenAuto maps this choice to the source castle's available travel option.</p></div>
             <div class="field wide priority-field"><label>Priority</label><div id="priority-buttons" class="segmented priority-buttons"><button type="button" data-priority="extra_high">Extra high</button><button type="button" data-priority="high">High</button><button type="button" class="selected" data-priority="medium">Medium</button><button type="button" data-priority="low">Low</button></div></div>
             <div class="form-actions wide save-left"><button class="primary-action" type="submit">Save task</button><output id="task-result"></output></div>
