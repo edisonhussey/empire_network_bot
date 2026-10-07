@@ -27,3 +27,33 @@ The server replies with a dense payload of all entities within the bounding box,
 * `Area Type 2`: Standard Robber Baron Castle (RBC)
 * `Area Type 17`: Berimond Camp (Kingdom 10)
 * `Area Type 12`: Player Castle (Sands)
+
+### RBC rows carry the server's cooldown
+
+A tower row is `[2, x, y, -1, level_raw, remaining_s, 1]`. `remaining_s` is the
+seconds until the server lets the tower be attacked again, and `-1` (or any
+non-positive value) means it is ready. Levels in Sands are `level_raw` mapped
+through `sands_level` (raw `112` is level 61).
+
+```jsonc
+{"AI":[[2,584,626,-1,112,9504,1]]}   // cooling for 9504 s
+{"AI":[[2,600,628,-1,112,-1,1]]}     // ready
+```
+
+Fortress rows (`type 11`) use the same slot for their remaining seconds.
+Berimond camps (`type 17`) report no cooldown.
+
+### Observed behaviours
+
+1. **Unsolicited tile updates.** The server pushes a one-row `gaa` for a tower
+   around the time its army comes home (`cat`). It is a free, authoritative
+   cooldown read.
+2. **Cooldowns are not static.** Other players hit the same towers, so the map
+   read at login goes stale. The remaining value is the only way to know about
+   those hits without being refused (see [`errors.md`](errors.md), status 95).
+3. **A tile read is cheap.** A 13x13 window centred on one tower
+   (`AX1 = x-6 ... AX2 = x+6`) returns that tower and its neighbours. The bot
+   uses it to re-read a tower after a `95`.
+4. Applying a response must never add towers the operator did not scan. Known
+   towers are updated in place; only an initialisation scan inserts rows.
+

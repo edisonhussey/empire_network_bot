@@ -128,7 +128,10 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:47821";
 /// mapping; failed fortress claims are quarantined behind a rolling error gate.
 /// 38: fortress attack inspection uses ABI, with command-specific response
 /// matching that preserves pending attacks across unrelated map messages.
-pub const API_VERSION: u16 = 38;
+/// 39: the attack scheduler reads each tower's server-reported cooldown, re-reads
+/// a refused tower instead of parking it for an hour, sleeps until the next
+/// target or commander is actually ready, and lends idle commanders between tasks.
+pub const API_VERSION: u16 = 39;
 
 /// Is something already listening on the service port?
 ///

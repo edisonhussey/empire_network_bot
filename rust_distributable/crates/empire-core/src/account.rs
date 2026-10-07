@@ -24,6 +24,10 @@ pub struct RbcTarget {
     pub x: i64,
     pub y: i64,
     pub level: Option<i64>,
+    /// Seconds until the server lets this tower be hit again, as reported by
+    /// the map row (`[2, x, y, -1, level, remaining, 1]`, `-1` when ready).
+    /// Zero means ready.
+    pub cooldown_remaining_s: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -186,11 +190,18 @@ pub fn rbc_targets(payload: &Value) -> Vec<RbcTarget> {
             } else {
                 row.get(4)?.as_i64()?
             };
+            // Berimond camps have no cooldown; only towers report one.
+            let cooldown_remaining_s = if area_type == RBC_AREA_TYPE {
+                row.get(5).and_then(Value::as_i64).unwrap_or(0).max(0)
+            } else {
+                0
+            };
             Some(RbcTarget {
                 kingdom_id,
                 x: row.get(1)?.as_i64()?,
                 y: row.get(2)?.as_i64()?,
                 level: (kingdom_id == SANDS_KINGDOM_ID).then(|| sands_level(raw_level)),
+                cooldown_remaining_s,
             })
         })
         .collect()
@@ -258,6 +269,22 @@ mod tests {
         let targets = rbc_targets(&map);
         assert_eq!(targets.len(), 1);
         assert_eq!((targets[0].x, targets[0].y), (600, 610));
+    }
+
+    #[test]
+    fn rbc_rows_carry_the_servers_remaining_cooldown() {
+        let map = json!({"KID":1,"AI":[
+            [2,584,626,-1,112,9504,1],
+            [2,600,628,-1,112,-1,1],
+            [2,601,629,-1,112,-1800,1],
+            [17,500,500,-1,1,7200,10]
+        ]});
+        let remaining = rbc_targets(&map)
+            .into_iter()
+            .map(|target| target.cooldown_remaining_s)
+            .collect::<Vec<_>>();
+        // -1 and negative values mean ready; camps never report a cooldown.
+        assert_eq!(remaining, vec![9_504, 0, 0, 0]);
     }
 
     #[test]

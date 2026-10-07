@@ -71,6 +71,18 @@ pub struct ActiveModeTask {
     pub algorithm: String,
     pub target_kind: String,
     pub commander_lids: Vec<i64>,
+    /// Commanders allocated to *other* tasks of the same mode, with the task
+    /// that owns each. The allocation is a guarantee, not a wall: when this
+    /// task has work and its own commanders are all out, a lender with nothing
+    /// to attack may lend its idle ones.
+    #[serde(default)]
+    pub spare_commanders: Vec<SpareCommander>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpareCommander {
+    pub lord_id: i64,
+    pub owner_task_id: String,
 }
 
 impl Store {
@@ -607,7 +619,24 @@ impl Store {
                     .try_get::<Option<String>, _>("target_kind")?
                     .unwrap_or_else(|| "rbc".to_owned()),
                 commander_lids: commanders,
+                spare_commanders: Vec::new(),
             });
+        }
+        let allocation = tasks
+            .iter()
+            .map(|task| (task.task_id.clone(), task.commander_lids.clone()))
+            .collect::<Vec<_>>();
+        for task in &mut tasks {
+            task.spare_commanders = allocation
+                .iter()
+                .filter(|(owner, _)| *owner != task.task_id)
+                .flat_map(|(owner, lids)| {
+                    lids.iter().map(|lord_id| SpareCommander {
+                        lord_id: *lord_id,
+                        owner_task_id: owner.clone(),
+                    })
+                })
+                .collect();
         }
         Ok(tasks)
     }

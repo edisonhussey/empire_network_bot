@@ -14,6 +14,16 @@ pub(super) enum AutomationPhase {
         target: ReservedTarget,
         deadline_ms: i64,
     },
+    /// A tower refused an attack with status 95. Our map of it is stale, so its
+    /// tile is re-read and the server's cooldown replaces our guess.
+    RefreshRbc {
+        target: ReservedTarget,
+        due_ms: i64,
+    },
+    AwaitRbcRefresh {
+        target: ReservedTarget,
+        deadline_ms: i64,
+    },
     ReadyAdi {
         task: ActiveModeTask,
         target: ReservedTarget,
@@ -56,6 +66,61 @@ pub(super) fn attack_info_kind(task: &ActiveModeTask) -> hunt::AttackInfoKind {
         hunt::AttackInfoKind::Dungeon
     }
 }
+
+/// Commanders from `lids` that are home right now.
+fn free_commanders(lids: &[i64], states: &[CommanderState], now: i64) -> Vec<i64> {
+    lids.iter()
+        .copied()
+        .filter(|lid| {
+            !states
+                .iter()
+                .any(|state| state.lord_id == *lid && state.available_after_ms > now)
+        })
+        .collect()
+}
+
+/// When the first of `lids` is back (`now` if one already is).
+fn first_free_at(lids: &[i64], states: &[CommanderState], now: i64) -> Option<i64> {
+    lids.iter()
+        .map(|lid| {
+            states
+                .iter()
+                .find(|state| state.lord_id == *lid)
+                .map_or(now, |state| state.available_after_ms.max(now))
+        })
+        .min()
+}
+
+fn format_wait(ms: i64) -> String {
+    let seconds = (ms.max(0) + 999) / 1_000;
+    match seconds {
+        0..=119 => format!("{seconds}s"),
+        120..=7_199 => format!("{}m {:02}s", seconds / 60, seconds % 60),
+        _ => format!("{}h {:02}m", seconds / 3_600, seconds % 3_600 / 60),
+    }
+}
+
+/// A target that was leased for a handshake that never became an attack goes
+/// straight back to the pool instead of sitting out its twelve-minute lease.
+async fn release_unattacked(
+    store: &Store,
+    account_id: &str,
+    task: &ActiveModeTask,
+    target: &ReservedTarget,
+) {
+    let _ = if task.target_kind == "fortress" {
+        store.release_fortress_target(account_id, target).await
+    } else {
+        store.release_rbc_target(account_id, target).await
+    };
+}
+
+/// Provisional hold written the moment a CRA leaves, before the server has said
+/// anything. It closes the window in which a commander whose attack is in flight
+/// still looks free; the acknowledgement replaces it with the real travel time.
+const PENDING_COMMANDER_HOLD_MS: i64 = 5 * 60 * 1_000;
+/// A refreshed tower the server still reports as ready is not trusted for long.
+pub(super) const UNEXPLAINED_REFUSAL_HOLD_MS: i64 = 30 * 60 * 1_000;
 
 impl Automation {
     pub(super) fn new() -> Self {
@@ -102,6 +167,9 @@ impl Automation {
             AutomationPhase::Idle { .. } => "waiting",
             AutomationPhase::AwaitMap { .. } => "opening_attack_map",
             AutomationPhase::AwaitFortressRefresh { .. } => "refreshing_fortress",
+            AutomationPhase::RefreshRbc { .. } | AutomationPhase::AwaitRbcRefresh { .. } => {
+                "refreshing_tower"
+            }
             AutomationPhase::ReadyAdi { .. } => "pacing_inspection",
             AutomationPhase::AwaitAdi { .. } => "inspecting_target",
             AutomationPhase::ReadyCra { .. } => "pacing_attack",
@@ -154,6 +222,15 @@ impl Automation {
                 };
                 return Ok(None);
             }
+            AutomationPhase::AwaitRbcRefresh { target, deadline_ms } if now >= deadline_ms => {
+                // A missing tile read says nothing about the tower; it is not an
+                // operational fault. Park the tower and carry on.
+                let _ = store
+                    .defer_rbc_target(account_id, &target, now + UNEXPLAINED_REFUSAL_HOLD_MS)
+                    .await;
+                self.phase = AutomationPhase::Idle { due_ms: now + 2_000 };
+                return Ok(None);
+            }
             AutomationPhase::AwaitAdi { task, target, deadline_ms, .. } if now >= deadline_ms => {
                 // If ADI times out, it often means the target is on cooldown (e.g. towers).
                 // Quarantine the target for an hour so we don't keep hitting it.
@@ -189,6 +266,22 @@ impl Automation {
             }
         }
 
+        if let AutomationPhase::RefreshRbc { target, due_ms } = &self.phase {
+            if now < *due_ms {
+                return Ok(None);
+            }
+            let packet = tile_gaa_packet(server_header, target.kingdom_id, target.x, target.y)?;
+            self.detail = format!(
+                "Tower {}:{}:{} refused the attack; re-reading its cooldown",
+                target.kingdom_id, target.x, target.y
+            );
+            self.phase = AutomationPhase::AwaitRbcRefresh {
+                target: target.clone(),
+                deadline_ms: now + REQUEST_TIMEOUT_MS,
+            };
+            return Ok(Some(packet));
+        }
+
         if let AutomationPhase::ReadyAdi {
             task,
             target,
@@ -214,6 +307,7 @@ impl Automation {
                 state.map_mode && state.current_kingdom_id == Some(task.kingdom_id)
             });
             if !map_ready {
+                release_unattacked(store, account_id, task, target).await;
                 self.detail = format!(
                     "Map context changed before inspection; reopening kingdom {}",
                     task.kingdom_id
@@ -264,6 +358,7 @@ impl Automation {
             if !navigation.as_ref().is_some_and(|state| {
                 state.map_mode && state.current_kingdom_id == Some(task.kingdom_id)
             }) {
+                release_unattacked(store, account_id, task, target).await;
                 self.detail = "Map context changed before CRA; attack cancelled safely".to_owned();
                 self.phase = AutomationPhase::Idle {
                     due_ms: now + 2_000,
@@ -272,6 +367,7 @@ impl Automation {
             }
             // Stop is authoritative even in the middle of a handshake.
             if store.active_mode_tasks(account_id).await?.is_empty() {
+                release_unattacked(store, account_id, task, target).await;
                 self.detail = "Mode stopped before attack commit".to_owned();
                 self.phase = AutomationPhase::Idle {
                     due_ms: now + 2_000,
@@ -311,6 +407,17 @@ impl Automation {
                 travel.ptt,
             )?;
             self.last_cra_ms = Some(now);
+            // Pessimistic reservation: the commander is spoken for from the
+            // moment the CRA leaves, not from the moment it is acknowledged.
+            let pending = CommanderState {
+                account_id: account_id.to_owned(),
+                lord_id: *lord_id,
+                status: COMMANDER_OUTBOUND.to_owned(),
+                available_after_ms: now + PENDING_COMMANDER_HOLD_MS,
+                march_id: None,
+                target_key: Some(format!("{}:{}:{}", target.kingdom_id, target.x, target.y)),
+            };
+            let _ = store.set_commander_state(&pending, now).await;
             self.detail = format!(
                 "Attack sent with commander {lord_id} to {}:{}:{} using {} (HBW {}, PTT {})",
                 target.kingdom_id,
@@ -354,39 +461,20 @@ impl Automation {
             .collect::<Vec<_>>();
         for index in indexes {
             let task = &tasks[index];
-            if task.commander_lids.iter().all(|lid| {
-                states
-                    .iter()
-                    .any(|state| state.lord_id == *lid && state.available_after_ms > now)
-            }) {
+            if free_commanders(&task.commander_lids, &states, now).is_empty() {
                 continue;
             }
-            let target = if task.target_kind == "fortress" {
-                store
-                    .reserve_fortress_target(
-                        account_id,
-                        task.kingdom_id,
-                        task.level_min,
-                        task.level_max,
-                        (task.source_x, task.source_y),
-                        now,
-                        now + TARGET_LEASE_MS,
-                    )
-                    .await?
-            } else {
-                store
-                    .reserve_rbc_target(
-                        account_id,
-                        task.kingdom_id,
-                        task.level_min,
-                        task.level_max,
-                        (task.source_x, task.source_y),
-                        &task.algorithm,
-                        now,
-                        now + TARGET_LEASE_MS,
-                    )
-                    .await?
-            };
+            let target = store
+                .reserve_fortress_target(
+                    account_id,
+                    task.kingdom_id,
+                    task.level_min,
+                    task.level_max,
+                    (task.source_x, task.source_y),
+                    now,
+                    now + TARGET_LEASE_MS,
+                )
+                .await?;
             if let Some(target) = target {
                 self.cursor = (index + 1) % tasks.len();
                 let navigation = store.navigation(account_id).await?;
@@ -459,18 +547,53 @@ impl Automation {
 
         // Ordinary targets run only after every currently actionable fortress
         // and due fortress maintenance request has been considered.
+        //
+        // A task's commanders are an allocation, not a wall. When every one of
+        // them is out but the task has a tower ready, commanders from a task
+        // with nothing to attack are lent to it, so a configured pool of 35 is
+        // not stranded behind whichever task happens to be starved of targets.
+        let mut lendable: HashMap<String, bool> = HashMap::new();
         for index in rotated
             .iter()
             .copied()
             .filter(|index| tasks[*index].target_kind != "fortress")
         {
             let task = &tasks[index];
-            if task.commander_lids.iter().all(|lid| {
-                states
-                    .iter()
-                    .any(|state| state.lord_id == *lid && state.available_after_ms > now)
-            }) {
-                continue;
+            let mut pool = free_commanders(&task.commander_lids, &states, now);
+            if pool.is_empty() {
+                for spare in &task.spare_commanders {
+                    if free_commanders(&[spare.lord_id], &states, now).is_empty() {
+                        continue;
+                    }
+                    let lends = match lendable.get(&spare.owner_task_id) {
+                        Some(known) => *known,
+                        None => {
+                            let lends = match tasks
+                                .iter()
+                                .find(|owner| owner.task_id == spare.owner_task_id)
+                            {
+                                Some(owner) if owner.target_kind != "fortress" => store
+                                    .next_rbc_ready_ms(
+                                        account_id,
+                                        owner.kingdom_id,
+                                        owner.level_min,
+                                        owner.level_max,
+                                    )
+                                    .await?
+                                    .is_none_or(|ready| ready > now),
+                                _ => false,
+                            };
+                            lendable.insert(spare.owner_task_id.clone(), lends);
+                            lends
+                        }
+                    };
+                    if lends {
+                        pool.push(spare.lord_id);
+                    }
+                }
+                if pool.is_empty() {
+                    continue;
+                }
             }
             if let Some(target) = store
                 .reserve_rbc_target(
@@ -486,12 +609,14 @@ impl Automation {
                 .await?
             {
                 self.cursor = (index + 1) % tasks.len();
+                let mut task = task.clone();
+                task.commander_lids = pool;
                 let navigation = store.navigation(account_id).await?;
                 if navigation.as_ref().is_some_and(|state| {
                     state.map_mode && state.current_kingdom_id == Some(task.kingdom_id)
                 }) {
                     self.phase = AutomationPhase::ReadyAdi {
-                        task: task.clone(),
+                        task,
                         target,
                         due_ms: now,
                     };
@@ -504,17 +629,65 @@ impl Automation {
                     task.kingdom_id, target.x, target.y
                 );
                 self.phase = AutomationPhase::AwaitMap {
-                    task: task.clone(),
+                    task,
                     target,
                     deadline_ms: now + REQUEST_TIMEOUT_MS,
                 };
                 return Ok(Some(packet));
             }
         }
-        self.phase = AutomationPhase::Idle {
-            due_ms: now + 15_000,
+
+        // Nothing can be sent. Instead of polling on a fixed beat, work out when
+        // the first thing that is blocking us clears (a tower coming off
+        // cooldown, or a commander getting home) and sleep until then, saying
+        // which of the two is the limit.
+        let mut wake: Option<i64> = None;
+        let mut notes = Vec::new();
+        for task in tasks.iter().filter(|task| task.target_kind != "fortress") {
+            let everyone = task
+                .commander_lids
+                .iter()
+                .copied()
+                .chain(task.spare_commanders.iter().map(|spare| spare.lord_id))
+                .collect::<Vec<_>>();
+            let free = free_commanders(&task.commander_lids, &states, now).len();
+            let target_ready = store
+                .next_rbc_ready_ms(account_id, task.kingdom_id, task.level_min, task.level_max)
+                .await?;
+            let Some(target_ready) = target_ready else {
+                notes.push(format!("{}: no towers in range", task.name));
+                continue;
+            };
+            let commander_ready = first_free_at(&everyone, &states, now).unwrap_or(now);
+            let ready = target_ready.max(commander_ready);
+            wake = Some(wake.map_or(ready, |earliest| earliest.min(ready)));
+            notes.push(if target_ready > now {
+                format!(
+                    "{}: {free}/{} commanders home, next tower in {}",
+                    task.name,
+                    task.commander_lids.len(),
+                    format_wait(target_ready - now)
+                )
+            } else {
+                format!(
+                    "{}: tower ready, next commander in {}",
+                    task.name,
+                    format_wait(commander_ready - now)
+                )
+            });
+        }
+        let has_fortress = tasks.iter().any(|task| task.target_kind == "fortress");
+        let ceiling = if has_fortress { 15_000 } else { 30_000 };
+        let sleep = wake
+            .map_or(ceiling, |at| at.saturating_sub(now))
+            .clamp(1_500, ceiling)
+            + self.rng.uniform(0.0, 1_200.0) as i64;
+        self.phase = AutomationPhase::Idle { due_ms: now + sleep };
+        self.detail = if notes.is_empty() {
+            "No eligible unleased target or free task commander; retrying".to_owned()
+        } else {
+            format!("Waiting - {}", notes.join("; "))
         };
-        self.detail = "No eligible unleased target or free task commander; retrying".to_owned();
         Ok(None)
     }
 
@@ -550,12 +723,22 @@ impl Automation {
                     .defer_fortress_target(account_id, &target, now + ERROR_WINDOW_MS)
                     .await;
             }
+            let mut refresh_target = None;
             if let Some(target) = rejected_rbc {
                 if target.kingdom_id == 10 {
                     // Berimond camps don't have cooldowns. If they error, they were defeated.
                     let _ = store.delete_rbc_target(account_id, target.kingdom_id, target.x, target.y).await;
+                } else if status == "95" {
+                    // Our map of this tower is stale: someone else hit it, or it
+                    // regenerated. Parking it for an hour would waste every
+                    // minute it is actually ready, so hold it only briefly and
+                    // re-read its tile: the server reports the exact cooldown.
+                    let _ = store
+                        .defer_rbc_target(account_id, &target, now + 60_000)
+                        .await;
+                    refresh_target = Some(target);
                 } else {
-                    // Defer for 1 hour if we hit a server error on an RBC/Tower, as it's likely a cooldown.
+                    // Any other refusal is unexplained; stand the tower down.
                     let _ = store
                         .defer_rbc_target(account_id, &target, now + 3600_000)
                         .await;
@@ -588,8 +771,14 @@ impl Automation {
             } else {
                 (PacingPolicy::default().after_cra_ack(&mut self.rng) * 1_000.0) as i64
             };
-            self.phase = AutomationPhase::Idle {
-                due_ms: self.safety_pause_until_ms.max(now + retry_ms),
+            self.phase = match refresh_target {
+                Some(target) => AutomationPhase::RefreshRbc {
+                    target,
+                    due_ms: self.safety_pause_until_ms.max(now + retry_ms),
+                },
+                None => AutomationPhase::Idle {
+                    due_ms: self.safety_pause_until_ms.max(now + retry_ms),
+                },
             };
             return;
         }
@@ -603,6 +792,44 @@ impl Automation {
                             "Fortress server truth refreshed at {}:{}:{}",
                             target.kingdom_id, target.x, target.y
                         );
+                        self.phase = AutomationPhase::Idle { due_ms: now + 250 };
+                    }
+                    return;
+                }
+                if let AutomationPhase::AwaitRbcRefresh { target, .. } = &self.phase {
+                    if packet.payload.get("KID").and_then(Value::as_i64) == Some(target.kingdom_id)
+                    {
+                        // The cooldown itself was stored when the response was
+                        // first observed; this only decides what to do next.
+                        let free_at = store
+                            .rbc_server_free_at(account_id, target)
+                            .await
+                            .ok()
+                            .flatten()
+                            .unwrap_or(0);
+                        if free_at > now {
+                            self.detail = format!(
+                                "Tower {}:{}:{} is on cooldown for {} (server); moving on",
+                                target.kingdom_id,
+                                target.x,
+                                target.y,
+                                format_wait(free_at - now)
+                            );
+                        } else {
+                            // The map says it is ready yet the attack was
+                            // refused. Don't keep hammering it.
+                            let _ = store
+                                .defer_rbc_target(
+                                    account_id,
+                                    target,
+                                    now + UNEXPLAINED_REFUSAL_HOLD_MS,
+                                )
+                                .await;
+                            self.detail = format!(
+                                "Tower {}:{}:{} refused but shows no cooldown; parked",
+                                target.kingdom_id, target.x, target.y
+                            );
+                        }
                         self.phase = AutomationPhase::Idle { due_ms: now + 250 };
                     }
                     return;
@@ -695,11 +922,10 @@ impl Automation {
                     .filter(|lid| offered.is_empty() || offered.contains(lid))
                     .find(|lid| !busy.contains(lid))
                 else {
-                    if task.target_kind == "fortress" {
-                        let _ = store.release_fortress_target(account_id, &target).await;
-                    }
+                    release_unattacked(store, account_id, &task, &target).await;
                     self.detail =
                         "No allocated commander is currently free; target released".to_owned();
+                    self.phase = AutomationPhase::Idle { due_ms: now + 1_000 };
                     return;
                 };
                 let policy = PacingPolicy::default();

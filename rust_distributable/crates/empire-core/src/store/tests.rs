@@ -90,6 +90,7 @@ async fn seed_account(store: &Store, account_id: &str) {
                 x: 600,
                 y: 610,
                 level: Some(61),
+                cooldown_remaining_s: 0,
             }],
             NOW,
         )
@@ -817,6 +818,7 @@ async fn fortress_discovery_sweep_is_durable_and_never_repeats_a_block() {
                 x: 600,
                 y: 610,
                 level: Some(61),
+                cooldown_remaining_s: 0,
             }],
             NOW,
         )
@@ -1993,6 +1995,122 @@ async fn complete_mode_import_generates_ids_and_is_capacity_checked() {
 }
 
 #[tokio::test]
+async fn a_tower_the_server_reports_cooling_is_not_selected_until_it_is_ready() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    let cooling = RbcTarget {
+        kingdom_id: 1,
+        x: 600,
+        y: 610,
+        level: Some(61),
+        cooldown_remaining_s: 600,
+    };
+    store.upsert_rbc_targets("ventrilo", &[cooling.clone()], NOW).await.unwrap();
+    let pick = |at: i64| {
+        let store = store.clone();
+        async move {
+            store
+                .reserve_rbc_target(
+                    "ventrilo", 1, Some(61), Some(61), (593, 613), "advanced", at, at + 720_000,
+                )
+                .await
+                .unwrap()
+        }
+    };
+
+    assert!(pick(NOW).await.is_none(), "the server says it is cooling");
+    let ready_at = store
+        .next_rbc_ready_ms("ventrilo", 1, Some(61), Some(61))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ready_at, NOW + 602_000, "ten minutes plus the in-flight slack");
+    assert!(pick(ready_at - 1).await.is_none());
+    assert!(pick(ready_at).await.is_some());
+
+    // A later map read corrects the cooldown, and a tower we never scanned is
+    // not added to the catalogue by it.
+    store.release_rbc_target("ventrilo", &ReservedTarget { kingdom_id: 1, x: 600, y: 610, level: Some(61) }).await.unwrap();
+    let unknown = RbcTarget { x: 700, y: 700, ..cooling.clone() };
+    store
+        .refresh_rbc_cooldowns(
+            "ventrilo",
+            &[RbcTarget { cooldown_remaining_s: 0, ..cooling }, unknown],
+            NOW + 1_000,
+        )
+        .await
+        .unwrap();
+    assert!(pick(NOW + 1_000).await.is_some(), "the server now says ready");
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rbc_target WHERE x = 700")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+}
+
+#[tokio::test]
+async fn an_abandoned_lease_is_released_back_to_the_pool() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    let reserve = || async {
+        store
+            .reserve_rbc_target(
+                "ventrilo", 1, Some(61), Some(61), (593, 613), "advanced", NOW, NOW + 720_000,
+            )
+            .await
+            .unwrap()
+    };
+    let target = reserve().await.expect("seeded tower is free");
+    assert!(reserve().await.is_none(), "leased");
+    store.release_rbc_target("ventrilo", &target).await.unwrap();
+    assert!(reserve().await.is_some(), "released");
+}
+
+#[tokio::test]
+async fn each_task_can_see_the_commanders_it_could_borrow() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    let roster = (0..35).collect::<Vec<i64>>();
+    store
+        .replace_account_bootstrap(
+            "ventrilo",
+            &[OwnedCastle {
+                kingdom_id: 1,
+                castle_id: 100,
+                area_type: 12,
+                x: 593,
+                y: 613,
+                name: "Sands".to_owned(),
+            }],
+            &roster,
+            NOW,
+        )
+        .await
+        .unwrap();
+    let mode_id = store
+        .import_mode_bundle(&crate::planning::ventrilo_sands_bundle(), NOW)
+        .await
+        .unwrap();
+    store
+        .subscribe_account_mode("ventrilo", mode_id, true, NOW)
+        .await
+        .unwrap();
+    let tasks = store.active_mode_tasks("ventrilo").await.unwrap();
+    assert_eq!(tasks.len(), 2);
+    for (task, other) in [(&tasks[0], &tasks[1]), (&tasks[1], &tasks[0])] {
+        assert_eq!(
+            task.spare_commanders
+                .iter()
+                .map(|spare| spare.lord_id)
+                .collect::<Vec<_>>(),
+            other.commander_lids
+        );
+        assert!(task.spare_commanders.iter().all(|spare| spare.owner_task_id == other.task_id));
+        assert!(task.commander_lids.iter().all(|lid| !other.commander_lids.contains(lid)));
+    }
+}
+
+#[tokio::test]
 async fn a_running_mode_compiles_tasks_and_reserves_each_target_once() {
     let store = Store::open("sqlite::memory:").await.unwrap();
     seed_account(&store, "ventrilo").await;
@@ -2105,6 +2223,7 @@ async fn a_running_mode_compiles_tasks_and_reserves_each_target_once() {
                 x: 600,
                 y: 610,
                 level: Some(61),
+                cooldown_remaining_s: 0,
             }],
             NOW,
         )

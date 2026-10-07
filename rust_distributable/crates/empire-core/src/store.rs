@@ -28,7 +28,9 @@ pub use ledger::{
     HEARTBEAT_FRESH_MILLIS, HUNT_HEARTBEAT_KEY, HuntSummary, HuntTaskSummary, MARCH_RETURNING,
     MARCH_SENT, MarchRecord, ScanActivity,
 };
-pub use modes::{AccountModeRecord, ActiveModeTask, ImportModeError, ModeRecord, TaskRuntime};
+pub use modes::{
+    AccountModeRecord, ActiveModeTask, ImportModeError, ModeRecord, SpareCommander, TaskRuntime,
+};
 pub use recruitment::{
     AccountRecruitBot, ActiveRecruitment, OwnedCastleRecord, RecruitBot, RecruitBotCastle,
     RecruitmentTemplate,
@@ -303,7 +305,9 @@ impl Store {
         // reducing that work to a handful of statements.
         for chunk in targets.chunks(150) {
             let mut query = QueryBuilder::<Sqlite>::new(
-                "INSERT INTO rbc_target (account_id, kingdom_id, x, y, level, observed_at_ms) ",
+                "INSERT INTO rbc_target (
+                    account_id, kingdom_id, x, y, level, observed_at_ms, server_free_at_ms
+                 ) ",
             );
             query.push_values(chunk, |mut row, target| {
                 row.push_bind(&account_id)
@@ -311,17 +315,136 @@ impl Store {
                     .push_bind(target.x)
                     .push_bind(target.y)
                     .push_bind(target.level)
-                    .push_bind(now_ms);
+                    .push_bind(now_ms)
+                    .push_bind(server_free_at_ms(target, now_ms));
             });
             query.push(
                 " ON CONFLICT(account_id, kingdom_id, x, y) DO UPDATE SET
                     level = excluded.level,
-                    observed_at_ms = excluded.observed_at_ms",
+                    observed_at_ms = excluded.observed_at_ms,
+                    server_free_at_ms = excluded.server_free_at_ms",
             );
             query.build().execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Apply the cooldowns a map response reports for towers we already know.
+    ///
+    /// Unlike [`Self::upsert_rbc_targets`] this never adds a row, so any map
+    /// response the client happens to receive (a tile read after a landing, a
+    /// refresh after a refusal) can correct the cooldowns without enlarging the
+    /// catalogue the operator chose to scan.
+    pub async fn refresh_rbc_cooldowns(
+        &self,
+        account_id: &str,
+        targets: &[RbcTarget],
+        observed_at_ms: i64,
+    ) -> Result<(), sqlx::Error> {
+        if targets.is_empty() {
+            return Ok(());
+        }
+        let account_id = canonical_account_id(account_id);
+        let mut tx = self.pool.begin().await?;
+        for target in targets {
+            sqlx::query(
+                "UPDATE rbc_target SET server_free_at_ms = ?, observed_at_ms = ?
+                 WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND x = ? AND y = ?",
+            )
+            .bind(server_free_at_ms(target, observed_at_ms))
+            .bind(observed_at_ms)
+            .bind(&account_id)
+            .bind(target.kingdom_id)
+            .bind(target.x)
+            .bind(target.y)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await
+    }
+
+    /// When the server last said this tower becomes hittable (0 = ready).
+    pub async fn rbc_server_free_at(
+        &self,
+        account_id: &str,
+        target: &ReservedTarget,
+    ) -> Result<Option<i64>, sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        sqlx::query_scalar(
+            "SELECT MAX(server_free_at_ms) FROM rbc_target
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND x = ? AND y = ?",
+        )
+        .bind(&account_id)
+        .bind(target.kingdom_id)
+        .bind(target.x)
+        .bind(target.y)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    /// Give back a target that was leased but never attacked or refused.
+    ///
+    /// A lease lasts twelve minutes. Without this, every handshake abandoned
+    /// before the attack (no commander free, map context lost) quietly removed
+    /// a perfectly good tower from the pool for that long.
+    pub async fn release_rbc_target(
+        &self,
+        account_id: &str,
+        target: &ReservedTarget,
+    ) -> Result<(), sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        sqlx::query(
+            "UPDATE rbc_target SET reserved_until_ms = 0
+             WHERE lower(account_id) = lower(?) AND kingdom_id = ? AND x = ? AND y = ?",
+        )
+        .bind(&account_id)
+        .bind(target.kingdom_id)
+        .bind(target.x)
+        .bind(target.y)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The earliest moment any tower in the task's level range can be selected.
+    ///
+    /// A value at or before `now` means a target is ready. This is what lets the
+    /// scheduler sleep exactly until work exists instead of polling.
+    pub async fn next_rbc_ready_ms(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+        level_min: Option<i64>,
+        level_max: Option<i64>,
+    ) -> Result<Option<i64>, sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        sqlx::query_scalar(
+            "SELECT MIN(ready) FROM (
+                 SELECT MAX(reserved_until_ms, server_free_at_ms, COALESCE((
+                     SELECT MAX(CASE WHEN a.landed_at_ms IS NOT NULL
+                                     THEN MIN(a.landed_at_ms + 10800000, a.sent_at_ms + 14400000)
+                                     ELSE a.sent_at_ms + 14400000 END) + 300000
+                     FROM attack_ledger a
+                     WHERE lower(a.account_id) = lower(rbc_target.account_id)
+                       AND a.kingdom_id = rbc_target.kingdom_id
+                       AND a.x = rbc_target.x AND a.y = rbc_target.y
+                       AND rbc_target.kingdom_id != 10
+                 ), 0)) AS ready
+                 FROM rbc_target
+                 WHERE lower(account_id) = lower(?) AND kingdom_id = ?
+                   AND (? IS NULL OR level >= ?)
+                   AND (? IS NULL OR level <= ?)
+             )",
+        )
+        .bind(&account_id)
+        .bind(kingdom_id)
+        .bind(level_min)
+        .bind(level_min)
+        .bind(level_max)
+        .bind(level_max)
+        .fetch_one(&self.pool)
+        .await
     }
 
     /// Remove RBC observations outside the initialization square for each
@@ -617,6 +740,7 @@ impl Store {
              FROM rbc_target
              WHERE lower(account_id) = lower(?) AND kingdom_id = ?
                AND reserved_until_ms <= ?
+               AND server_free_at_ms <= ?
                AND NOT EXISTS (
                    SELECT 1 FROM attack_ledger a
                    WHERE lower(a.account_id) = lower(rbc_target.account_id)
@@ -632,6 +756,7 @@ impl Store {
         )
         .bind(&account_id)
         .bind(kingdom_id)
+        .bind(now_ms)
         .bind(now_ms)
         .bind(now_ms)
         .bind(level_min)
@@ -1604,4 +1729,15 @@ impl Store {
             })
             .collect()
     }
+}
+
+/// A tower's free time from its reported cooldown, with a little slack for the
+/// time the response spent in flight so we never fire a hair too early.
+fn server_free_at_ms(target: &RbcTarget, observed_at_ms: i64) -> i64 {
+    if target.cooldown_remaining_s <= 0 {
+        return 0;
+    }
+    observed_at_ms
+        .saturating_add(target.cooldown_remaining_s.saturating_mul(1_000))
+        .saturating_add(2_000)
 }

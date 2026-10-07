@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 17;
+pub const SCHEMA_VERSION: i64 = 18;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -545,8 +545,18 @@ pub const V16: Migration = &["DELETE FROM fortress_scan_state"];
 /// next walk: a few probes per kingdom, once.
 pub const V17: Migration = &["DELETE FROM fortress_scan_state"];
 
+/// The server's own word on when a tower can be hit again.
+///
+/// Every RBC row in a map response carries its remaining cooldown, and the bot
+/// used to throw that away and learn about cooldowns by being refused (status
+/// 95). `server_free_at_ms` is the last server-reported free time; 0 means the
+/// server last reported the tower as free.
+pub const V18: Migration = &[
+    "ALTER TABLE rbc_target ADD COLUMN server_free_at_ms INTEGER NOT NULL DEFAULT 0",
+];
+
 pub const MIGRATIONS: &[Migration] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18,
 ];
 
 /// Every table that holds user data, for the storage report and full wipe.
@@ -605,7 +615,19 @@ pub async fn apply(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             continue;
         }
         for statement in migration.iter() {
-            sqlx::query(statement).execute(pool).await?;
+            if let Err(error) = sqlx::query(statement).execute(pool).await {
+                // SQLite has no `ADD COLUMN IF NOT EXISTS`. A column that is
+                // already there means this statement already ran (a rewound
+                // version, or a restore), which is the state it aims for.
+                let already_applied = statement
+                    .trim_start()
+                    .to_ascii_uppercase()
+                    .starts_with("ALTER TABLE")
+                    && error.to_string().contains("duplicate column name");
+                if !already_applied {
+                    return Err(error);
+                }
+            }
         }
         sqlx::query(
             "INSERT INTO schema_version (singleton, version) VALUES (1, ?)

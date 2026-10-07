@@ -18,6 +18,7 @@ fn awaiting_fortress_info() -> Automation {
                 algorithm: "closest".into(),
                 target_kind: "fortress".into(),
                 commander_lids: vec![7],
+                spare_commanders: Vec::new(),
             },
             target: ReservedTarget {
                 kingdom_id: 1,
@@ -48,6 +49,7 @@ fn awaiting_rbc_info() -> Automation {
             algorithm: "advanced".into(),
             target_kind: "rbc".into(),
             commander_lids: vec![0, 2, 3],
+            spare_commanders: Vec::new(),
         },
         target: ReservedTarget {
             kingdom_id: 1,
@@ -116,14 +118,305 @@ async fn expected_target_rejections_never_trip_the_global_safety_pause() {
         automation
             .observe(&store, "ventrilo", "%xt%adi%1%95%null%")
             .await;
-        let AutomationPhase::Idle { due_ms } = automation.phase else {
-            panic!("expected rejection to resume the scheduler");
+        // A refused tower is not abandoned: its tile is re-read to learn the
+        // real cooldown, after the normal short acknowledgement delay.
+        let AutomationPhase::RefreshRbc { due_ms, .. } = automation.phase else {
+            panic!("expected rejection to queue a cooldown re-read");
         };
         assert!(due_ms >= observed_at + 750);
         assert!(due_ms <= observed_at + 2_500);
         assert!(automation.operational_errors.is_empty());
         assert_eq!(automation.safety_pause_until_ms, 0);
     }
+}
+
+async fn tower_store(cooldown_remaining_s: i64) -> Store {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    store
+        .upsert_account_profile("ventrilo", "Ventrilo", US1_ENDPOINT, US1_SERVER_HEADER, 1)
+        .await
+        .unwrap();
+    store
+        .upsert_rbc_targets(
+            "ventrilo",
+            &[empire_core::account::RbcTarget {
+                kingdom_id: 1,
+                x: 636,
+                y: 574,
+                level: Some(43),
+                cooldown_remaining_s,
+            }],
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    store
+}
+
+fn tower() -> ReservedTarget {
+    ReservedTarget {
+        kingdom_id: 1,
+        x: 636,
+        y: 574,
+        level: Some(43),
+    }
+}
+
+#[tokio::test]
+async fn a_refused_tower_is_parked_for_a_minute_not_an_hour() {
+    let store = tower_store(0).await;
+    let mut automation = Automation::new();
+    automation.phase = awaiting_rbc_info().phase;
+    let before = now_ms();
+    automation
+        .observe(&store, "ventrilo", "%xt%adi%1%95%null%")
+        .await;
+    let ready = store
+        .next_rbc_ready_ms("ventrilo", 1, Some(35), Some(60))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(ready >= before + 59_000 && ready <= now_ms() + 61_000, "{ready}");
+}
+
+#[tokio::test]
+async fn the_cooldown_reread_sends_the_towers_tile_and_learns_the_server_cooldown() {
+    // The tile response is what carries the cooldown; observe_account_packet
+    // stores it before the automation sees the packet, so seed it the same way.
+    let store = tower_store(0).await;
+    let mut automation = Automation::new();
+    automation.phase = AutomationPhase::RefreshRbc {
+        target: tower(),
+        due_ms: 0,
+    };
+    let packet = automation
+        .next_packet(&store, "ventrilo", US1_SERVER_HEADER)
+        .await
+        .unwrap()
+        .expect("the tile read goes out");
+    assert!(packet.contains("%gaa%") && packet.contains("\"AX1\":630"), "{packet}");
+    assert!(matches!(
+        automation.phase,
+        AutomationPhase::AwaitRbcRefresh { .. }
+    ));
+
+    let map = json!({"KID": 1, "AI": [[2, 636, 574, -1, 42, 5400, 1]]});
+    let raw = format!("%xt%gaa%1%0%{map}%");
+    observe_account_packet(
+        &store,
+        "ventrilo",
+        &raw,
+        &HashMap::new(),
+        &SessionSettings::default(),
+        false,
+    )
+    .await;
+    automation.observe(&store, "ventrilo", &raw).await;
+    assert!(matches!(automation.phase, AutomationPhase::Idle { .. }));
+    assert!(automation.detail.contains("on cooldown"), "{}", automation.detail);
+    let free_at = store.rbc_server_free_at("ventrilo", &tower()).await.unwrap().unwrap();
+    assert!(free_at > now_ms() + 5_000_000, "{free_at}");
+    assert!(automation.operational_errors.is_empty());
+}
+
+#[tokio::test]
+async fn a_refusal_the_map_cannot_explain_parks_the_tower_for_half_an_hour() {
+    let store = tower_store(0).await;
+    let mut automation = Automation::new();
+    automation.phase = AutomationPhase::AwaitRbcRefresh {
+        target: tower(),
+        deadline_ms: now_ms() + REQUEST_TIMEOUT_MS,
+    };
+    automation
+        .observe(&store, "ventrilo", "%xt%gaa%1%0%{\"KID\":1,\"AI\":[]}%")
+        .await;
+    assert!(matches!(automation.phase, AutomationPhase::Idle { .. }));
+    let ready = store
+        .next_rbc_ready_ms("ventrilo", 1, None, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(ready >= now_ms() + UNEXPLAINED_REFUSAL_HOLD_MS - 1_000, "{ready}");
+}
+
+#[tokio::test]
+async fn a_missing_tile_read_times_out_without_counting_as_an_operational_error() {
+    let store = tower_store(0).await;
+    let mut automation = Automation::new();
+    automation.phase = AutomationPhase::AwaitRbcRefresh {
+        target: tower(),
+        deadline_ms: now_ms() - 1,
+    };
+    automation
+        .next_packet(&store, "ventrilo", US1_SERVER_HEADER)
+        .await
+        .unwrap();
+    assert!(matches!(automation.phase, AutomationPhase::Idle { .. }));
+    assert!(automation.operational_errors.is_empty());
+}
+
+/// Two tasks, 17 + 18 commanders, one tower ready for the first task only.
+async fn lending_store() -> (Store, Vec<ActiveModeTask>) {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    store
+        .upsert_account_profile("ventrilo", "Ventrilo", US1_ENDPOINT, US1_SERVER_HEADER, 1)
+        .await
+        .unwrap();
+    store
+        .replace_account_bootstrap(
+            "ventrilo",
+            &[empire_core::account::OwnedCastle {
+                kingdom_id: 1,
+                castle_id: 100,
+                area_type: 12,
+                x: 593,
+                y: 613,
+                name: "Sands".to_owned(),
+            }],
+            hunt::USABLE_COMMANDER_LIDS,
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    let mode_id = store
+        .import_mode_bundle(&empire_core::planning::ventrilo_sands_bundle(), now_ms())
+        .await
+        .unwrap();
+    store
+        .subscribe_account_mode("ventrilo", mode_id, true, now_ms())
+        .await
+        .unwrap();
+    store
+        .upsert_rbc_targets(
+            "ventrilo",
+            &[empire_core::account::RbcTarget {
+                kingdom_id: 1,
+                x: 600,
+                y: 610,
+                level: Some(61),
+                cooldown_remaining_s: 0,
+            }],
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    let tasks = store.active_mode_tasks("ventrilo").await.unwrap();
+    assert_eq!(tasks.len(), 2);
+    (store, tasks)
+}
+
+async fn send_everyone_out(store: &Store, lids: &[i64]) {
+    for lord_id in lids {
+        store
+            .set_commander_state(
+                &CommanderState {
+                    account_id: "ventrilo".to_owned(),
+                    lord_id: *lord_id,
+                    status: COMMANDER_OUTBOUND.to_owned(),
+                    available_after_ms: now_ms() + 600_000,
+                    march_id: None,
+                    target_key: None,
+                },
+                now_ms(),
+            )
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_task_with_work_borrows_commanders_from_a_task_with_none() {
+    let (store, tasks) = lending_store().await;
+    // Every sand-61 commander is out, but the kunai task has no tower ready
+    // (none in its range), so its commanders are idle.
+    send_everyone_out(&store, &tasks[0].commander_lids).await;
+    let mut automation = Automation::new();
+    automation
+        .next_packet(&store, "ventrilo", US1_SERVER_HEADER)
+        .await
+        .unwrap();
+    let AutomationPhase::AwaitMap { task, target, .. } = &automation.phase else {
+        panic!("expected the tower to be taken: {} / {}", automation.status().0, automation.detail);
+    };
+    assert_eq!((target.x, target.y), (600, 610));
+    assert_eq!(task.task_id, tasks[0].task_id);
+    assert!(
+        !task.commander_lids.is_empty()
+            && task.commander_lids.iter().all(|lid| tasks[1].commander_lids.contains(lid)),
+        "borrowed from the other allocation: {:?}",
+        task.commander_lids
+    );
+}
+
+#[tokio::test]
+async fn a_lender_with_a_tower_ready_keeps_its_commanders() {
+    let (store, tasks) = lending_store().await;
+    store
+        .upsert_rbc_targets(
+            "ventrilo",
+            &[empire_core::account::RbcTarget {
+                kingdom_id: 1,
+                x: 601,
+                y: 611,
+                level: Some(43),
+                cooldown_remaining_s: 0,
+            }],
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    send_everyone_out(&store, &tasks[0].commander_lids).await;
+    let mut automation = Automation::new();
+    automation.cursor = 0;
+    automation
+        .next_packet(&store, "ventrilo", US1_SERVER_HEADER)
+        .await
+        .unwrap();
+    // The kunai task is the only one that can act, with its own commanders.
+    let AutomationPhase::AwaitMap { task, .. } = &automation.phase else {
+        panic!("expected the kunai tower to be taken");
+    };
+    assert_eq!(task.task_id, tasks[1].task_id);
+    assert_eq!(task.commander_lids, tasks[1].commander_lids);
+}
+
+#[tokio::test]
+async fn when_nothing_can_run_the_scheduler_sleeps_until_the_first_blocker_clears() {
+    let (lending, tasks) = lending_store().await;
+    // Make the sand tower cool for twenty minutes and send everything out for
+    // ten: the commanders are the first thing to come back.
+    lending
+        .refresh_rbc_cooldowns(
+            "ventrilo",
+            &[empire_core::account::RbcTarget {
+                kingdom_id: 1,
+                x: 600,
+                y: 610,
+                level: Some(61),
+                cooldown_remaining_s: 1_200,
+            }],
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    let mut everyone = tasks[0].commander_lids.clone();
+    everyone.extend(&tasks[1].commander_lids);
+    send_everyone_out(&lending, &everyone).await;
+    let mut automation = Automation::new();
+    let before = now_ms();
+    let packet = automation
+        .next_packet(&lending, "ventrilo", US1_SERVER_HEADER)
+        .await
+        .unwrap();
+    assert!(packet.is_none());
+    let AutomationPhase::Idle { due_ms } = automation.phase else {
+        panic!("expected to wait");
+    };
+    // The blocker clears in minutes, so the wake-up is capped at the ceiling
+    // rather than the old fixed fifteen-second poll *or* a minutes-long sleep
+    // that would ignore a stop request.
+    assert!(due_ms >= before + 1_500 && due_ms <= before + 32_000, "{}", due_ms - before);
+    assert!(automation.detail.contains("next tower in"), "{}", automation.detail);
 }
 
     /// One request has to answer eighteen slots, so the window is the smallest

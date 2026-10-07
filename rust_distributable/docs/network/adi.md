@@ -28,12 +28,23 @@ The server responds with the target's available limits, flank capacity, and vali
 
 ### Observed Behaviors & Edge Cases
 
-1. **Target on Cooldown (`status: 95`)**: 
-   If an RBC is on cooldown (recently hit by you or another player in an instanced kingdom like Sands), the server will protect the target. It returns `status: "95"` and a `null` payload.
+1. **Target on Cooldown (`status: 95`)**:
+   If an RBC is on cooldown (recently hit by you or another player), the server
+   refuses the inspection with `status: "95"` and a `null` payload.
    ```jsonc
    16:50:56  IN   adi       {"payload":null,"status":"95"}
    ```
-   **Handling Rule:** A `95` is not a fatal operational fault; it is the server gracefully protecting a cooldown. The bot must parse this as "Target Unavailable", defer the target locally for its expected cooldown duration (e.g., 1 hour), and seamlessly transition to the next valid coordinate.
+   **Handling Rule:** A `95` is not a fault; it means our map of the tower is
+   stale. Hold the tower for about a minute, re-read its tile with a `gaa`
+   (the row carries the exact remaining cooldown), and let the scheduler sleep
+   until then. Parking it for a flat hour wastes every minute it is actually
+   ready. If the re-read shows no cooldown, park it for 30 minutes.
 
 2. **Berimond Camps (`KID: 10`)**:
    Berimond camps do not have cooldowns. If an `adi` returns `status: 95` for a Berimond camp, it means the camp was defeated by another player right before we inspected it. The target should be permanently deleted from the database.
+
+3. **`gli.C` is the whole roster, not availability.**
+   Every `adi` reply lists all owned commanders (`gli.C[].ID`, e.g. all 35)
+   regardless of who is marching. It cannot be intersected with local state to
+   find free commanders. Commander availability comes only from our own state:
+   `cra` ack (`TT`) then `cat` (return time).

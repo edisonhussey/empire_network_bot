@@ -12,6 +12,9 @@ The goal of this folder is to document **observed behaviors**, **payload structu
 * [`gam`](gam.md) - Game Action March (Server confirmation & travel duration)
 * [`cat`](cat.md) - Commander Action/Return (March landed or returning)
 
+### Scheduling
+* [`scheduling.md`](scheduling.md) - How attacks, towers and commanders are scheduled, and why throughput can be low
+
 ### Map & Navigation
 * [`gaa`](gaa.md) - Map Viewport Scan
 * [`gbl` & `upt`](navigation.md) - Kingdom and context switching

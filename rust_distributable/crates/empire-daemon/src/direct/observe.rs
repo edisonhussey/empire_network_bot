@@ -45,11 +45,12 @@ pub(super) async fn observe_account_packet(
             }
         }
         "gaa" => {
-            let mut targets = if learn_rbc {
-                rbc_targets(&packet.payload)
-            } else {
-                Vec::new()
-            };
+            // Every map response says how long each tower it shows is on
+            // cooldown. Keep that current for towers we already know, whether or
+            // not this response is part of a scan: it is what stops the bot
+            // finding out by being refused.
+            let seen = rbc_targets(&packet.payload);
+            let mut targets = if learn_rbc { seen.clone() } else { Vec::new() };
             // The radius is per kingdom, and a kingdom the operator did not ask
             // for is not being scanned at all, so nothing from it is kept.
             targets.retain(|target| {
@@ -68,6 +69,10 @@ pub(super) async fn observe_account_packet(
                 if !targets.is_empty() {
                     store
                         .upsert_rbc_targets(account_id, &targets, observed_at_ms)
+                        .await?;
+                } else if !seen.is_empty() {
+                    store
+                        .refresh_rbc_cooldowns(account_id, &seen, observed_at_ms)
                         .await?;
                 }
                 if !fortresses.is_empty() {
