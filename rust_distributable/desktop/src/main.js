@@ -1039,7 +1039,14 @@ async function refreshDashboard(knownDirect = null, force = false) {
     $("#dashboard-subtitle").textContent = runnerActive ? `${mode?.name || hunt.label || "Automation"} · ${direct.account_id || hunt.account_id || "connected account"}` : connected ? "Connected and ready to run a bot" : phaseCopy[direct.phase] || "No active session";
     $("#metric-attacks").textContent = compactNumber(hunt.marches);
     $("#metric-returned").textContent = `${compactNumber(hunt.returned)} returned`;
-    $("#metric-flight").textContent = compactNumber(hunt.in_flight);
+    // Outbound attacks and commanders coming home have very different
+    // operational meaning, so do not collapse them into a generic "away"
+    // number. Fall back to the old aggregate only when talking to an older
+    // daemon during an application update.
+    const outbound = hunt.commanders_outbound ?? hunt.in_flight ?? 0;
+    const returning = hunt.commanders_returning ?? 0;
+    $("#metric-outbound").textContent = compactNumber(outbound);
+    $("#metric-returning").textContent = compactNumber(returning);
     $("#metric-coins").textContent = compactNumber(hunt.coins);
     $("#metric-rubies").textContent = compactNumber(hunt.rubies);
     $("#rate-attacks").textContent = compactNumber(summary.attacks_last_hour);

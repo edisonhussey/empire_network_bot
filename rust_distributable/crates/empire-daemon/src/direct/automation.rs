@@ -561,6 +561,7 @@ impl Automation {
                         .await;
                 }
             }
+            let rejected_cra = matches!(self.phase, AutomationPhase::AwaitCra { .. });
             if let AutomationPhase::AwaitCra { lord_id, .. } = &self.phase {
                 let state = CommanderState {
                     account_id: account_id.to_owned(),
@@ -579,10 +580,16 @@ impl Automation {
             warn!(%account_id, command = %packet.command, %status, "automation request rejected");
             // Do not record an operational error here! We already gracefully deferred the target
             // or deleted it, so the bot won't spin. Game errors like 95 or 93 are expected.
+            // An ADI rejection did not claim a commander, so it can move to the
+            // next task after the normal short acknowledgement delay. Only a
+            // rejected CRA needs the commander-specific backoff.
+            let retry_ms = if rejected_cra {
+                COMMANDER_REJECT_HOLD_MS
+            } else {
+                (PacingPolicy::default().after_cra_ack(&mut self.rng) * 1_000.0) as i64
+            };
             self.phase = AutomationPhase::Idle {
-                due_ms: self
-                    .safety_pause_until_ms
-                    .max(now + COMMANDER_REJECT_HOLD_MS),
+                due_ms: self.safety_pause_until_ms.max(now + retry_ms),
             };
             return;
         }
@@ -789,8 +796,11 @@ impl Automation {
                             .await;
                     }
                 }
-                let pause = PacingPolicy::default().after_cra_ack(&mut self.rng)
-                    + Waits::attack_send(&mut self.rng);
+                // Match the Python proxy's successful path: the next ADI opens
+                // after the short CRA acknowledgement delay. ADI -> CRA has its
+                // own independent pacing below, so adding `attack_send` here
+                // serialised the commander pool for no additional safety.
+                let pause = PacingPolicy::default().after_cra_ack(&mut self.rng);
                 self.phase = AutomationPhase::Idle {
                     due_ms: now + (pause * 1_000.0) as i64,
                 };

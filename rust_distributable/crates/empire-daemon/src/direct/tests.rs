@@ -1,6 +1,6 @@
-    use super::*;
+use super::*;
 
-    fn awaiting_fortress_info() -> Automation {
+fn awaiting_fortress_info() -> Automation {
         let mut automation = Automation::new();
         automation.phase = AutomationPhase::AwaitAdi {
             task: ActiveModeTask {
@@ -28,10 +28,40 @@
             deadline_ms: now_ms() + REQUEST_TIMEOUT_MS,
         };
         automation
-    }
+}
 
-    #[tokio::test]
-    async fn fortress_abi_reply_advances_and_unrelated_packets_preserve_the_waiter() {
+fn awaiting_rbc_info() -> Automation {
+    let mut automation = Automation::new();
+    automation.phase = AutomationPhase::AwaitAdi {
+        task: ActiveModeTask {
+            mode_id: 1,
+            task_id: "rbc".into(),
+            name: "Sands towers".into(),
+            profile_id: "attack".into(),
+            payload: json!([]),
+            kingdom_id: 1,
+            level_min: Some(35),
+            level_max: Some(60),
+            source_x: 593,
+            source_y: 613,
+            travel_mode: empire_core::planning::TravelMode::Coin,
+            algorithm: "advanced".into(),
+            target_kind: "rbc".into(),
+            commander_lids: vec![0, 2, 3],
+        },
+        target: ReservedTarget {
+            kingdom_id: 1,
+            x: 636,
+            y: 574,
+            level: Some(43),
+        },
+        deadline_ms: now_ms() + REQUEST_TIMEOUT_MS,
+    };
+    automation
+}
+
+#[tokio::test]
+async fn fortress_abi_reply_advances_and_unrelated_packets_preserve_the_waiter() {
         let store = Store::open("sqlite::memory:").await.unwrap();
         let mut automation = awaiting_fortress_info();
         for raw in [
@@ -58,19 +88,43 @@
             automation.phase,
             AutomationPhase::ReadyCra { lord_id: 7, .. }
         ));
-    }
+}
 
-    #[tokio::test]
-    async fn refused_or_empty_abi_never_commits_an_attack() {
+#[tokio::test]
+async fn refused_or_empty_abi_never_commits_an_attack() {
         let store = Store::open("sqlite::memory:").await.unwrap();
         for raw in ["%xt%abi%1%6%null%", "%xt%abi%1%0%null%"] {
             let mut automation = awaiting_fortress_info();
             automation.observe(&store, "ventrilo", raw).await;
             assert!(matches!(automation.phase, AutomationPhase::Idle { .. }));
-            assert_eq!(automation.operational_errors.len(), 1);
+            assert!(automation.operational_errors.is_empty());
             assert_eq!(automation.last_cra_ms, None);
         }
+}
+
+#[tokio::test]
+async fn expected_target_rejections_never_trip_the_global_safety_pause() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    let mut automation = Automation::new();
+
+    // Live Sands runs regularly receive status 95 when a tower changed after
+    // the map scan. The old release treated two of these as operational errors
+    // and froze every otherwise-free commander for five minutes.
+    for _ in 0..6 {
+        automation.phase = awaiting_rbc_info().phase;
+        let observed_at = now_ms();
+        automation
+            .observe(&store, "ventrilo", "%xt%adi%1%95%null%")
+            .await;
+        let AutomationPhase::Idle { due_ms } = automation.phase else {
+            panic!("expected rejection to resume the scheduler");
+        };
+        assert!(due_ms >= observed_at + 750);
+        assert!(due_ms <= observed_at + 2_500);
+        assert!(automation.operational_errors.is_empty());
+        assert_eq!(automation.safety_pause_until_ms, 0);
     }
+}
 
     /// One request has to answer eighteen slots, so the window is the smallest
     /// rectangle spanning three slots on each residue family.
@@ -164,24 +218,34 @@
         );
     }
 
-    #[test]
-    fn the_second_error_inside_five_minutes_trips_the_safety_pause() {
-        let mut automation = Automation::new();
-        automation.record_operational_error(1_000_000, "first");
-        assert_eq!(automation.safety_pause_until_ms, 0);
-        automation.record_operational_error(1_299_999, "second");
-        assert_eq!(automation.safety_pause_until_ms, 1_300_000);
-        assert!(automation.detail.contains("Safety pause"));
-    }
+#[tokio::test]
+async fn the_second_error_inside_five_minutes_trips_the_safety_pause() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    let mut automation = Automation::new();
+    automation
+        .record_operational_error(&store, "ventrilo", 1_000_000, "first")
+        .await;
+    assert_eq!(automation.safety_pause_until_ms, 0);
+    automation
+        .record_operational_error(&store, "ventrilo", 1_299_999, "second")
+        .await;
+    assert_eq!(automation.safety_pause_until_ms, 1_300_000);
+    assert!(automation.detail.contains("Safety pause"));
+}
 
-    #[test]
-    fn old_errors_age_out_of_the_rolling_window() {
-        let mut automation = Automation::new();
-        automation.record_operational_error(1_000_000, "old");
-        automation.record_operational_error(1_300_000, "new");
-        assert_eq!(automation.operational_errors.len(), 1);
-        assert_eq!(automation.safety_pause_until_ms, 0);
-    }
+#[tokio::test]
+async fn old_errors_age_out_of_the_rolling_window() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    let mut automation = Automation::new();
+    automation
+        .record_operational_error(&store, "ventrilo", 1_000_000, "old")
+        .await;
+    automation
+        .record_operational_error(&store, "ventrilo", 1_300_000, "new")
+        .await;
+    assert_eq!(automation.operational_errors.len(), 1);
+    assert_eq!(automation.safety_pause_until_ms, 0);
+}
 
     #[test]
     fn large_map_diagnostics_are_compacted_without_losing_counts() {

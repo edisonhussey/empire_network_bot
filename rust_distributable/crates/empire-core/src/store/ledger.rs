@@ -484,6 +484,12 @@ pub struct HuntSummary {
     pub account_id: Option<String>,
     pub marches: i64,
     pub returned: i64,
+    /// Commanders still travelling towards their targets.
+    pub commanders_outbound: i64,
+    /// Commanders whose attacks have resolved and are travelling home.
+    pub commanders_returning: i64,
+    /// Compatibility total for clients that have not yet adopted the split
+    /// commander counts.
     pub in_flight: i64,
     pub coins: i64,
     pub rubies: i64,
@@ -831,12 +837,16 @@ impl Store {
         .fetch_one(&self.pool)
         .await?;
         // A commander has one durable availability record, regardless of how
-        // many historical attacks are still missing a result. Both legs (and
-        // the short home rest) keep that commander unavailable. Disconnecting
-        // the socket does not teleport the army home.
-        let in_flight: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM commander_state
-             WHERE status IN ('outbound', 'returning') AND available_after_ms > ?
+        // many historical attacks are still missing a result. Keep the two
+        // legs separate: an outbound commander represents an unresolved
+        // attack, while a returning commander is already on the way home.
+        // Flattening both into one count made the dashboard number ambiguous.
+        let commander_counts = sqlx::query(
+            "SELECT
+                COALESCE(SUM(status = 'outbound'), 0) outbound_count,
+                COALESCE(SUM(status = 'returning'), 0) returning_count
+             FROM commander_state
+             WHERE available_after_ms > ?
                AND (? IS NULL OR account_id = ?)",
         )
         .bind(now_ms())
@@ -844,6 +854,9 @@ impl Store {
         .bind(account_id.as_deref())
         .fetch_one(&self.pool)
         .await?;
+        let commanders_outbound: i64 = commander_counts.get("outbound_count");
+        let commanders_returning: i64 = commander_counts.get("returning_count");
+        let in_flight = commanders_outbound + commanders_returning;
         let task_rows = sqlx::query(
             "SELECT COALESCE(task_id, '(earlier runs)') task_id,
                     COUNT(*) marches,
@@ -887,6 +900,8 @@ impl Store {
                 .or_else(|| account_row.map(|row| row.get("account_id"))),
             marches: totals.get("marches"),
             returned: totals.get("returned"),
+            commanders_outbound,
+            commanders_returning,
             in_flight,
             coins: totals.get("coins"),
             rubies: totals.get("rubies"),

@@ -181,6 +181,11 @@ header { display: flex; justify-content: space-between; align-items: flex-end; g
 .metric-card strong { order: -1; font-size: 44px; line-height: 1.1; letter-spacing: -.01em; }
 .metric-card p { color: var(--ink-2); margin-top: 8px; }
 .metric-card small { margin-top: 2px; }
+.commander-metric > div { min-width: 0; }
+.commander-legs { display: flex; gap: 28px; }
+.commander-legs span { display: flex; flex-direction: column; }
+.commander-legs strong { font-size: 36px; }
+.commander-legs small { color: var(--ink-2); }
 
 /* Health and setup stack down the left; the chart takes the right column across
    both rows. That keeps the page short instead of stacking four full-width

@@ -1916,6 +1916,12 @@ async fn in_flight_counts_commanders_on_both_legs_even_when_disconnected() {
         live.in_flight, 2,
         "count outbound and returning commanders, excluding those already home"
     );
+    assert_eq!(live.commanders_outbound, 1);
+    assert_eq!(live.commanders_returning, 1);
+    assert_eq!(
+        live.in_flight,
+        live.commanders_outbound + live.commanders_returning
+    );
     // The count can never exceed the commanders the account owns. That is the
     // property that was violated when this counted ledger rows: 15 attacks from
     // 10 commanders reported 14 in flight.
@@ -1936,6 +1942,8 @@ async fn in_flight_counts_commanders_on_both_legs_even_when_disconnected() {
     let stopped = store.hunt_summary(5).await.unwrap();
     assert!(!stopped.active, "a stale heartbeat means no run is alive");
     assert_eq!(stopped.in_flight, 2);
+    assert_eq!(stopped.commanders_outbound, 1);
+    assert_eq!(stopped.commanders_returning, 1);
     assert_eq!(stopped.marches, 2, "history is still reported when stopped");
 }
 
