@@ -30,15 +30,13 @@ The server responds with the target's available limits, flank capacity, and vali
 
 1. **Target on Cooldown (`status: 95`)**:
    If an RBC is on cooldown (recently hit by you or another player), the server
-   refuses the inspection with `status: "95"` and a `null` payload.
+   refuses the inspection with `status: "95"` and a `null` payload. It means the
+   client's picture of the tower is out of date, not that anything is wrong.
    ```jsonc
    16:50:56  IN   adi       {"payload":null,"status":"95"}
    ```
-   **Handling Rule:** A `95` is not a fault; it means our map of the tower is
-   stale. Hold the tower for about a minute, re-read its tile with a `gaa`
-   (the row carries the exact remaining cooldown), and let the scheduler sleep
-   until then. Parking it for a flat hour wastes every minute it is actually
-   ready. If the re-read shows no cooldown, park it for 30 minutes.
+   The tower's real remaining cooldown is in its `gaa` row ([`gaa.md`](gaa.md)).
+   How the bot reacts is in [`ARCHITECTURE.md`](../../ARCHITECTURE.md#attack-scheduling).
 
 2. **Berimond Camps (`KID: 10`)**:
    Berimond camps do not have cooldowns. If an `adi` returns `status: 95` for a Berimond camp, it means the camp was defeated by another player right before we inspected it. The target should be permanently deleted from the database.

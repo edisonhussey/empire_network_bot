@@ -57,6 +57,9 @@ pub(super) struct Automation {
     pub(super) detail: String,
     pub(super) operational_errors: VecDeque<i64>,
     pub(super) safety_pause_until_ms: i64,
+    /// When anything last arrived from the server. A request that times out
+    /// while the whole connection is silent says nothing about its target.
+    pub(super) last_inbound_ms: i64,
 }
 
 pub(super) fn attack_info_kind(task: &ActiveModeTask) -> hunt::AttackInfoKind {
@@ -120,6 +123,9 @@ async fn release_unattacked(
 /// still looks free; the acknowledgement replaces it with the real travel time.
 const PENDING_COMMANDER_HOLD_MS: i64 = 5 * 60 * 1_000;
 /// A refreshed tower the server still reports as ready is not trusted for long.
+/// The server talks every few seconds on a live session. Past this much quiet a
+/// timed-out request is blamed on the link, not on the tower it was about.
+const LINK_SILENCE_MS: i64 = 25_000;
 pub(super) const UNEXPLAINED_REFUSAL_HOLD_MS: i64 = 30 * 60 * 1_000;
 
 impl Automation {
@@ -133,6 +139,7 @@ impl Automation {
             detail: "Mode is stopped".to_owned(),
             operational_errors: VecDeque::new(),
             safety_pause_until_ms: 0,
+            last_inbound_ms: now_ms(),
         }
     }
 
@@ -205,6 +212,41 @@ impl Automation {
                     .await?;
             }
             self.last_heartbeat_ms = now;
+        }
+
+        // A request that times out while nothing at all is arriving was not
+        // refused by its target; the connection is down (the supervisor will
+        // reconnect). Don't quarantine the tower, don't count an error, and
+        // keep a possibly-launched attack's commander reserved.
+        let link_silent = now.saturating_sub(self.last_inbound_ms) >= LINK_SILENCE_MS;
+        if link_silent {
+            let expired = match &self.phase {
+                AutomationPhase::AwaitMap { deadline_ms, .. }
+                | AutomationPhase::AwaitFortressRefresh { deadline_ms, .. }
+                | AutomationPhase::AwaitRbcRefresh { deadline_ms, .. }
+                | AutomationPhase::AwaitAdi { deadline_ms, .. }
+                | AutomationPhase::AwaitCra { deadline_ms, .. } => now >= *deadline_ms,
+                _ => false,
+            };
+            if expired {
+                match std::mem::replace(&mut self.phase, AutomationPhase::Idle { due_ms: now + 10_000 }) {
+                    AutomationPhase::AwaitMap { task, target, .. }
+                    | AutomationPhase::AwaitAdi { task, target, .. } => {
+                        release_unattacked(store, account_id, &task, &target).await;
+                    }
+                    AutomationPhase::AwaitFortressRefresh { target, .. } => {
+                        let _ = store.release_fortress_target(account_id, &target).await;
+                    }
+                    AutomationPhase::AwaitRbcRefresh { target, .. } => {
+                        let _ = store.release_rbc_target(account_id, &target).await;
+                    }
+                    // The CRA may have left before the link died. Its target
+                    // stays leased and its commander stays reserved.
+                    _ => {}
+                }
+                self.detail = "Connection to the game is silent; waiting for it to come back".to_owned();
+                return Ok(None);
+            }
         }
 
         match std::mem::replace(&mut self.phase, AutomationPhase::Idle { due_ms: now }) {
@@ -548,52 +590,19 @@ impl Automation {
         // Ordinary targets run only after every currently actionable fortress
         // and due fortress maintenance request has been considered.
         //
-        // A task's commanders are an allocation, not a wall. When every one of
-        // them is out but the task has a tower ready, commanders from a task
-        // with nothing to attack are lent to it, so a configured pool of 35 is
-        // not stranded behind whichever task happens to be starved of targets.
-        let mut lendable: HashMap<String, bool> = HashMap::new();
+        // A task's commanders are strictly its own: each belongs to one task
+        // (its section of the roster) and no other task may borrow it, whatever
+        // is idle. Lending was tried and sent crossbow marches out under
+        // commanders reserved for the other section.
         for index in rotated
             .iter()
             .copied()
             .filter(|index| tasks[*index].target_kind != "fortress")
         {
             let task = &tasks[index];
-            let mut pool = free_commanders(&task.commander_lids, &states, now);
+            let pool = free_commanders(&task.commander_lids, &states, now);
             if pool.is_empty() {
-                for spare in &task.spare_commanders {
-                    if free_commanders(&[spare.lord_id], &states, now).is_empty() {
-                        continue;
-                    }
-                    let lends = match lendable.get(&spare.owner_task_id) {
-                        Some(known) => *known,
-                        None => {
-                            let lends = match tasks
-                                .iter()
-                                .find(|owner| owner.task_id == spare.owner_task_id)
-                            {
-                                Some(owner) if owner.target_kind != "fortress" => store
-                                    .next_rbc_ready_ms(
-                                        account_id,
-                                        owner.kingdom_id,
-                                        owner.level_min,
-                                        owner.level_max,
-                                    )
-                                    .await?
-                                    .is_none_or(|ready| ready > now),
-                                _ => false,
-                            };
-                            lendable.insert(spare.owner_task_id.clone(), lends);
-                            lends
-                        }
-                    };
-                    if lends {
-                        pool.push(spare.lord_id);
-                    }
-                }
-                if pool.is_empty() {
-                    continue;
-                }
+                continue;
             }
             if let Some(target) = store
                 .reserve_rbc_target(
@@ -609,8 +618,7 @@ impl Automation {
                 .await?
             {
                 self.cursor = (index + 1) % tasks.len();
-                let mut task = task.clone();
-                task.commander_lids = pool;
+                let task = task.clone();
                 let navigation = store.navigation(account_id).await?;
                 if navigation.as_ref().is_some_and(|state| {
                     state.map_mode && state.current_kingdom_id == Some(task.kingdom_id)
@@ -644,12 +652,6 @@ impl Automation {
         let mut wake: Option<i64> = None;
         let mut notes = Vec::new();
         for task in tasks.iter().filter(|task| task.target_kind != "fortress") {
-            let everyone = task
-                .commander_lids
-                .iter()
-                .copied()
-                .chain(task.spare_commanders.iter().map(|spare| spare.lord_id))
-                .collect::<Vec<_>>();
             let free = free_commanders(&task.commander_lids, &states, now).len();
             let target_ready = store
                 .next_rbc_ready_ms(account_id, task.kingdom_id, task.level_min, task.level_max)
@@ -658,7 +660,7 @@ impl Automation {
                 notes.push(format!("{}: no towers in range", task.name));
                 continue;
             };
-            let commander_ready = first_free_at(&everyone, &states, now).unwrap_or(now);
+            let commander_ready = first_free_at(&task.commander_lids, &states, now).unwrap_or(now);
             let ready = target_ready.max(commander_ready);
             wake = Some(wake.map_or(ready, |earliest| earliest.min(ready)));
             notes.push(if target_ready > now {
@@ -692,6 +694,7 @@ impl Automation {
     }
 
     pub(super) async fn observe(&mut self, store: &Store, account_id: &str, raw: &str) {
+        self.last_inbound_ms = now_ms();
         let Ok(packet) = parse_xt_packet(raw) else {
             return;
         };

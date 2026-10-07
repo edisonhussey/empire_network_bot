@@ -18,7 +18,6 @@ fn awaiting_fortress_info() -> Automation {
                 algorithm: "closest".into(),
                 target_kind: "fortress".into(),
                 commander_lids: vec![7],
-                spare_commanders: Vec::new(),
             },
             target: ReservedTarget {
                 kingdom_id: 1,
@@ -49,7 +48,6 @@ fn awaiting_rbc_info() -> Automation {
             algorithm: "advanced".into(),
             target_kind: "rbc".into(),
             commander_lids: vec![0, 2, 3],
-            spare_commanders: Vec::new(),
         },
         target: ReservedTarget {
             kingdom_id: 1,
@@ -160,6 +158,72 @@ fn tower() -> ReservedTarget {
         y: 574,
         level: Some(43),
     }
+}
+
+#[tokio::test]
+async fn a_timeout_on_a_silent_link_does_not_quarantine_the_tower_or_count_an_error() {
+    // The Wi-Fi dropped mid-handshake: nothing arrived, so nothing was refused.
+    let store = tower_store(0).await;
+    let mut automation = Automation::new();
+    automation.phase = AutomationPhase::AwaitAdi {
+        task: match awaiting_rbc_info().phase {
+            AutomationPhase::AwaitAdi { task, .. } => task,
+            _ => unreachable!(),
+        },
+        target: tower(),
+        deadline_ms: now_ms() - 1,
+    };
+    automation.last_inbound_ms = now_ms() - 60_000;
+    automation
+        .next_packet(&store, "ventrilo", US1_SERVER_HEADER)
+        .await
+        .unwrap();
+    assert!(matches!(automation.phase, AutomationPhase::Idle { .. }));
+    assert!(automation.operational_errors.is_empty());
+    let ready = store
+        .next_rbc_ready_ms("ventrilo", 1, None, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(ready <= now_ms(), "the tower went straight back to the pool");
+
+    // The same timeout on a live link still quarantines and counts.
+    automation.phase = AutomationPhase::AwaitAdi {
+        task: match awaiting_rbc_info().phase {
+            AutomationPhase::AwaitAdi { task, .. } => task,
+            _ => unreachable!(),
+        },
+        target: tower(),
+        deadline_ms: now_ms() - 1,
+    };
+    automation.last_inbound_ms = now_ms();
+    automation
+        .next_packet(&store, "ventrilo", US1_SERVER_HEADER)
+        .await
+        .unwrap();
+    assert_eq!(automation.operational_errors.len(), 1);
+}
+
+#[test]
+fn only_lost_connections_are_retried() {
+    use tokio_tungstenite::tungstenite::{Error as WsError, error::ProtocolError};
+    let reset: anyhow::Error =
+        WsError::Protocol(ProtocolError::ResetWithoutClosingHandshake).into();
+    assert!(connection_was_lost(&reset));
+    assert!(connection_was_lost(&ConnectionLost("silent".into()).into()));
+    assert!(!connection_was_lost(&anyhow::anyhow!("licence revoked")));
+}
+
+#[test]
+fn reconnect_backs_off_and_is_capped() {
+    let mut rng = Rng::seeded(3);
+    let delays = (1..=8)
+        .map(|attempt| reconnect_delay(attempt, &mut rng).as_secs_f64())
+        .collect::<Vec<_>>();
+    assert!((5.0..8.0).contains(&delays[0]), "{delays:?}");
+    assert!(delays.windows(2).all(|pair| pair[1] + 3.0 >= pair[0]));
+    assert!(delays.iter().all(|delay| *delay < 63.1), "{delays:?}");
+    assert!(delays[7] >= 60.0);
 }
 
 #[tokio::test]

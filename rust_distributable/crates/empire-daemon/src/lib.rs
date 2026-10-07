@@ -131,7 +131,10 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:47821";
 /// 39: the attack scheduler reads each tower's server-reported cooldown, re-reads
 /// a refused tower instead of parking it for an hour, sleeps until the next
 /// target or commander is actually ready, and lends idle commanders between tasks.
-pub const API_VERSION: u16 = 39;
+/// 40: a lost game connection (Wi-Fi drop, address change, silent server) is
+/// detected within 90 s and reconnected with backoff instead of ending the run,
+/// and requests that time out on a silent link no longer quarantine towers.
+pub const API_VERSION: u16 = 40;
 
 /// Is something already listening on the service port?
 ///

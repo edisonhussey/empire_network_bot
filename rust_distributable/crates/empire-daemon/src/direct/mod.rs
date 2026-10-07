@@ -189,6 +189,42 @@ impl Default for DirectStatus {
     }
 }
 
+/// The link to the game is gone for a reason that has nothing to do with the
+/// account: the network dropped, the address changed, or the server stopped
+/// talking. Anything else (a licence refusal, a login the server rejected) is
+/// final, because retrying it would not help.
+#[derive(Debug)]
+struct ConnectionLost(String);
+
+impl std::fmt::Display for ConnectionLost {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "connection lost: {}", self.0)
+    }
+}
+
+impl std::error::Error for ConnectionLost {}
+
+fn connection_was_lost(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<ConnectionLost>().is_some()
+        || error.downcast_ref::<tokio_tungstenite::tungstenite::Error>().is_some()
+}
+
+/// The server sends something every few seconds while a session is alive; a
+/// quiet minute and a half means the path is dead even if the socket has not
+/// noticed yet. (After a Wi-Fi address change the socket took a minute and a
+/// half to report a reset, and after a silent drop it can take far longer.)
+const SERVER_SILENCE_LIMIT: Duration = Duration::from_secs(90);
+/// Keep trying to get back for this long before declaring the session over.
+const RECONNECT_GIVE_UP: Duration = Duration::from_secs(30 * 60);
+/// A session shorter than this did not really come back, so it does not reset
+/// the give-up clock. It also stops us fighting something that keeps kicking us.
+const STABLE_SESSION: Duration = Duration::from_secs(2 * 60);
+
+fn reconnect_delay(attempt: u32, rng: &mut Rng) -> Duration {
+    let base = 5.0 * 2f64.powi(attempt.saturating_sub(1).min(4) as i32);
+    Duration::from_secs_f64(base.min(60.0) + rng.uniform(0.0, 3.0))
+}
+
 pub async fn run(
     request: DirectConnectRequest,
     store: Store,
@@ -199,15 +235,69 @@ pub async fn run(
     let endpoint = request.endpoint.clone();
     let _account_id = request.credentials.player_name.trim().to_ascii_lowercase();
     status.write().await.endpoint = Some(endpoint.clone());
-    let result = run_inner(request, &store, &active_transport, &status, &licence).await;
+    let mut attempt_request = request;
+    let mut rng = Rng::from_entropy();
+    let mut failing_since: Option<tokio::time::Instant> = None;
+    let mut attempt = 0_u32;
+    let final_error = loop {
+        let result = run_inner(attempt_request.clone(), &store, &active_transport, &status, &licence).await;
+        *active_transport.write().await = None;
+        // The session's own bookkeeping says how far this attempt got and how
+        // long it lived; read it before it is overwritten below.
+        let (reached_ready, lived) = {
+            let current = status.read().await;
+            (
+                matches!(
+                    current.phase,
+                    SessionPhase::SandsReady | SessionPhase::DiscoveringFortresses
+                ),
+                current
+                    .connected_at_ms
+                    .map(|at| Duration::from_millis(now_ms().saturating_sub(at).max(0) as u64)),
+            )
+        };
+        let error = match result {
+            Err(error) if connection_was_lost(&error) => error,
+            // A session that never got going and then closed cleanly, or any
+            // other failure, is not something a retry would fix.
+            Err(error) => break Some(error),
+            Ok(()) => break None,
+        };
+        if reached_ready && lived.is_some_and(|lived| lived >= STABLE_SESSION) {
+            failing_since = None;
+            attempt = 0;
+        }
+        let started = *failing_since.get_or_insert_with(tokio::time::Instant::now);
+        attempt += 1;
+        if started.elapsed() >= RECONNECT_GIVE_UP {
+            break Some(error.context("gave up reconnecting"));
+        }
+        let delay = reconnect_delay(attempt, &mut rng);
+        warn!(%endpoint, %error, attempt, delay_s = delay.as_secs(), "game connection lost; reconnecting");
+        {
+            let mut current = status.write().await;
+            current.connected = false;
+            current.connected_at_ms = None;
+            current.phase = SessionPhase::Disconnected;
+            current.error = Some(error.to_string());
+            current.bot_state = "reconnecting".to_owned();
+            current.bot_detail = Some(format!(
+                "Connection lost; reconnecting in {}s (attempt {attempt})",
+                delay.as_secs()
+            ));
+        }
+        tokio::time::sleep(delay).await;
+        // Reuse the learned map on the way back: a reconnect should resume
+        // attacking, not rescan the world.
+        attempt_request.reuse_existing_map = true;
+    };
     // We intentionally do NOT call stop_account_mode here anymore.
-    // If the socket disconnects (e.g., daily server maintenance), we want to preserve 
-    // the user's configuration so that when they reconnect, the bot resumes automatically.
+    // The user's configuration is preserved so a later reconnect resumes it.
     *active_transport.write().await = None;
     let mut current = status.write().await;
     current.connected = false;
     current.connected_at_ms = None;
-    if let Err(error) = result {
+    if let Some(error) = final_error {
         current.phase = SessionPhase::Failed;
         current.error = Some(error.to_string());
         warn!(%endpoint, %error, "direct game session stopped");
@@ -270,6 +360,8 @@ async fn run_inner(
     let mut heartbeat = tokio::time::interval(Duration::from_secs(60));
     let mut entitlement_check = tokio::time::interval(Duration::from_secs(5));
     let mut automation_tick = tokio::time::interval(Duration::from_millis(250));
+    let mut silence_check = tokio::time::interval(Duration::from_secs(10));
+    let mut last_frame_at = tokio::time::Instant::now();
     let mut base_scan_tick = tokio::time::interval(Duration::from_millis(100));
     let mut fortress_tick = tokio::time::interval(Duration::from_millis(250));
     let mut automation = Automation::new();
@@ -304,6 +396,7 @@ async fn run_inner(
             maybe = stream.next() => {
                 let Some(message) = maybe else { break; };
                 let message = message?;
+                last_frame_at = tokio::time::Instant::now();
                 let text = match message {
                     Message::Text(text) => Some(text.to_string()),
                     Message::Binary(bytes) => String::from_utf8(bytes.to_vec()).ok(),
@@ -507,6 +600,16 @@ async fn run_inner(
                 }
                 record_text(store, Direction::Injected, &request.packet).await;
                 sink.send(Message::Text(request.packet.into())).await?;
+            }
+            _ = silence_check.tick() => {
+                let quiet = last_frame_at.elapsed();
+                if quiet >= SERVER_SILENCE_LIMIT {
+                    return Err(ConnectionLost(format!(
+                        "the game server has been silent for {}s",
+                        quiet.as_secs()
+                    ))
+                    .into());
+                }
             }
             _ = heartbeat.tick() => {
                 let packet = heartbeat_packet(&request.settings.server_header);

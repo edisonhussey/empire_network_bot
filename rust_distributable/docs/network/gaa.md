@@ -52,8 +52,4 @@ Berimond camps (`type 17`) report no cooldown.
    read at login goes stale. The remaining value is the only way to know about
    those hits without being refused (see [`errors.md`](errors.md), status 95).
 3. **A tile read is cheap.** A 13x13 window centred on one tower
-   (`AX1 = x-6 ... AX2 = x+6`) returns that tower and its neighbours. The bot
-   uses it to re-read a tower after a `95`.
-4. Applying a response must never add towers the operator did not scan. Known
-   towers are updated in place; only an initialisation scan inserts rows.
-
+   (`AX1 = x-6 ... AX2 = x+6`) returns that tower and its neighbours.

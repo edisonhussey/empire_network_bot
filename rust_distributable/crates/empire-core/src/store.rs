@@ -28,9 +28,7 @@ pub use ledger::{
     HEARTBEAT_FRESH_MILLIS, HUNT_HEARTBEAT_KEY, HuntSummary, HuntTaskSummary, MARCH_RETURNING,
     MARCH_SENT, MarchRecord, ScanActivity,
 };
-pub use modes::{
-    AccountModeRecord, ActiveModeTask, ImportModeError, ModeRecord, SpareCommander, TaskRuntime,
-};
+pub use modes::{AccountModeRecord, ActiveModeTask, ImportModeError, ModeRecord, TaskRuntime};
 pub use recruitment::{
     AccountRecruitBot, ActiveRecruitment, OwnedCastleRecord, RecruitBot, RecruitBotCastle,
     RecruitmentTemplate,
