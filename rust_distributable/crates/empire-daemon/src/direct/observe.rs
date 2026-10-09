@@ -154,13 +154,13 @@ pub(super) async fn persist_navigation_packet(
     store.set_navigation(&state, observed_at_ms).await
 }
 
-pub(super) async fn record_safe_outbound(store: &Store, _account_id: &str, raw: &str) {
+pub(super) async fn record_safe_outbound(store: &Store, account_id: &str, raw: &str) {
     if let Ok(packet) = parse_xt_packet(raw)
         && packet.command == "lli"
     {
         return;
     }
-    record_text(store, Direction::ClientToServer, raw).await;
+    record_text(store, account_id, Direction::ClientToServer, raw).await;
 }
 
 pub(super) fn map_request(raw: &str) -> Option<(i64, i64, i64, i64, i64)> {
@@ -177,7 +177,7 @@ pub(super) fn map_request(raw: &str) -> Option<(i64, i64, i64, i64, i64)> {
     ))
 }
 
-pub(super) async fn record_text(store: &Store, direction: Direction, raw: &str) {
+pub(super) async fn record_text(store: &Store, account_id: &str, direction: Direction, raw: &str) {
     let parsed = parse_xt_packet(raw).ok();
     let command = parsed.as_ref().map(|packet| packet.command.clone());
     let payload = parsed.map_or_else(
@@ -191,7 +191,7 @@ pub(super) async fn record_text(store: &Store, direction: Direction, raw: &str) 
         },
     );
     if let Err(error) = store
-        .record_message(now_ms(), direction, command.as_deref(), &payload)
+        .record_message_for(Some(account_id), now_ms(), direction, command.as_deref(), &payload)
         .await
     {
         warn!(%error, "failed to persist direct-session event");

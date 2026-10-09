@@ -25,8 +25,9 @@
       <div class="activation-card">
         <svg class="logo" aria-hidden="true"><use href="#logo"/></svg>
         <p class="eyebrow">Welcome to OpenAuto</p>
-        <h1>Enter your access token</h1>
-        <p class="activation-copy">Activate OpenAuto to continue.</p>
+        <h1 id="activation-title">Enter your access token</h1>
+        <p id="activation-copy" class="activation-copy">Activate OpenAuto to continue.</p>
+        <ul id="licence-list" class="licence-list" hidden></ul>
         <form id="licence-form">
           <label for="licence-token">Access token</label>
           <textarea id="licence-token" placeholder="Paste token" spellcheck="false" required></textarea>

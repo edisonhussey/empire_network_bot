@@ -36,7 +36,7 @@ The server responds with the target's available limits, flank capacity, and vali
    16:50:56  IN   adi       {"payload":null,"status":"95"}
    ```
    The tower's real remaining cooldown is in its `gaa` row ([`gaa.md`](gaa.md)).
-   How the bot reacts is in [`ARCHITECTURE.md`](../../ARCHITECTURE.md#attack-scheduling).
+   How the bot reacts is in [`attack-scheduling.md`](../architecture/attack-scheduling.md).
 
 2. **Berimond Camps (`KID: 10`)**:
    Berimond camps do not have cooldowns. If an `adi` returns `status: 95` for a Berimond camp, it means the camp was defeated by another player right before we inspected it. The target should be permanently deleted from the database.

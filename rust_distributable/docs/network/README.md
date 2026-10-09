@@ -12,11 +12,12 @@ The goal of this folder is to document **observed behaviors**, **payload structu
 * [`gam`](gam.md) - Game Action March (Server confirmation & travel duration)
 * [`cat`](cat.md) - Commander Action/Return (March landed or returning)
 
-### Map & Navigation
+### Map
 * [`gaa`](gaa.md) - Map Viewport Scan
-* [`gbl` & `upt`](navigation.md) - Kingdom and context switching
+
+Kingdom/context switching (`gbl`, `upt`, `gbd`) is in [`../architecture/navigation.md`](../architecture/navigation.md).
 
 ### General Reference
-* `status` codes - Many server responses contain a `status` field. `0` is success. Others indicate rejection (e.g., `95` target occupied/cooling down, `93` commander traveling, `256` lord in use).
+* `status` codes ([`../architecture/errors.md`](../architecture/errors.md)) - Many server responses contain a `status` field. `0` is success. Others indicate rejection (e.g., `95` target occupied/cooling down, `93` commander traveling, `256` lord in use).
 
-How the bot uses these packets (scheduling, cooldowns, reconnecting) is described in the repository's [`ARCHITECTURE.md`](../../ARCHITECTURE.md), not here.
+How the bot uses these packets (scheduling, cooldowns, reconnecting) is described in [`../architecture/`](../architecture/README.md), not here.

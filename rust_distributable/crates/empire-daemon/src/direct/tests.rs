@@ -215,15 +215,144 @@ fn only_lost_connections_are_retried() {
 }
 
 #[test]
-fn reconnect_backs_off_and_is_capped() {
+fn there_are_exactly_two_retries_about_one_and_five_minutes_apart() {
     let mut rng = Rng::seeded(3);
-    let delays = (1..=8)
-        .map(|attempt| reconnect_delay(attempt, &mut rng).as_secs_f64())
-        .collect::<Vec<_>>();
-    assert!((5.0..8.0).contains(&delays[0]), "{delays:?}");
-    assert!(delays.windows(2).all(|pair| pair[1] + 3.0 >= pair[0]));
-    assert!(delays.iter().all(|delay| *delay < 63.1), "{delays:?}");
-    assert!(delays[7] >= 60.0);
+    for _ in 0..1_000 {
+        let first = reconnect_delay(1, &mut rng).unwrap().as_secs_f64();
+        let second = reconnect_delay(2, &mut rng).unwrap().as_secs_f64();
+        assert!((48.0..=72.0).contains(&first), "first retry {first}");
+        assert!((240.0..=360.0).contains(&second), "second retry {second}");
+    }
+    assert!(reconnect_delay(3, &mut rng).is_none(), "then give up");
+    assert!(reconnect_delay(0, &mut rng).is_none());
+    // Jitter means two losses do not retry on the same beat.
+    let delays = (0..20).map(|_| reconnect_delay(1, &mut rng).unwrap().as_millis()).collect::<std::collections::HashSet<_>>();
+    assert!(delays.len() > 10);
+}
+
+#[test]
+fn a_refused_login_is_final_and_says_when_the_lock_ends() {
+    let locked = LoginRejected {
+        status: "27".to_owned(),
+        locked_until_ms: Some(now_ms() + (23 * 3_600 + 30 * 60) * 1_000 + 5_000),
+    };
+    let text = locked.to_string();
+    assert!(text.contains("status 27") && text.contains("23h 30m"), "{text}");
+    assert!(text.contains("Not retrying"));
+    assert!(!connection_was_lost(&locked.into()), "never retried");
+}
+
+#[tokio::test]
+async fn an_army_the_castle_cannot_supply_is_never_sent() {
+    // 8 Oct: 50 crossbows asked for, 12 at home. The old code sent it anyway,
+    // three times, and the server locked the account.
+    let store = tower_store(0).await;
+    let mut automation = Automation::new();
+    let AutomationPhase::AwaitAdi { mut task, target, deadline_ms } = awaiting_rbc_info().phase
+    else {
+        unreachable!()
+    };
+    task.payload = json!([{"L": {"T": [[-1, 0]], "U": [[607, 50], [-1, 0]]}}]);
+    automation.phase = AutomationPhase::AwaitAdi { task, target, deadline_ms };
+    let reply = json!({"gli": {"C": [{"ID": 0}, {"ID": 2}, {"ID": 3}]}, "gui": {"I": [[607, 12]]}});
+    automation
+        .observe(&store, "ventrilo", &format!("%xt%adi%1%0%{reply}%"))
+        .await;
+    assert!(
+        matches!(automation.phase, AutomationPhase::Idle { .. }),
+        "no CRA may be queued: {}",
+        automation.status().0
+    );
+    assert!(automation.detail.contains("unit 607 need 50 have 12"), "{}", automation.detail);
+    assert_eq!(automation.last_cra_ms, None);
+
+    // With the troops home the same reply goes ahead.
+    let AutomationPhase::AwaitAdi { mut task, target, deadline_ms } = awaiting_rbc_info().phase
+    else {
+        unreachable!()
+    };
+    task.payload = json!([{"L": {"T": [[-1, 0]], "U": [[607, 50], [-1, 0]]}}]);
+    automation.phase = AutomationPhase::AwaitAdi { task, target, deadline_ms };
+    let stocked = json!({"gli": {"C": [{"ID": 0}]}, "gui": {"I": [[607, 50]]}});
+    automation
+        .observe(&store, "ventrilo", &format!("%xt%adi%1%0%{stocked}%"))
+        .await;
+    assert!(matches!(automation.phase, AutomationPhase::ReadyCra { lord_id: 0, .. }));
+}
+
+#[tokio::test]
+async fn every_attack_details_reply_leaves_a_durable_stock_record() {
+    let store = tower_store(0).await;
+    let mut automation = Automation::new();
+    let AutomationPhase::AwaitAdi { mut task, target, deadline_ms } = awaiting_rbc_info().phase
+    else {
+        unreachable!()
+    };
+    task.payload = json!([{"L": {"T": [[-1, 0]], "U": [[607, 50], [-1, 0]]}}]);
+    automation.phase = AutomationPhase::AwaitAdi { task, target, deadline_ms };
+    let reply = json!({"SCID": 16366514, "gli": {"C": [{"ID": 0}]},
+        "gui": {"I": [[607, 21459], [5, 25000]], "TU": [[607, 853]]}});
+    automation
+        .observe(&store, "Ventrilo", &format!("%xt%adi%1%0%{reply}%"))
+        .await;
+    // Only the unit the attack uses is kept, under the canonical account id.
+    let samples = store.recent_stock_samples("ventrilo", 10).await.unwrap();
+    assert_eq!(samples.len(), 1);
+    assert_eq!(
+        (samples[0].castle_id, samples[0].unit_id, samples[0].home, samples[0].out),
+        (16366514, 607, 21459, 853)
+    );
+    assert!(automation.status().1.contains("unit 607: 21,459 home, 853 out"), "{}", automation.status().1);
+}
+
+#[tokio::test]
+async fn an_unexplained_cra_refusal_stops_the_mode_instead_of_trying_the_next_tower() {
+    let (store, tasks) = two_section_store().await;
+    assert!(store.account_mode_running("ventrilo").await.unwrap());
+    let mut automation = Automation::new();
+    for status in ["101", "313", "5"] {
+        store
+            .subscribe_account_mode("ventrilo", tasks[0].mode_id, true, now_ms())
+            .await
+            .unwrap();
+        automation.phase = AutomationPhase::AwaitCra {
+            task: tasks[0].clone(),
+            target: tower(),
+            lord_id: tasks[0].commander_lids[0],
+            deadline_ms: now_ms() + REQUEST_TIMEOUT_MS,
+        };
+        automation
+            .observe(&store, "ventrilo", &format!("%xt%cra%1%{status}%null%"))
+            .await;
+        assert!(!store.account_mode_running("ventrilo").await.unwrap(), "status {status}");
+        assert!(automation.detail.starts_with("STOPPED"), "{}", automation.detail);
+        let events = store.recent_events("ventrilo", 5).await.unwrap();
+        assert_eq!(events[0].kind, "attack.stopped", "status {status}");
+        // The reason survives the mode being off.
+        automation.phase = AutomationPhase::Idle { due_ms: 0 };
+        automation
+            .next_packet(&store, "ventrilo", US1_SERVER_HEADER)
+            .await
+            .unwrap();
+        assert!(automation.detail.starts_with("STOPPED"), "{}", automation.detail);
+    }
+    // Refusals about the tower or the commander are still routine.
+    for status in ["95", "93", "256"] {
+        store
+            .subscribe_account_mode("ventrilo", tasks[0].mode_id, true, now_ms())
+            .await
+            .unwrap();
+        automation.phase = AutomationPhase::AwaitCra {
+            task: tasks[0].clone(),
+            target: tower(),
+            lord_id: tasks[0].commander_lids[0],
+            deadline_ms: now_ms() + REQUEST_TIMEOUT_MS,
+        };
+        automation
+            .observe(&store, "ventrilo", &format!("%xt%cra%1%{status}%null%"))
+            .await;
+        assert!(store.account_mode_running("ventrilo").await.unwrap(), "status {status}");
+    }
 }
 
 #[tokio::test]
@@ -320,7 +449,7 @@ async fn a_missing_tile_read_times_out_without_counting_as_an_operational_error(
 }
 
 /// Two tasks, 17 + 18 commanders, one tower ready for the first task only.
-async fn lending_store() -> (Store, Vec<ActiveModeTask>) {
+async fn two_section_store() -> (Store, Vec<ActiveModeTask>) {
     let store = Store::open("sqlite::memory:").await.unwrap();
     store
         .upsert_account_profile("ventrilo", "Ventrilo", US1_ENDPOINT, US1_SERVER_HEADER, 1)
@@ -389,67 +518,68 @@ async fn send_everyone_out(store: &Store, lids: &[i64]) {
 }
 
 #[tokio::test]
-async fn a_task_with_work_borrows_commanders_from_a_task_with_none() {
-    let (store, tasks) = lending_store().await;
-    // Every sand-61 commander is out, but the kunai task has no tower ready
-    // (none in its range), so its commanders are idle.
-    send_everyone_out(&store, &tasks[0].commander_lids).await;
-    let mut automation = Automation::new();
-    automation
-        .next_packet(&store, "ventrilo", US1_SERVER_HEADER)
-        .await
-        .unwrap();
-    let AutomationPhase::AwaitMap { task, target, .. } = &automation.phase else {
-        panic!("expected the tower to be taken: {} / {}", automation.status().0, automation.detail);
+async fn sections_map_to_the_scheduler_commander_table_exactly() {
+    // The visible commander numbers are 1-based positions in this table; the
+    // server LIDs skip 1, 4, 5, 12-15 and 19, so the two never line up.
+    let (_, tasks) = two_section_store().await;
+    let human = |lid: i64| {
+        hunt::USABLE_COMMANDER_LIDS
+            .iter()
+            .position(|usable| *usable == lid)
+            .map(|index| index + 1)
+            .unwrap()
     };
-    assert_eq!((target.x, target.y), (600, 610));
-    assert_eq!(task.task_id, tasks[0].task_id);
-    assert!(
-        !task.commander_lids.is_empty()
-            && task.commander_lids.iter().all(|lid| tasks[1].commander_lids.contains(lid)),
-        "borrowed from the other allocation: {:?}",
-        task.commander_lids
-    );
+    let crossbow = tasks[0].commander_lids.iter().map(|lid| human(*lid)).collect::<Vec<_>>();
+    assert_eq!(crossbow, (1..=17).collect::<Vec<_>>());
+    assert_eq!(tasks[0].commander_lids[16], 24, "human 17 is LID 24");
+    // Human 29 is LID 36: it belongs to the second section, never the first.
+    assert_eq!(hunt::USABLE_COMMANDER_LIDS[28], 36);
+    assert!(tasks[1].commander_lids.contains(&36));
+    assert!(!tasks[0].commander_lids.contains(&36));
 }
 
 #[tokio::test]
-async fn a_lender_with_a_tower_ready_keeps_its_commanders() {
-    let (store, tasks) = lending_store().await;
-    store
-        .upsert_rbc_targets(
-            "ventrilo",
-            &[empire_core::account::RbcTarget {
-                kingdom_id: 1,
-                x: 601,
-                y: 611,
-                level: Some(43),
-                cooldown_remaining_s: 0,
-            }],
-            now_ms(),
-        )
-        .await
-        .unwrap();
+async fn an_idle_section_is_never_lent_to_a_busy_one() {
+    // Every crossbow commander is out and a level-61 tower is ready; the other
+    // section's commanders are all home. The tower must wait: sending it under
+    // a commander reserved for the other section is exactly what was wrong.
+    let (store, tasks) = two_section_store().await;
     send_everyone_out(&store, &tasks[0].commander_lids).await;
     let mut automation = Automation::new();
-    automation.cursor = 0;
+    let packet = automation
+        .next_packet(&store, "ventrilo", US1_SERVER_HEADER)
+        .await
+        .unwrap();
+    assert!(packet.is_none(), "nothing may be sent");
+    assert!(
+        matches!(automation.phase, AutomationPhase::Idle { .. }),
+        "{}",
+        automation.status().0
+    );
+    assert!(automation.detail.contains("tower ready, next commander in"), "{}", automation.detail);
+}
+
+#[tokio::test]
+async fn a_task_only_ever_selects_its_own_commanders() {
+    let (store, tasks) = two_section_store().await;
+    let mut automation = Automation::new();
     automation
         .next_packet(&store, "ventrilo", US1_SERVER_HEADER)
         .await
         .unwrap();
-    // The kunai task is the only one that can act, with its own commanders.
     let AutomationPhase::AwaitMap { task, .. } = &automation.phase else {
-        panic!("expected the kunai tower to be taken");
+        panic!("expected the sand tower to be taken: {}", automation.detail);
     };
-    assert_eq!(task.task_id, tasks[1].task_id);
-    assert_eq!(task.commander_lids, tasks[1].commander_lids);
+    assert_eq!(task.task_id, tasks[0].task_id);
+    assert_eq!(task.commander_lids, tasks[0].commander_lids);
 }
 
 #[tokio::test]
 async fn when_nothing_can_run_the_scheduler_sleeps_until_the_first_blocker_clears() {
-    let (lending, tasks) = lending_store().await;
+    let (sections, tasks) = two_section_store().await;
     // Make the sand tower cool for twenty minutes and send everything out for
     // ten: the commanders are the first thing to come back.
-    lending
+    sections
         .refresh_rbc_cooldowns(
             "ventrilo",
             &[empire_core::account::RbcTarget {
@@ -465,11 +595,11 @@ async fn when_nothing_can_run_the_scheduler_sleeps_until_the_first_blocker_clear
         .unwrap();
     let mut everyone = tasks[0].commander_lids.clone();
     everyone.extend(&tasks[1].commander_lids);
-    send_everyone_out(&lending, &everyone).await;
+    send_everyone_out(&sections, &everyone).await;
     let mut automation = Automation::new();
     let before = now_ms();
     let packet = automation
-        .next_packet(&lending, "ventrilo", US1_SERVER_HEADER)
+        .next_packet(&sections, "ventrilo", US1_SERVER_HEADER)
         .await
         .unwrap();
     assert!(packet.is_none());

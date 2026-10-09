@@ -86,6 +86,10 @@ output, .connection-result, .recruit-estimate { color: var(--ink-3); font-size: 
 .activation-card h1 { font-size: 40px; margin: 6px 0 0; }
 .activation-copy { color: var(--ink-2); }
 #licence-form { display: grid; gap: 14px; margin-top: 20px; }
+.licence-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; }
+.licence-list li { display: grid; gap: 2px; padding: 10px 12px; border: 1px solid var(--line, rgba(255,255,255,.12)); border-radius: 8px; font-size: 13px; }
+.licence-list li b { font-weight: 600; }
+.licence-list li span { color: var(--ink-2); }
 
 /* ---- Shell + sidebar: narrow, text-led; active item = vertical hairline - */
 .shell { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }

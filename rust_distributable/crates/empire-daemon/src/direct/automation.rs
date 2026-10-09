@@ -60,6 +60,12 @@ pub(super) struct Automation {
     /// When anything last arrived from the server. A request that times out
     /// while the whole connection is silent says nothing about its target.
     pub(super) last_inbound_ms: i64,
+    /// Why attacks were halted on purpose, kept so the status line still says so
+    /// after the mode has been switched off.
+    pub(super) stop_reason: Option<String>,
+    /// Latest stock line for the main unit of the running attack, see
+    /// [`format_stock_note`].
+    pub(super) stock_note: Option<String>,
 }
 
 pub(super) fn attack_info_kind(task: &ActiveModeTask) -> hunt::AttackInfoKind {
@@ -118,11 +124,58 @@ async fn release_unattacked(
     };
 }
 
+/// Count a routine event in the hourly summary. Telemetry must never stop an
+/// attack, so a failed write is dropped.
+pub(super) async fn count_event(store: &Store, account_id: &str, kind: &str, detail: &str) {
+    let _ = store.bump_event(account_id, kind, detail, now_ms()).await;
+}
+
+/// Keep an important event as its own row.
+pub(super) async fn log_event(store: &Store, account_id: &str, kind: &str, detail: &str) {
+    let _ = store.record_event(account_id, kind, detail, now_ms()).await;
+}
+
+fn thousands(value: i64) -> String {
+    let digits = value.abs().to_string();
+    let mut out = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    if value < 0 { format!("-{out}") } else { out }
+}
+
+/// One line for the status bar: how much of the main unit is left and how fast
+/// it is going. Shown permanently so a run heading for empty is visible hours
+/// before the first refusal.
+fn format_stock_note(unit: i64, forecast: &StockForecast) -> String {
+    let mut note = format!(
+        "unit {unit}: {} home, {} out",
+        thousands(forecast.home),
+        thousands(forecast.out)
+    );
+    if let Some(hours) = forecast.hours_left {
+        note.push_str(&format!(
+            ", draining {}/h, about {hours:.1}h left{}",
+            thousands(forecast.drain_per_hour.round() as i64),
+            if hours < 3.0 { " - LOW, recruit now" } else { "" }
+        ));
+    }
+    note
+}
+
 /// Provisional hold written the moment a CRA leaves, before the server has said
 /// anything. It closes the window in which a commander whose attack is in flight
 /// still looks free; the acknowledgement replaces it with the real travel time.
 const PENDING_COMMANDER_HOLD_MS: i64 = 5 * 60 * 1_000;
 /// A refreshed tower the server still reports as ready is not trusted for long.
+/// CRA refusals that are about the tower or the commander, not about us. Any
+/// other status (101 and 313 mean the army was not there) stops the mode: the
+/// server locked this account for 24 h after three of them in 40 s.
+const BENIGN_CRA_STATUSES: [&str; 3] = ["95", "93", "256"];
+
 /// The server talks every few seconds on a live session. Past this much quiet a
 /// timed-out request is blamed on the link, not on the tower it was about.
 const LINK_SILENCE_MS: i64 = 25_000;
@@ -140,6 +193,8 @@ impl Automation {
             operational_errors: VecDeque::new(),
             safety_pause_until_ms: 0,
             last_inbound_ms: now_ms(),
+            stop_reason: None,
+            stock_note: None,
         }
     }
 
@@ -182,7 +237,11 @@ impl Automation {
             AutomationPhase::ReadyCra { .. } => "pacing_attack",
             AutomationPhase::AwaitCra { .. } => "awaiting_attack_ack",
         };
-        (state, self.detail.clone())
+        let detail = match &self.stock_note {
+            Some(note) => format!("{} | {note}", self.detail),
+            None => self.detail.clone(),
+        };
+        (state, detail)
     }
 
     pub(super) fn holds_transport(&self) -> bool {
@@ -244,6 +303,7 @@ impl Automation {
                     // stays leased and its commander stays reserved.
                     _ => {}
                 }
+                count_event(store, account_id, "request_timeout_link_silent", "request timed out while the link was silent").await;
                 self.detail = "Connection to the game is silent; waiting for it to come back".to_owned();
                 return Ok(None);
             }
@@ -274,6 +334,7 @@ impl Automation {
                 return Ok(None);
             }
             AutomationPhase::AwaitAdi { task, target, deadline_ms, .. } if now >= deadline_ms => {
+                count_event(store, account_id, "timeout_adi", "attack details never answered").await;
                 // If ADI times out, it often means the target is on cooldown (e.g. towers).
                 // Quarantine the target for an hour so we don't keep hitting it.
                 if task.target_kind == "fortress" {
@@ -290,6 +351,7 @@ impl Automation {
                 return Ok(None);
             }
             AutomationPhase::AwaitCra { task, target, deadline_ms, .. } if now >= deadline_ms => {
+                count_event(store, account_id, "timeout_cra", "attack never acknowledged").await;
                 if task.target_kind == "fortress" {
                     let _ = store.defer_fortress_target(account_id, &target, now + 3600_000).await;
                 } else if target.kingdom_id == 10 {
@@ -486,12 +548,16 @@ impl Automation {
         }
         let tasks = store.active_mode_tasks(account_id).await?;
         if tasks.is_empty() {
-            self.detail = "No running attack tasks for this account".to_owned();
+            self.detail = self
+                .stop_reason
+                .clone()
+                .unwrap_or_else(|| "No running attack tasks for this account".to_owned());
             self.phase = AutomationPhase::Idle {
                 due_ms: now + 2_000,
             };
             return Ok(None);
         }
+        self.stop_reason = None;
         let states = store.commander_states(account_id).await?;
         let rotated = (0..tasks.len())
             .map(|offset| (self.cursor + offset) % tasks.len())
@@ -600,8 +666,7 @@ impl Automation {
             .filter(|index| tasks[*index].target_kind != "fortress")
         {
             let task = &tasks[index];
-            let pool = free_commanders(&task.commander_lids, &states, now);
-            if pool.is_empty() {
+            if free_commanders(&task.commander_lids, &states, now).is_empty() {
                 continue;
             }
             if let Some(target) = store
@@ -759,6 +824,29 @@ impl Automation {
                 };
                 let _ = store.set_commander_state(&state, now).await;
             }
+            if rejected_cra && !BENIGN_CRA_STATUSES.contains(&status) {
+                if let AutomationPhase::AwaitCra { task, target, .. } = &self.phase {
+                    release_unattacked(store, account_id, task, target).await;
+                }
+                let _ = store.disable_account_automation(account_id).await;
+                let reason = format!(
+                    "STOPPED: the server refused an attack with status {status}. Attacks are off \
+                     until you start the mode again; check the castle's troops first."
+                );
+                warn!(%account_id, %status, "attack refused for an unexplained reason; mode stopped");
+                log_event(store, account_id, "attack.stopped", &reason).await;
+                self.stop_reason = Some(reason.clone());
+                self.detail = reason;
+                self.phase = AutomationPhase::Idle { due_ms: now + 2_000 };
+                return;
+            }
+            count_event(
+                store,
+                account_id,
+                &format!("{}_refused_{status}", packet.command),
+                "routine refusal",
+            )
+            .await;
             self.detail = format!(
                 "{} rejected with status {status}; retrying after backoff",
                 packet.command
@@ -911,6 +999,50 @@ impl Automation {
                     };
                     return;
                 }
+                // Never send an army the castle cannot supply. The reply says
+                // exactly what is at home; the server answers a short army with
+                // 101/313 and repeated ones get the account locked.
+                let stock = hunt::home_inventory(&packet.payload);
+                if !stock.is_empty() {
+                    // Keep the figure that explains a run: what this attack uses,
+                    // at home and out, per castle. See docs/architecture/database.md.
+                    let castle_id = packet.payload.get("SCID").and_then(Value::as_i64).unwrap_or(0);
+                    let out = hunt::units_out(&packet.payload);
+                    let used = hunt::army_troops(&task.payload);
+                    let rows = used
+                        .keys()
+                        .map(|unit| {
+                            (
+                                *unit,
+                                stock.get(unit).copied().unwrap_or(0),
+                                out.get(unit).copied().unwrap_or(0),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let _ = store.record_stock_sample(account_id, castle_id, &rows, now).await;
+                    if let Some((unit, _)) = used.iter().max_by_key(|(_, count)| **count) {
+                        self.stock_note = store
+                            .stock_forecast(account_id, castle_id, *unit, now)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|forecast| format_stock_note(*unit, &forecast));
+                    }
+                    let short = hunt::army_shortfall(&task.payload, &stock);
+                    if !short.is_empty() {
+                        release_unattacked(store, account_id, &task, &target).await;
+                        let detail = short
+                            .iter()
+                            .map(|(unit, need, have)| format!("unit {unit} need {need} have {have}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        count_event(store, account_id, "army_short", &detail).await;
+                        self.detail = format!("Waiting for troops to return: {detail}");
+                        let wait_ms = self.rng.uniform(30_000.0, 60_000.0) as i64;
+                        self.phase = AutomationPhase::Idle { due_ms: now + wait_ms };
+                        return;
+                    }
+                }
                 let offered = hunt::available_commanders(&packet.payload);
                 let states = store.commander_states(account_id).await.unwrap_or_default();
                 let busy = states
@@ -999,6 +1131,9 @@ impl Automation {
                     target_key: Some(format!("{}:{}:{}", target.kingdom_id, target.x, target.y)),
                 };
                 let _ = store.record_march(&march).await;
+                let _ = store
+                    .set_march_army(account_id, march_id, &hunt::army_troops(&task.payload))
+                    .await;
                 let _ = store.set_commander_state(&state, now).await;
                 if task.target_kind == "fortress" {
                     let outbound_s = travel.unwrap_or(300).max(0);

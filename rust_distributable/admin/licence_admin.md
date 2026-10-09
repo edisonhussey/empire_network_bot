@@ -87,3 +87,57 @@ revision, and a renewal that shortens the installed licence.
 - Fully offline software can still be binary-patched by a determined attacker,
   and a user with filesystem control can replace local state. A future online
   activation service and trusted timestamp can raise that barrier further.
+
+## One licence per game account
+
+Each game account needs its own licence, with its own `--license-id`. Several can be
+installed side by side; adding a token with a new id never replaces the others.
+
+1. Have the account log in once. Without a licence it is refused, and the refusal
+   records exactly what to issue for: the window shows
+   `server WORLD2, player N, main castle (X, Y)`, and the same line is in the
+   database (`event_log`, kind `licence.needed`).
+2. Issue a stage-0 token for those values:
+
+   ```sh
+   cargo run -q -p empire-license-admin -- issue \
+     --private admin/master_key.txt \
+     --license-id pingpoko-stage0 \
+     --subject Pingpoko \
+     --server WORLD2 \
+     --bootstrap-x X \
+     --bootstrap-y Y \
+     --days 30 \
+     --output admin/pingpoko-stage0.token
+   ```
+3. Paste it in **Add credits / update plan**. It stays "unactivated" until that account
+   logs in; the first login with a matching server and main castle binds it to the
+   player id for good.
+
+The server name must be `US1` or `WORLD2` (the endpoints the app trusts). The main
+castle is the one in the base kingdom (kingdom 0, the player's first castle), not the
+Sands castle.
+
+Renewing is the same command with the account's existing `--license-id`, a higher
+`--revision`, and a later expiry. Each licence expires on its own.
+
+## Issued tokens (8 Oct)
+
+Both are 30-day, pro tier, default features, signed with `admin/master_key.txt`.
+
+| File | Licence id | Server | Main castle | Revision | Use |
+| --- | --- | --- | --- | ---: | --- |
+| `admin/ventrilo-stage0-30-day.token` | `ventrilo-stage0` | US1 | 509, 405 | 2 | Renewal of the installed licence (it expired 8 Oct 09:27). Paste into **Add credits / update plan**. |
+| `admin/pingpoko-stage0-30-day.token` | `pingpoko-stage0` | WORLD2 | 552, 522 | 1 | New licence for Pingpoko. Binds the first time that account logs in. |
+
+Pingpoko's main castle is "poole" at 552, 522 in kingdom 0 (confirmed by the owner;
+also seen in the 16 Sep capture, player 411818). Its Sands castle at 722, 533 is not
+the main castle. If the account's main castle has moved since, the first login is
+refused with the real coordinates in the message and in `event_log`
+(`licence.needed`); reissue with those.
+
+`admin/*.token` is git-ignored.
+
+Install order matters: use a build whose `/v1/health` reports `api_version` 44 or
+later before adding a second account's token. Older builds keep a single licence
+and a new token would replace the installed one.

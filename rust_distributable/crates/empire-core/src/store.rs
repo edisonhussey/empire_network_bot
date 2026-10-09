@@ -18,6 +18,7 @@ mod recruitment;
 mod schema;
 mod state;
 mod storage;
+mod telemetry;
 
 #[cfg(test)]
 mod tests;
@@ -36,6 +37,10 @@ pub use recruitment::{
 pub use schema::SCHEMA_VERSION;
 pub use state::{CastleUnit, NavigationState, RecruitCastleState};
 pub use storage::{PruneOutcome, StorageReport, TableFootprint};
+pub use telemetry::{
+    EVENT_RETENTION_MS, EventRecord, STOCK_SAMPLE_INTERVAL_MS, STOCK_SAMPLE_RETENTION_MS,
+    StockForecast, StockSample,
+};
 
 /// The one true form of an account id.
 ///
@@ -1532,44 +1537,48 @@ impl Store {
         Ok(accounts)
     }
 
-    pub async fn licence(&self) -> Result<Option<StoredLicence>, sqlx::Error> {
-        let row = sqlx::query(
+    /// Every installed licence, one per game account.
+    pub async fn licences(&self) -> Result<Vec<StoredLicence>, sqlx::Error> {
+        let rows = sqlx::query(
             "SELECT token, license_id, subject, revision, expires_at, highest_seen_at
-             FROM licence_state WHERE singleton = 1",
+             FROM licence ORDER BY license_id",
         )
-        .fetch_optional(&self.pool)
+        .fetch_all(&self.pool)
         .await?;
-        Ok(row.map(|row| StoredLicence {
-            token: row.get("token"),
-            license_id: row.get("license_id"),
-            subject: row.get("subject"),
-            revision: row.get("revision"),
-            expires_at: row.get("expires_at"),
-            highest_seen_at: row.get("highest_seen_at"),
-        }))
+        Ok(rows
+            .into_iter()
+            .map(|row| StoredLicence {
+                token: row.get("token"),
+                license_id: row.get("license_id"),
+                subject: row.get("subject"),
+                revision: row.get("revision"),
+                expires_at: row.get("expires_at"),
+                highest_seen_at: row.get("highest_seen_at"),
+            })
+            .collect())
     }
 
+    /// Add a licence, or renew the one with the same `license_id`. Other
+    /// licences are untouched.
     pub async fn save_licence(
         &self,
         licence: &StoredLicence,
         now_ms: i64,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO licence_state (
-                singleton, token, license_id, subject, revision, expires_at,
-                highest_seen_at, updated_at_ms
-             ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(singleton) DO UPDATE SET
+            "INSERT INTO licence (
+                license_id, token, subject, revision, expires_at, highest_seen_at, updated_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(license_id) DO UPDATE SET
                 token = excluded.token,
-                license_id = excluded.license_id,
                 subject = excluded.subject,
                 revision = excluded.revision,
                 expires_at = excluded.expires_at,
-                highest_seen_at = MAX(licence_state.highest_seen_at, excluded.highest_seen_at),
+                highest_seen_at = MAX(licence.highest_seen_at, excluded.highest_seen_at),
                 updated_at_ms = excluded.updated_at_ms",
         )
-        .bind(&licence.token)
         .bind(&licence.license_id)
+        .bind(&licence.token)
         .bind(&licence.subject)
         .bind(licence.revision)
         .bind(licence.expires_at)
@@ -1580,11 +1589,12 @@ impl Store {
         Ok(())
     }
 
+    /// Remember the latest clock reading for every licence, so winding the system
+    /// clock back cannot revive an expired one.
     pub async fn advance_highest_seen(&self, now: i64, now_ms: i64) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "UPDATE licence_state
-             SET highest_seen_at = MAX(highest_seen_at, ?), updated_at_ms = ?
-             WHERE singleton = 1",
+            "UPDATE licence
+             SET highest_seen_at = MAX(highest_seen_at, ?), updated_at_ms = ?",
         )
         .bind(now)
         .bind(now_ms)
@@ -1604,12 +1614,33 @@ impl Store {
         .bind(license_id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|row| LicenceActivation {
-            license_id: row.get("license_id"),
-            server: row.get("server"),
-            player_id: row.get("player_id"),
-            activated_at: row.get("activated_at"),
-        }))
+        Ok(row.map(activation_from_row))
+    }
+
+    /// The licence already bound to this game account, if any.
+    pub async fn licence_activation_for_player(
+        &self,
+        server: &str,
+        player_id: i64,
+    ) -> Result<Option<LicenceActivation>, sqlx::Error> {
+        let row = sqlx::query(
+            "SELECT license_id, server, player_id, activated_at
+             FROM licence_activation WHERE server = ? AND player_id = ?",
+        )
+        .bind(server)
+        .bind(player_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(activation_from_row))
+    }
+
+    pub async fn licence_activations(&self) -> Result<Vec<LicenceActivation>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT license_id, server, player_id, activated_at FROM licence_activation",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(activation_from_row).collect())
     }
 
     /// First binding is immutable. Renewals reuse the same licence id and
@@ -1675,19 +1706,34 @@ impl Store {
         command: Option<&str>,
         payload: &Value,
     ) -> Result<i64, sqlx::Error> {
+        self.record_message_for(None, observed_at_ms, direction, command, payload)
+            .await
+    }
+
+    /// Like [`Self::record_message`], tagging the packet with the account whose
+    /// session it belongs to, so captures from two accounts can be told apart.
+    pub async fn record_message_for(
+        &self,
+        account_id: Option<&str>,
+        observed_at_ms: i64,
+        direction: Direction,
+        command: Option<&str>,
+        payload: &Value,
+    ) -> Result<i64, sqlx::Error> {
         let direction_text = serde_json::to_value(&direction)
             .unwrap()
             .as_str()
             .unwrap()
             .to_owned();
         let result = sqlx::query(
-            "INSERT INTO network_message (observed_at_ms, direction, command, payload_json)
-             VALUES (?, ?, ?, ?)",
+            "INSERT INTO network_message (observed_at_ms, direction, command, payload_json, account_id)
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(observed_at_ms)
         .bind(direction_text)
         .bind(command)
         .bind(payload.to_string())
+        .bind(account_id.map(canonical_account_id))
         .execute(&self.pool)
         .await?;
         sqlx::query(
@@ -1738,4 +1784,13 @@ fn server_free_at_ms(target: &RbcTarget, observed_at_ms: i64) -> i64 {
     observed_at_ms
         .saturating_add(target.cooldown_remaining_s.saturating_mul(1_000))
         .saturating_add(2_000)
+}
+
+fn activation_from_row(row: sqlx::sqlite::SqliteRow) -> LicenceActivation {
+    LicenceActivation {
+        license_id: row.get("license_id"),
+        server: row.get("server"),
+        player_id: row.get("player_id"),
+        activated_at: row.get("activated_at"),
+    }
 }

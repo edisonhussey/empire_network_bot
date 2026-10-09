@@ -39,7 +39,7 @@ use empire_core::{
     store::{
         ActiveModeTask, ActiveRecruitment, COMMANDER_AVAILABLE, COMMANDER_OUTBOUND, CommanderState,
         HUNT_HEARTBEAT_KEY, MARCH_SENT, MarchRecord, NavigationState, RecruitCastleState,
-        ReservedTarget, Store,
+        ReservedTarget, StockForecast, Store,
     },
 };
 use futures_util::{SinkExt, StreamExt};
@@ -204,6 +204,37 @@ impl std::fmt::Display for ConnectionLost {
 
 impl std::error::Error for ConnectionLost {}
 
+/// The game refused the login itself. Final: retrying a refused login does not
+/// help, and against a locked account (status 27) it only piles up attempts that
+/// look like guessing. `locked_until_ms` is the server's own expiry.
+#[derive(Debug)]
+struct LoginRejected {
+    status: String,
+    locked_until_ms: Option<i64>,
+}
+
+impl std::fmt::Display for LoginRejected {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "the game refused the login (status {})", self.status)?;
+        if let Some(until) = self.locked_until_ms {
+            let remaining = (until - now_ms()).max(0) / 1_000;
+            write!(
+                formatter,
+                ": account locked, about {}h {:02}m remaining. Not retrying",
+                remaining / 3_600,
+                remaining % 3_600 / 60
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for LoginRejected {}
+
+fn login_lock_key(account_id: &str) -> String {
+    format!("login.locked_until_ms.{account_id}")
+}
+
 fn connection_was_lost(error: &anyhow::Error) -> bool {
     error.downcast_ref::<ConnectionLost>().is_some()
         || error.downcast_ref::<tokio_tungstenite::tungstenite::Error>().is_some()
@@ -214,15 +245,23 @@ fn connection_was_lost(error: &anyhow::Error) -> bool {
 /// noticed yet. (After a Wi-Fi address change the socket took a minute and a
 /// half to report a reset, and after a silent drop it can take far longer.)
 const SERVER_SILENCE_LIMIT: Duration = Duration::from_secs(90);
-/// Keep trying to get back for this long before declaring the session over.
-const RECONNECT_GIVE_UP: Duration = Duration::from_secs(30 * 60);
 /// A session shorter than this did not really come back, so it does not reset
-/// the give-up clock. It also stops us fighting something that keeps kicking us.
+/// the retry budget. It also stops us fighting something that keeps kicking us.
 const STABLE_SESSION: Duration = Duration::from_secs(2 * 60);
+/// Reconnect policy: exactly two retries, about a minute after the loss and then
+/// about five minutes after that, each with +/-20 % random jitter. After the
+/// second the session is over and the operator decides. More than that only adds
+/// logins, and a login is the one request a server reads as suspicious.
+const RECONNECT_BASE_SECONDS: [f64; 2] = [60.0, 300.0];
+const RECONNECT_JITTER: f64 = 0.2;
 
-fn reconnect_delay(attempt: u32, rng: &mut Rng) -> Duration {
-    let base = 5.0 * 2f64.powi(attempt.saturating_sub(1).min(4) as i32);
-    Duration::from_secs_f64(base.min(60.0) + rng.uniform(0.0, 3.0))
+/// Delay before retry number `attempt` (1-based), or `None` when the budget is
+/// spent.
+fn reconnect_delay(attempt: u32, rng: &mut Rng) -> Option<Duration> {
+    let base = *RECONNECT_BASE_SECONDS.get(attempt.checked_sub(1)? as usize)?;
+    Some(Duration::from_secs_f64(
+        base * (1.0 + rng.uniform(-RECONNECT_JITTER, RECONNECT_JITTER)),
+    ))
 }
 
 pub async fn run(
@@ -233,13 +272,15 @@ pub async fn run(
     licence: LicenceGate,
 ) {
     let endpoint = request.endpoint.clone();
-    let _account_id = request.credentials.player_name.trim().to_ascii_lowercase();
+    let account_id = request.credentials.player_name.trim().to_ascii_lowercase();
     status.write().await.endpoint = Some(endpoint.clone());
     let mut attempt_request = request;
     let mut rng = Rng::from_entropy();
-    let mut failing_since: Option<tokio::time::Instant> = None;
     let mut attempt = 0_u32;
     let final_error = loop {
+        if attempt > 0 {
+            log_event(&store, &account_id, "connection.retry", &format!("retry {attempt}")).await;
+        }
         let result = run_inner(attempt_request.clone(), &store, &active_transport, &status, &licence).await;
         *active_transport.write().await = None;
         // The session's own bookkeeping says how far this attempt got and how
@@ -258,31 +299,44 @@ pub async fn run(
         };
         let error = match result {
             Err(error) if connection_was_lost(&error) => error,
-            // A session that never got going and then closed cleanly, or any
-            // other failure, is not something a retry would fix.
-            Err(error) => break Some(error),
-            Ok(()) => break None,
+            // A refused login, a licence problem, or any other failure is not
+            // something a retry would fix.
+            Err(error) => {
+                log_event(&store, &account_id, "connection.failed", &format!("{error:#}")).await;
+                break Some(error);
+            }
+            Ok(()) => {
+                log_event(&store, &account_id, "connection.closed", "the server closed the connection").await;
+                break None;
+            }
         };
+        log_event(&store, &account_id, "connection.lost", &format!("{error:#}")).await;
         if reached_ready && lived.is_some_and(|lived| lived >= STABLE_SESSION) {
-            failing_since = None;
             attempt = 0;
         }
-        let started = *failing_since.get_or_insert_with(tokio::time::Instant::now);
         attempt += 1;
-        if started.elapsed() >= RECONNECT_GIVE_UP {
-            break Some(error.context("gave up reconnecting"));
-        }
-        let delay = reconnect_delay(attempt, &mut rng);
+        let Some(delay) = reconnect_delay(attempt, &mut rng) else {
+            let reason = "gave up reconnecting after 2 retries";
+            log_event(&store, &account_id, "connection.gave_up", reason).await;
+            break Some(error.context(reason));
+        };
+        log_event(
+            &store,
+            &account_id,
+            "connection.reconnect_scheduled",
+            &format!("retry {attempt} in {}s", delay.as_secs()),
+        )
+        .await;
         warn!(%endpoint, %error, attempt, delay_s = delay.as_secs(), "game connection lost; reconnecting");
         {
             let mut current = status.write().await;
             current.connected = false;
             current.connected_at_ms = None;
             current.phase = SessionPhase::Disconnected;
-            current.error = Some(error.to_string());
+            current.error = Some(format!("{error:#}"));
             current.bot_state = "reconnecting".to_owned();
             current.bot_detail = Some(format!(
-                "Connection lost; reconnecting in {}s (attempt {attempt})",
+                "Connection lost; retry {attempt} of 2 in {}s",
                 delay.as_secs()
             ));
         }
@@ -299,7 +353,9 @@ pub async fn run(
     current.connected_at_ms = None;
     if let Some(error) = final_error {
         current.phase = SessionPhase::Failed;
-        current.error = Some(error.to_string());
+        // `{:#}` keeps the whole chain, so "gave up reconnecting" cannot hide
+        // the server's actual reason.
+        current.error = Some(format!("{error:#}"));
         warn!(%endpoint, %error, "direct game session stopped");
     }
 }
@@ -313,6 +369,18 @@ async fn run_inner(
 ) -> anyhow::Result<()> {
     licence.require_bootstrap("game_network").await?;
     let account_id = request.credentials.player_name.trim().to_ascii_lowercase();
+    if let Some(until) = store
+        .app_state(&login_lock_key(&account_id))
+        .await?
+        .and_then(|value| value.as_i64())
+        .filter(|until| *until > now_ms())
+    {
+        return Err(LoginRejected {
+            status: "27".to_owned(),
+            locked_until_ms: Some(until),
+        }
+        .into());
+    }
     let reuse_existing_map =
         request.reuse_existing_map && store.account_has_targets(&account_id, 1).await?;
     store
@@ -329,6 +397,7 @@ async fn run_inner(
         .headers_mut()
         .insert(ORIGIN, "https://empire.goodgamestudios.com".parse()?);
     let (socket, _) = connect_async(websocket_request).await?;
+    log_event(store, &account_id, "connection.connected", &request.endpoint).await;
     let (mut sink, mut stream) = socket.split();
     let (injection_tx, mut injection_rx) = channel();
     *active_transport.write().await = Some(injection_tx);
@@ -385,7 +454,8 @@ async fn run_inner(
     // Only one kingdom is measured at a time, and only until its rectangle is
     // known; the fill below then walks that rectangle from the database.
     let mut fortress_discovery: Option<FortressDiscovery> = None;
-    let mut identity_verified = false;
+    // The licence this account's session runs under, chosen at login.
+    let mut session_licence: Option<String> = None;
     let mut active_scan_kingdom = None;
     let mut rbc_scan_origins =
         permanent_scan_origins(&account_id, store.owned_castles().await?.as_slice());
@@ -410,17 +480,38 @@ async fn run_inner(
                     {
                         let identity = account_identity(&packet.payload)
                             .context("authenticated GBD did not contain account identity")?;
-                        licence
-                            .bind_or_validate(
-                                trusted_server_name(
-                                    &request.endpoint,
-                                    &request.settings.server_header,
+                        let server_name = trusted_server_name(
+                            &request.endpoint,
+                            &request.settings.server_header,
+                        )
+                        .context("licence activation requires a known Goodgame world endpoint")?;
+                        // Which licence applies is decided here, once the account
+                        // is known. When none does, keep the identity so the
+                        // operator knows exactly what to have a licence issued for
+                        // (the mismatch otherwise leaves no trace of the account).
+                        let claims = match licence.bind_or_validate(server_name, &identity).await {
+                            Ok(claims) => claims,
+                            Err(error) => {
+                                log_event(
+                                    store,
+                                    &account_id,
+                                    "licence.needed",
+                                    &format!(
+                                        "server {server_name}, player {}, main castle ({}, {}): {error:#}",
+                                        identity.player_id,
+                                        identity.main_castle_x,
+                                        identity.main_castle_y
+                                    ),
                                 )
-                                .context("licence activation requires a known Goodgame world endpoint")?,
-                                &identity,
-                            )
-                            .await?;
-                        identity_verified = true;
+                                .await;
+                                return Err(error);
+                            }
+                        };
+                        session_licence = Some(claims.license_id.clone());
+                        log_event(store, &account_id, "connection.login_ok", "authenticated").await;
+                        let _ = store
+                            .set_app_state(&login_lock_key(&account_id), &json!(0), now_ms())
+                            .await;
                         info!(
                             player_id = identity.player_id,
                             castle_x = identity.main_castle_x,
@@ -528,10 +619,40 @@ async fn run_inner(
                         current.current_castle_id = navigation.current_castle_id;
                         current.map_mode = navigation.map_mode;
                     }
-                    record_text(store, Direction::ServerToClient, &text).await;
+                    record_text(store, &account_id, Direction::ServerToClient, &text).await;
                     automation.observe(store, &account_id, &text).await;
                     recruitment.observe(store, &account_id, &text).await;
                     let frames = machine.on_server_text(&text)?;
+                    if let Some(packet) = parsed_packet.as_ref()
+                        && packet.command == "lli"
+                        && let Some(status) = packet.status.as_deref().filter(|status| *status != "0")
+                    {
+                        // Remember the server's lock so no later attempt, in this
+                        // run or after a restart, tries to log in before it ends.
+                        let locked_until_ms = packet
+                            .payload
+                            .get("RS")
+                            .and_then(Value::as_i64)
+                            .filter(|seconds| *seconds > 0)
+                            .map(|seconds| now_ms().saturating_add(seconds.saturating_mul(1_000)));
+                        if let Some(until) = locked_until_ms {
+                            let _ = store
+                                .set_app_state(&login_lock_key(&account_id), &json!(until), now_ms())
+                                .await;
+                        }
+                        log_event(
+                            store,
+                            &account_id,
+                            "connection.login_rejected",
+                            &format!("status {status}, locked_until_ms {locked_until_ms:?}"),
+                        )
+                        .await;
+                        return Err(LoginRejected {
+                            status: status.to_owned(),
+                            locked_until_ms,
+                        }
+                        .into());
+                    }
                     // While a walk is running the phase shown is the walk's, not
                     // the machine's: the socket has been ready for a while. Once
                     // the walk ends the machine's own phase is mirrored again.
@@ -598,7 +719,7 @@ async fn run_inner(
                 if request.expired(now_ms()) {
                     continue;
                 }
-                record_text(store, Direction::Injected, &request.packet).await;
+                record_text(store, &account_id, Direction::Injected, &request.packet).await;
                 sink.send(Message::Text(request.packet.into())).await?;
             }
             _ = silence_check.tick() => {
@@ -616,8 +737,8 @@ async fn run_inner(
                 sink.send(Message::Text(packet.into())).await?;
             }
             _ = entitlement_check.tick() => {
-                if identity_verified {
-                    licence.require("game_network").await?;
+                if let Some(license_id) = session_licence.as_deref() {
+                    licence.require_licence(license_id, "game_network").await?;
                 } else {
                     licence.require_bootstrap("game_network").await?;
                 }

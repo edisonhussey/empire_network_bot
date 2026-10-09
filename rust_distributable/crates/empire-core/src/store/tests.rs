@@ -1572,13 +1572,13 @@ async fn wipe_all_returns_the_application_to_first_run() {
         )
         .await
         .unwrap();
-    assert!(store.licence().await.unwrap().is_some());
+    assert_eq!(store.licences().await.unwrap().len(), 1);
 
     store.wipe_all().await.unwrap();
 
     let report = store.storage_report().await.unwrap();
     assert_eq!(report.total_rows(), 0, "every data table must be empty");
-    assert!(store.licence().await.unwrap().is_none());
+    assert!(store.licences().await.unwrap().is_empty());
     assert!(store.account_summaries().await.unwrap().is_empty());
     // The schema is kept so migrations do not run again.
     assert_eq!(report.schema_version, schema::SCHEMA_VERSION);
@@ -1612,6 +1612,173 @@ fn march(task: Option<&str>, march_id: i64, lord: i64) -> MarchRecord {
         landed_at_ms: None,
         result_at_ms: None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// durable telemetry
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn stock_is_sampled_at_most_once_a_minute_but_summarised_every_time() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    // 100 attacks in ten minutes would be 100 raw rows without the rate limit.
+    for index in 0..100_i64 {
+        store
+            .record_stock_sample(
+                "Ventrilo",
+                16366514,
+                &[(607, 22_000 - index * 20, 50)],
+                NOW + index * 6_000,
+            )
+            .await
+            .unwrap();
+    }
+    let raw: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM castle_stock_sample")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(raw, 10, "one raw row per minute");
+    let (samples, min_home, max_home, last_home): (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT samples, min_home, max_home, last_home FROM castle_stock_hourly
+         WHERE account_id = 'ventrilo' AND unit_id = 607",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!((samples, min_home, max_home, last_home), (100, 20_020, 22_000, 20_020));
+}
+
+#[tokio::test]
+async fn raw_stock_expires_but_the_hourly_summary_stays_and_accounts_stay_apart() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    store.record_stock_sample("ventrilo", 1, &[(607, 100, 0)], NOW).await.unwrap();
+    store.record_stock_sample("pingpoko", 1, &[(607, 7, 0)], NOW).await.unwrap();
+    // A sample four days later prunes the old raw rows of that account only.
+    store
+        .record_stock_sample("ventrilo", 1, &[(607, 90, 0)], NOW + 4 * 24 * 3_600_000)
+        .await
+        .unwrap();
+    let raw = |account: &'static str| {
+        let store = store.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM castle_stock_sample WHERE account_id = ?",
+            )
+            .bind(account)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(raw("ventrilo").await, 1);
+    assert_eq!(raw("pingpoko").await, 1, "another account is untouched");
+    let hourly: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM castle_stock_hourly")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(hourly, 3, "the summary is never pruned");
+}
+
+#[tokio::test]
+async fn the_forecast_reports_the_net_drain_and_when_stock_runs_out() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    // Home plus out falls 1,200 an hour (20 a minute): 22,000 to 21,000 in 50 min.
+    for minute in 0..=50_i64 {
+        store
+            .record_stock_sample("ventrilo", 1, &[(607, 22_000 - minute * 20 - 50, 50)], NOW + minute * 60_000)
+            .await
+            .unwrap();
+    }
+    let forecast = store
+        .stock_forecast("ventrilo", 1, 607, NOW + 50 * 60_000)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!((forecast.drain_per_hour - 1_200.0).abs() < 1.0, "{forecast:?}");
+    let hours = forecast.hours_left.unwrap();
+    assert!((hours - 17.5).abs() < 0.2, "{hours}");
+    // Too little history to claim a rate.
+    let fresh = store.stock_forecast("ventrilo", 1, 99, NOW).await.unwrap();
+    assert!(fresh.is_none());
+}
+
+#[tokio::test]
+async fn events_are_kept_per_account_and_noisy_ones_are_only_counted() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    store.record_event("Ventrilo", "connection.lost", "reset", NOW).await.unwrap();
+    store.record_event("pingpoko", "connection.lost", "other", NOW).await.unwrap();
+    for index in 0..500 {
+        store.bump_event("ventrilo", "army_short", "unit 607 need 50 have 12", NOW + index).await.unwrap();
+    }
+    assert_eq!(store.recent_events("ventrilo", 10).await.unwrap().len(), 1);
+    let (count, last): (i64, String) = sqlx::query_as(
+        "SELECT count, last_detail FROM event_hourly WHERE account_id = 'ventrilo' AND kind = 'army_short'",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 500, "500 occurrences are one row");
+    assert!(last.contains("need 50"));
+    // Ninety days on, the old event is pruned by the next write.
+    store
+        .record_event("ventrilo", "connection.lost", "later", NOW + EVENT_RETENTION_MS + 1)
+        .await
+        .unwrap();
+    assert_eq!(store.recent_events("ventrilo", 10).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_returned_march_records_what_it_lost() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    store.record_march(&march(Some("sand"), 9100, 7)).await.unwrap();
+    store
+        .set_march_army("ventrilo", 9100, &[(607, 50)].into_iter().collect())
+        .await
+        .unwrap();
+    store
+        .set_commander_state(
+            &CommanderState {
+                account_id: "ventrilo".into(),
+                lord_id: 7,
+                status: "outbound".into(),
+                available_after_ms: NOW + 120_000,
+                march_id: Some(9100),
+                target_key: Some("1:600:610".into()),
+            },
+            NOW,
+        )
+        .await
+        .unwrap();
+    let packet = json!({"A":{"A":[[607,31]],"M":{"KID":1,"SA":[2,600,610],"TA":[12,593,613],"TT":205,"PT":0},
+        "UM":{"L":{"ID":7}},"G":[["C1",22000]],"S":1}});
+    assert!(store.apply_attack_return("ventrilo", &packet, NOW + 100_000, 7000).await.unwrap());
+    let (sent, returned, lost): (i64, i64, i64) = sqlx::query_as(
+        "SELECT troop_count, troops_returned, troops_lost FROM attack_ledger WHERE march_id = 9100",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!((sent, returned, lost), (50, 31, 19));
+}
+
+#[tokio::test]
+async fn captured_packets_are_tagged_with_their_account() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    store
+        .record_message_for(Some("Ventrilo"), NOW, Direction::ServerToClient, Some("adi"), &json!({}))
+        .await
+        .unwrap();
+    store
+        .record_message(NOW, Direction::ServerToClient, Some("adi"), &json!({}))
+        .await
+        .unwrap();
+    let accounts: Vec<Option<String>> =
+        sqlx::query_scalar("SELECT account_id FROM network_message ORDER BY sequence")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(accounts, vec![Some("ventrilo".to_owned()), None]);
 }
 
 #[tokio::test]
@@ -2064,50 +2231,6 @@ async fn an_abandoned_lease_is_released_back_to_the_pool() {
     assert!(reserve().await.is_none(), "leased");
     store.release_rbc_target("ventrilo", &target).await.unwrap();
     assert!(reserve().await.is_some(), "released");
-}
-
-#[tokio::test]
-async fn each_task_can_see_the_commanders_it_could_borrow() {
-    let store = Store::open("sqlite::memory:").await.unwrap();
-    seed_account(&store, "ventrilo").await;
-    let roster = (0..35).collect::<Vec<i64>>();
-    store
-        .replace_account_bootstrap(
-            "ventrilo",
-            &[OwnedCastle {
-                kingdom_id: 1,
-                castle_id: 100,
-                area_type: 12,
-                x: 593,
-                y: 613,
-                name: "Sands".to_owned(),
-            }],
-            &roster,
-            NOW,
-        )
-        .await
-        .unwrap();
-    let mode_id = store
-        .import_mode_bundle(&crate::planning::ventrilo_sands_bundle(), NOW)
-        .await
-        .unwrap();
-    store
-        .subscribe_account_mode("ventrilo", mode_id, true, NOW)
-        .await
-        .unwrap();
-    let tasks = store.active_mode_tasks("ventrilo").await.unwrap();
-    assert_eq!(tasks.len(), 2);
-    for (task, other) in [(&tasks[0], &tasks[1]), (&tasks[1], &tasks[0])] {
-        assert_eq!(
-            task.spare_commanders
-                .iter()
-                .map(|spare| spare.lord_id)
-                .collect::<Vec<_>>(),
-            other.commander_lids
-        );
-        assert!(task.spare_commanders.iter().all(|spare| spare.owner_task_id == other.task_id));
-        assert!(task.commander_lids.iter().all(|lid| !other.commander_lids.contains(lid)));
-    }
 }
 
 #[tokio::test]

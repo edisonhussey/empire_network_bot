@@ -327,6 +327,9 @@ impl Store {
         {
             return Ok(false);
         }
+        // What the march lost is only knowable now; keep it on the ledger row.
+        self.record_march_losses(&account_id, march_id, &hunt::returned_units(payload))
+            .await?;
         if let Some(seconds) = seconds {
             sqlx::query(
                 "UPDATE commander_state SET status = ?, available_after_ms = ?, updated_at_ms = ?

@@ -73,9 +73,44 @@ const phaseCopy = {
   loading_sands: "Scanning permanent kingdoms…", discovering_fortresses: "Finding every fortress…", sands_ready: "Setup complete", failed: "Needs attention",
 };
 
-function showActivation(canClose = false) {
+function showActivation(canClose = false, message = "") {
   activation.hidden = false;
   $("#close-activation").hidden = !canClose;
+  // Opened from inside the app, this is for adding a licence for another account,
+  // not for getting in, so say that and show what is already installed.
+  $("#activation-title").textContent = canClose ? "Add a licence" : "Enter your access token";
+  $("#activation-copy").textContent = message || (canClose
+    ? "Every game account needs its own licence. Adding one never replaces the others."
+    : "Activate OpenAuto to continue.");
+  if (canClose) renderLicenceList();
+}
+
+/// Installed licences and what each is waiting for or bound to.
+async function renderLicenceList() {
+  const list = $("#licence-list");
+  try {
+    const licence = await api("/licence");
+    const rows = licence.licences || [];
+    list.hidden = !rows.length;
+    list.replaceChildren(...rows.map((item) => {
+      const castle = item.issued_main_castle ? `, main castle ${item.issued_main_castle[0]}:${item.issued_main_castle[1]}` : "";
+      const state = !item.valid ? `unusable: ${item.reason || "invalid"}`
+        : item.stage === "activated" ? `bound to player ${item.bound_player_id} on ${item.bound_server}`
+        : `waiting for the ${item.issued_server || "?"} account${castle}`;
+      const row = document.createElement("li");
+      row.append(element("b", "", `${item.subject || item.license_id} (${item.license_id})`), element("span", "", `${state}; ${expiryLabel(item.expires_at)}`));
+      return row;
+    }));
+  } catch (_) { list.hidden = true; }
+}
+
+// A login that no installed licence covers asks for one, once per distinct
+// refusal, instead of leaving the reason in a status line nobody is reading.
+let lastLicencePrompt = "";
+function promptForMissingLicence(error) {
+  if (!error || !error.startsWith("no licence for this game account") || error === lastLicencePrompt) return;
+  lastLicencePrompt = error;
+  showActivation(true, `${error}.`);
 }
 
 function showApplication(licence) {
@@ -88,6 +123,18 @@ function showApplication(licence) {
     switchView("initialize");
     $("#direct-result").textContent = "Access accepted. Initialize the matching account to activate this installation.";
   }
+}
+
+// A licence added for another account stays unbound until that account logs in.
+// Say which account it is waiting for, since the signed server and main castle
+// are the only thing that can bind it.
+function announceWaitingLicences(licence) {
+  const waiting = (licence.licences || []).filter((item) => item.valid && item.stage === "unactivated");
+  if (!waiting.length) return;
+  const [item] = waiting;
+  const castle = item.issued_main_castle ? ` (${item.issued_main_castle[0]}, ${item.issued_main_castle[1]})` : "";
+  switchView("initialize");
+  $("#direct-result").textContent = `Licence added for ${item.subject || item.license_id}. Initialize the account on ${item.issued_server || "its server"} whose main castle is${castle} to activate it.`;
 }
 
 async function refreshLicence() {
@@ -496,10 +543,15 @@ function renderLibrary() {
   }));
   if (!library.attacks.length) attackList.append(element("p", "empty-copy", "No attacks saved yet."));
 
+  // Rebuilding the list on every library reload used to snap the choice back to
+  // the first attack (alphabetically, "crossbow rbc sand"), so a task could be
+  // saved against the wrong attack without anyone noticing. Keep the selection.
   const attackSelect = $("#task-attack");
+  const chosenAttack = attackSelect.value;
   attackSelect.replaceChildren(...library.attacks.map((attack) => {
     const option = element("option", "", attack.name); option.value = attack.profile_id; return option;
   }));
+  if (chosenAttack && library.attacks.some((attack) => attack.profile_id === chosenAttack)) attackSelect.value = chosenAttack;
 
   const taskList = $("#task-library");
   taskList.replaceChildren(...library.tasks.map((task) => {
@@ -510,7 +562,7 @@ function renderLibrary() {
     const targetLabel = subscription?.target_kind === "fortress" ? "Fortress" : (subscription?.target_kind === "berimond_camp" ? "Berimond Camp" : "Robber Baron");
     const levelLabel = (subscription?.target_kind === "fortress" || subscription?.target_kind === "berimond_camp") ? "" : (task.target_level_min === null ? "fixed target" : `levels ${task.target_level_min}–${task.target_level_max}`);
     const algorithm = subscription?.filter?.algorithm || "advanced";
-    const identity = element("div"); identity.append(element("b", "", task.name), element("small", "", `${kingdomName((library.kingdoms.find((value) => value.id === task.kingdom_id) || fallbackKingdoms.find((value) => value.id === task.kingdom_id))?.name || `Kingdom ${task.kingdom_id}`)} · ${targetLabel} ${levelLabel} · ${humanize(algorithm)} · ${priorityName(task.priority).replace("_", " ")}`));
+    const identity = element("div"); identity.append(element("b", "", task.name), element("small", "", `${kingdomName((library.kingdoms.find((value) => value.id === task.kingdom_id) || fallbackKingdoms.find((value) => value.id === task.kingdom_id))?.name || `Kingdom ${task.kingdom_id}`)} · ${targetLabel} ${levelLabel} · ${humanize(algorithm)} · ${priorityName(task.priority).replace("_", " ")} · attack: ${library.attacks.find((attack) => attack.profile_id === task.profile_id)?.name || "unknown"}`));
     const actions = element("span", "row-actions"); actions.append(copy, remove); row.append(identity, actions); return row;
   }));
   if (!library.tasks.length) taskList.append(element("p", "empty-copy", "Create an attack first, then add a task."));
@@ -1393,6 +1445,7 @@ async function refresh() {
     $("#phase").textContent = phaseCopy[direct.phase] || "Getting ready…";
     updateProgress(direct.phase);
     if (direct.error) $("#direct-result").textContent = direct.error;
+    promptForMissingLicence(direct.error);
     if (ready) { $("#initialize").disabled = false; $("#initialize").textContent = "Initialize account"; $("#direct-result").textContent = "Account connected and ready."; }
     if (currentLicence?.stage === "unactivated") {
       const licence = await api("/licence");
@@ -1446,7 +1499,7 @@ $("#attack-form").addEventListener("submit", async (event) => { event.preventDef
 $("#copy-attack").addEventListener("click", () => copyJson(attackDraft(), $("#attack-result")));
 $("#clear-attack").addEventListener("click", () => { attackWaves = Array.from({ length: 4 }, blankWave); activeWave = 0; $("#attack-name").value = ""; document.querySelectorAll("#wave-tabs button").forEach((button) => button.classList.toggle("selected", button.dataset.wave === "0")); $("#attack-result").textContent = "Attack cleared."; renderWave(); });
 
-$("#task-form").addEventListener("submit", async (event) => { event.preventDefault(); const kingdomId = Number($("#source-kid").value); const automatic = $("#use-main-castle").checked; const fortress = $("#target-kind").value === "fortress"; const destination = fortress ? { kind: "fortress", kingdom_id: kingdomId } : ($("#target-kind").value === "berimond" ? { kind: "berimond_camp", kingdom_id: kingdomId } : { kind: "rbc_level_range", kingdom_id: kingdomId, minimum: Number($("#target-level-min").value), maximum: Number($("#target-level-max").value) }); const draft = { name: $("#task-name").value.trim(), attack_profile_id: $("#task-attack").value, source: { kingdom_id: kingdomId, x: Number($("#source-x").value), y: Number($("#source-y").value) }, source_kind: automatic ? "main_castle" : "coordinate", destination, algorithm: $("#target-algorithm").value, travel: $("#travel").value, priority, commander_count: 1 }; try { await api("/plans/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(draft) }); $("#task-result").textContent = "Dynamic farming task saved."; $("#task-name").value = ""; await loadLibrary(); } catch (error) { $("#task-result").textContent = error.message; } });
+$("#task-form").addEventListener("submit", async (event) => { event.preventDefault(); const kingdomId = Number($("#source-kid").value); const automatic = $("#use-main-castle").checked; const fortress = $("#target-kind").value === "fortress"; const destination = fortress ? { kind: "fortress", kingdom_id: kingdomId } : ($("#target-kind").value === "berimond" ? { kind: "berimond_camp", kingdom_id: kingdomId } : { kind: "rbc_level_range", kingdom_id: kingdomId, minimum: Number($("#target-level-min").value), maximum: Number($("#target-level-max").value) }); const draft = { name: $("#task-name").value.trim(), attack_profile_id: $("#task-attack").value, source: { kingdom_id: kingdomId, x: Number($("#source-x").value), y: Number($("#source-y").value) }, source_kind: automatic ? "main_castle" : "coordinate", destination, algorithm: $("#target-algorithm").value, travel: $("#travel").value, priority, commander_count: 1 }; try { await api("/plans/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(draft) }); $("#task-result").textContent = `Dynamic farming task saved with attack "${$("#task-attack").selectedOptions[0]?.textContent || "?"}".`; $("#task-name").value = ""; await loadLibrary(); } catch (error) { $("#task-result").textContent = error.message; } });
 
 $("#mode-form").addEventListener("submit", async (event) => { event.preventDefault(); try { await api("/plans/modes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: $("#mode-name").value.trim(), allocations: selectedModeTasks }) }); $("#mode-result").textContent = "Attack bot saved."; selectedModeTasks = []; $("#mode-name").value = ""; await loadLibrary(); await refreshAccounts(); } catch (error) { $("#mode-result").textContent = error.message; } });
 $("#copy-mode").addEventListener("click", () => copyJson(bundleForMode($("#mode-name").value.trim(), selectedModeTasks), $("#mode-result")));
@@ -1468,7 +1521,7 @@ $("#recruit-bot-form").addEventListener("submit", async (event) => {
   catch (error) { $("#recruit-bot-result").textContent = error.message; }
 });
 
-$("#licence-form").addEventListener("submit", async (event) => { event.preventDefault(); $("#licence-result").textContent = "Checking your token…"; try { const licence = await api("/licence", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: $("#licence-token").value.trim() }) }); $("#licence-token").value = ""; showApplication(licence); if (licence.stage === "unactivated") return; await loadLibrary(); await refreshAccounts(); await refresh(); } catch (error) { $("#licence-result").textContent = error.message; } });
+$("#licence-form").addEventListener("submit", async (event) => { event.preventDefault(); $("#licence-result").textContent = "Checking your token…"; try { const licence = await api("/licence", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: $("#licence-token").value.trim() }) }); $("#licence-token").value = ""; showApplication(licence); announceWaitingLicences(licence); if (licence.stage === "unactivated") return; await loadLibrary(); await refreshAccounts(); await refresh(); } catch (error) { $("#licence-result").textContent = error.message; } });
 $("#add-credits").addEventListener("click", () => showActivation(true));
 $("#close-activation").addEventListener("click", () => { if (currentLicence?.active) activation.hidden = true; });
 $("#toggle-password").addEventListener("click", (event) => { const password = $("#password"); const showing = password.type === "text"; password.type = showing ? "password" : "text"; event.currentTarget.textContent = showing ? "Show" : "Hide"; });

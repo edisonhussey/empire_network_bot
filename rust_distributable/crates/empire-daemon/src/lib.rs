@@ -130,11 +130,22 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:47821";
 /// matching that preserves pending attacks across unrelated map messages.
 /// 39: the attack scheduler reads each tower's server-reported cooldown, re-reads
 /// a refused tower instead of parking it for an hour, sleeps until the next
-/// target or commander is actually ready, and lends idle commanders between tasks.
+/// target or commander is actually ready.
 /// 40: a lost game connection (Wi-Fi drop, address change, silent server) is
 /// detected within 90 s and reconnected with backoff instead of ending the run,
 /// and requests that time out on a silent link no longer quarantine towers.
-pub const API_VERSION: u16 = 40;
+/// 41: commander allocation is strict again. Idle commanders are no longer lent
+/// between tasks, which had sent one task's marches out under another's commanders.
+/// 42: attacks are checked against the castle's home inventory before being sent,
+/// an unexplained attack refusal stops the mode, and a refused login is final and
+/// remembered (a status 27 lock is respected across restarts).
+/// 43: durable per-account telemetry (castle stock, troops lost per attack, connection
+/// and refusal events; schema V19), a live stock/burn-rate line on the status bar,
+/// and a reconnect budget of two retries (about 1 and 5 minutes).
+/// 44: one licence per game account. Several licences can be installed, a login picks
+/// the one bound to (or issued for) that account, and an account with none is told
+/// exactly which server and main castle a licence must be issued for.
+pub const API_VERSION: u16 = 44;
 
 /// Is something already listening on the service port?
 ///

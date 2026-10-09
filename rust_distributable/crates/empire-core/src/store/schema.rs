@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 18;
+pub const SCHEMA_VERSION: i64 = 20;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -555,16 +555,108 @@ pub const V18: Migration = &[
     "ALTER TABLE rbc_target ADD COLUMN server_free_at_ms INTEGER NOT NULL DEFAULT 0",
 ];
 
+/// Durable, bounded telemetry. Every table is keyed by `account_id` so a second
+/// account's history never mixes with the first.
+///
+/// The raw packet log is capped at 200 rows, which lost the one number that
+/// explained a failed run (the castle's troop stock). This keeps the figures that
+/// matter, in a form that cannot grow without limit:
+///
+/// * `castle_stock_sample` - raw, rate-limited, pruned after 72 h.
+/// * `castle_stock_hourly` - one row per account/castle/unit/hour, kept for good.
+/// * `event_log` - rare, important events (connection, refusals, stops), 90 days.
+/// * `event_hourly` - counters for routine, noisy events, kept for good.
+/// * `attack_ledger.army_json / troops_returned / troops_lost` - what each march
+///   took and what came back.
+/// * `network_message.account_id` - which account a captured packet belongs to.
+pub const V19: Migration = &[
+    "ALTER TABLE attack_ledger ADD COLUMN army_json TEXT",
+    "ALTER TABLE attack_ledger ADD COLUMN troops_returned INTEGER",
+    "ALTER TABLE attack_ledger ADD COLUMN troops_lost INTEGER",
+    "ALTER TABLE network_message ADD COLUMN account_id TEXT",
+    "CREATE TABLE IF NOT EXISTS castle_stock_sample (
+        account_id TEXT NOT NULL,
+        castle_id INTEGER NOT NULL,
+        unit_id INTEGER NOT NULL,
+        observed_at_ms INTEGER NOT NULL,
+        home INTEGER NOT NULL,
+        out_count INTEGER NOT NULL,
+        PRIMARY KEY (account_id, castle_id, unit_id, observed_at_ms)
+    )",
+    "CREATE TABLE IF NOT EXISTS castle_stock_hourly (
+        account_id TEXT NOT NULL,
+        castle_id INTEGER NOT NULL,
+        unit_id INTEGER NOT NULL,
+        hour_ms INTEGER NOT NULL,
+        samples INTEGER NOT NULL,
+        min_home INTEGER NOT NULL,
+        max_home INTEGER NOT NULL,
+        last_home INTEGER NOT NULL,
+        last_out INTEGER NOT NULL,
+        last_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (account_id, castle_id, unit_id, hour_ms)
+    )",
+    "CREATE TABLE IF NOT EXISTS event_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id TEXT NOT NULL,
+        at_ms INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        detail TEXT NOT NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS event_log_account_idx ON event_log (account_id, at_ms)",
+    "CREATE TABLE IF NOT EXISTS event_hourly (
+        account_id TEXT NOT NULL,
+        hour_ms INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        count INTEGER NOT NULL,
+        first_at_ms INTEGER NOT NULL,
+        last_at_ms INTEGER NOT NULL,
+        last_detail TEXT NOT NULL,
+        PRIMARY KEY (account_id, hour_ms, kind)
+    )",
+];
+
+/// One licence per game account instead of one per install.
+///
+/// `licence_state` was a singleton, so a second account could never be licensed:
+/// activating another token would have replaced the first. `licence` holds any
+/// number of tokens, keyed by `license_id`; a licence is still bound permanently
+/// to a single (server, player) through `licence_activation`, and the unique index
+/// makes sure one game account is never bound by two licences. The old table is
+/// copied across and then left alone (it is no longer read or written).
+pub const V20: Migration = &[
+    "CREATE TABLE IF NOT EXISTS licence (
+        license_id TEXT PRIMARY KEY,
+        token TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        highest_seen_at INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+    )",
+    "INSERT OR IGNORE INTO licence (
+        license_id, token, subject, revision, expires_at, highest_seen_at, updated_at_ms
+     ) SELECT license_id, token, subject, revision, expires_at, highest_seen_at, updated_at_ms
+       FROM licence_state",
+    "CREATE UNIQUE INDEX IF NOT EXISTS licence_activation_player
+        ON licence_activation (server, player_id)",
+];
+
 pub const MIGRATIONS: &[Migration] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20,
 ];
 
 /// Every table that holds user data, for the storage report and full wipe.
 /// Order matters for deletion: children before parents.
 pub const DATA_TABLES: &[&str] = &[
+    "event_hourly",
+    "event_log",
+    "castle_stock_hourly",
+    "castle_stock_sample",
     "network_message",
     "app_state",
     "licence_state",
+    "licence",
     "licence_activation",
     "attack_ledger",
     "commander_state",

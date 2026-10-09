@@ -50,6 +50,6 @@ Berimond camps (`type 17`) report no cooldown.
    cooldown read.
 2. **Cooldowns are not static.** Other players hit the same towers, so the map
    read at login goes stale. The remaining value is the only way to know about
-   those hits without being refused (see [`errors.md`](errors.md), status 95).
+   those hits without being refused (see [`errors.md`](../architecture/errors.md), status 95).
 3. **A tile read is cheap.** A 13x13 window centred on one tower
    (`AX1 = x-6 ... AX2 = x+6`) returns that tower and its neighbours.

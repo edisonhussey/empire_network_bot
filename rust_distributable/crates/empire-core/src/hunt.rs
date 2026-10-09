@@ -298,6 +298,116 @@ pub fn available_commanders(adi_reply: &Value) -> Vec<i64> {
         .collect()
 }
 
+/// Units and tools the attacking castle has at home, from an `adi`/`abi` reply
+/// (`gui.I`, rows of `[id, count]`). Empty when the reply carries no inventory,
+/// in which case nothing can be checked and the caller must not pretend it did.
+pub fn home_inventory(adi_reply: &Value) -> std::collections::BTreeMap<i64, i64> {
+    adi_reply
+        .pointer("/gui/I")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            let row = row.as_array()?;
+            Some((row.first()?.as_i64()?, row.get(1)?.as_i64()?))
+        })
+        .collect()
+}
+
+/// Troops currently out on marches, from `gui.TU` of an `adi`/`abi` reply.
+pub fn units_out(adi_reply: &Value) -> std::collections::BTreeMap<i64, i64> {
+    adi_reply
+        .pointer("/gui/TU")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            let row = row.as_array()?;
+            Some((row.first()?.as_i64()?, row.get(1)?.as_i64()?))
+        })
+        .collect()
+}
+
+/// Troops (not tools) an attack payload marches, per unit id: the `U` slots only.
+pub fn army_troops(payload: &Value) -> std::collections::BTreeMap<i64, i64> {
+    let waves = payload.get("A").unwrap_or(payload);
+    let mut troops = std::collections::BTreeMap::new();
+    for wave in waves.as_array().into_iter().flatten() {
+        let Some(wave) = wave.as_object() else { continue };
+        for side in wave.values().filter_map(Value::as_object) {
+            for slot in side.get("U").and_then(Value::as_array).into_iter().flatten() {
+                let Some(slot) = slot.as_array() else { continue };
+                if let (Some(id), Some(count)) = (
+                    slot.first().and_then(Value::as_i64),
+                    slot.get(1).and_then(Value::as_i64),
+                ) && id > 0
+                    && count > 0
+                {
+                    *troops.entry(id).or_insert(0) += count;
+                }
+            }
+        }
+    }
+    troops
+}
+
+/// Units that came home, per unit id, from a `cat` payload (`A.A`).
+pub fn returned_units(cat_payload: &Value) -> std::collections::BTreeMap<i64, i64> {
+    cat_payload
+        .pointer("/A/A")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            let row = row.as_array()?;
+            Some((row.first()?.as_i64()?, row.get(1)?.as_i64()?))
+        })
+        .collect()
+}
+
+/// Total of every unit and tool an attack payload asks to march, summed over
+/// waves and flanks. Accepts the bare wave list or a `{"A": [...]}` object.
+pub fn army_requirements(payload: &Value) -> std::collections::BTreeMap<i64, i64> {
+    let waves = payload.get("A").unwrap_or(payload);
+    let mut needs = std::collections::BTreeMap::new();
+    for wave in waves.as_array().into_iter().flatten() {
+        let Some(wave) = wave.as_object() else { continue };
+        for side in wave.values().filter_map(Value::as_object) {
+            for key in ["T", "U"] {
+                for slot in side.get(key).and_then(Value::as_array).into_iter().flatten() {
+                    let Some(slot) = slot.as_array() else { continue };
+                    let (Some(id), Some(count)) = (
+                        slot.first().and_then(Value::as_i64),
+                        slot.get(1).and_then(Value::as_i64),
+                    ) else {
+                        continue;
+                    };
+                    if id > 0 && count > 0 {
+                        *needs.entry(id).or_insert(0) += count;
+                    }
+                }
+            }
+        }
+    }
+    needs
+}
+
+/// `(id, needed, available)` for every unit the inventory cannot supply. The
+/// server answers such an attack with status 101 (or 313) and, repeated, locks
+/// the account, so it must never be sent.
+pub fn army_shortfall(
+    payload: &Value,
+    inventory: &std::collections::BTreeMap<i64, i64>,
+) -> Vec<(i64, i64, i64)> {
+    army_requirements(payload)
+        .into_iter()
+        .filter_map(|(id, needed)| {
+            let available = inventory.get(&id).copied().unwrap_or(0);
+            (available < needed).then_some((id, needed, available))
+        })
+        .collect()
+}
+
 /// March id from a `cra` acknowledgement (`AAM.M`).
 pub fn march_id_from_ack(cra_reply: &Value) -> Option<i64> {
     cra_reply
@@ -519,6 +629,39 @@ pub fn pick_target_for_task<'a>(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_army_the_castle_cannot_supply_is_reported_unit_by_unit() {
+        // The 8 Oct run: 50 crossbows asked for, 6 then 12 at home.
+        let payload = json!([{
+            "L": {"T": [[-1, 0], [-1, 0]], "U": [[607, 50], [-1, 0]]},
+            "M": {"T": [[-1, 0]], "U": [[-1, 0]]},
+            "R": {"T": [[5, 4]], "U": [[-1, 0]]}
+        }]);
+        assert_eq!(army_requirements(&payload).get(&607), Some(&50));
+        assert_eq!(army_requirements(&json!({"A": payload.clone()})).get(&5), Some(&4));
+        let reply = json!({"gui": {"I": [[607, 12], [5, 25000]], "TU": [[607, 359]]}});
+        let stock = home_inventory(&reply);
+        assert_eq!(stock.get(&607), Some(&12));
+        assert_eq!(army_shortfall(&payload, &stock), vec![(607, 50, 12)]);
+        let stocked = json!({"gui": {"I": [[607, 50], [5, 4]]}});
+        assert!(army_shortfall(&payload, &home_inventory(&stocked)).is_empty());
+        assert!(home_inventory(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn troops_sent_and_returned_are_read_per_unit() {
+        let payload = json!([{
+            "L": {"T": [[614, 5]], "U": [[35, 30], [-1, 0]]},
+            "R": {"T": [[-1, 0]], "U": [[35, 20]]}
+        }]);
+        // Tools (T) are not troops.
+        assert_eq!(army_troops(&payload).get(&35), Some(&50));
+        assert_eq!(army_troops(&payload).len(), 1);
+        let cat = json!({"A": {"A": [[35, 36], [614, 4]]}});
+        assert_eq!(returned_units(&cat).get(&35), Some(&36));
+        assert_eq!(units_out(&json!({"gui": {"TU": [[607, 373]]}})).get(&607), Some(&373));
+    }
     use super::*;
 
     #[test]
