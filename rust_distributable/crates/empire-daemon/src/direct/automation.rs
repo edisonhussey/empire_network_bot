@@ -1,4 +1,5 @@
 use super::*;
+use empire_core::planning::TargetAlgorithm;
 
 #[derive(Debug)]
 pub(super) enum AutomationPhase {
@@ -66,6 +67,38 @@ pub(super) struct Automation {
     /// Latest stock line for the main unit of the running attack, see
     /// [`format_stock_note`].
     pub(super) stock_note: Option<String>,
+    /// When the next logical action may happen, and why (see `scheduler`).
+    pub(super) scheduler: ActionScheduler,
+    /// Unexpected missing / null responses in the last hour (see `health`).
+    pub(super) health: ResponseHealth,
+    pub(super) last_verdict: Option<Verdict>,
+    /// One tower-selection memory per task: a spotlight follows that task's own
+    /// productive ground. Nothing here is persisted.
+    pub(super) selectors: HashMap<String, Selector>,
+    /// The tower just claimed, not yet attacked. The spotlight moves only once the
+    /// attack is acknowledged; an abandoned pick leaves the geography alone.
+    pub(super) pending_pick: Option<PendingPick>,
+    /// What the last selection pass saw (eligible / near the spotlight).
+    pub(super) last_scan: Option<ScanStats>,
+    /// The task and kingdom the map should show.
+    pub(super) focus: Option<Focus>,
+    /// The last tower an attack was acknowledged for.
+    pub(super) selected: Option<(i64, i64)>,
+    pub(super) last_completed: Option<CompletedView>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct PendingPick {
+    pub(super) task_id: String,
+    pub(super) tower: (i64, i64),
+    pub(super) relocate: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct Focus {
+    pub(super) task_id: String,
+    pub(super) kingdom_id: i64,
+    pub(super) castle: (i64, i64),
 }
 
 pub(super) fn attack_info_kind(task: &ActiveModeTask) -> hunt::AttackInfoKind {
@@ -195,6 +228,53 @@ impl Automation {
             last_inbound_ms: now_ms(),
             stop_reason: None,
             stock_note: None,
+            scheduler: ActionScheduler::new(Rng::from_entropy().next_u64()),
+            health: ResponseHealth::new(DEFAULT_TOLERANCE),
+            last_verdict: None,
+            selectors: HashMap::new(),
+            pending_pick: None,
+            last_scan: None,
+            focus: None,
+            selected: None,
+            last_completed: None,
+        }
+    }
+
+    /// Read optional settings once per session. The null-response tolerance can be
+    /// changed with the `automation.null_tolerance` app-state value (default 2).
+    pub(super) async fn configure(&mut self, store: &Store) {
+        if let Ok(Some(value)) = store.app_state("automation.null_tolerance").await
+            && let Some(tolerance) = value.as_u64()
+        {
+            self.health.set_tolerance(tolerance as usize);
+        }
+    }
+
+    /// Record how an expected response went wrong. Only the cases in `health`
+    /// that qualify count; the third in a rolling hour stops new actions.
+    pub(super) async fn note_incident(
+        &mut self,
+        store: &Store,
+        account_id: &str,
+        outcome: Outcome,
+        detail: &str,
+        now: i64,
+    ) {
+        let verdict = self.health.record(outcome, detail, now);
+        if verdict == Verdict::Noted {
+            return;
+        }
+        self.last_verdict = Some(verdict);
+        let count = self.health.count(now);
+        let tolerance = self.health.tolerance();
+        let message = format!("{outcome:?}: {detail} ({count} in the last hour, tolerance {tolerance})");
+        log_event(store, account_id, "health.null_response", &message).await;
+        if verdict == Verdict::Paused {
+            self.detail = format!(
+                "PAUSED: {count} unexpected missing responses in the last hour (tolerance {tolerance}). \
+                 No new attacks start; stop and start the mode to resume."
+            );
+            log_event(store, account_id, "health.paused", &message).await;
         }
     }
 
@@ -226,6 +306,7 @@ impl Automation {
 
     pub(super) fn status(&self) -> (&'static str, String) {
         let state = match self.phase {
+            AutomationPhase::Idle { .. } if self.health.paused() => "paused_on_errors",
             AutomationPhase::Idle { .. } => "waiting",
             AutomationPhase::AwaitMap { .. } => "opening_attack_map",
             AutomationPhase::AwaitFortressRefresh { .. } => "refreshing_fortress",
@@ -255,6 +336,7 @@ impl Automation {
         server_header: &str,
     ) -> anyhow::Result<Option<String>> {
         let now = now_ms();
+        self.scheduler.tick(now);
         if now < self.safety_pause_until_ms {
             // Allow the operator to clear the safety trip by turning the mode off.
             if store.active_mode_tasks(account_id).await?.is_empty() {
@@ -303,7 +385,9 @@ impl Automation {
                     // stays leased and its commander stays reserved.
                     _ => {}
                 }
+                self.scheduler.clear_next();
                 count_event(store, account_id, "request_timeout_link_silent", "request timed out while the link was silent").await;
+                self.note_incident(store, account_id, Outcome::ConnectionLoss, "request timed out while the link was silent", now).await;
                 self.detail = "Connection to the game is silent; waiting for it to come back".to_owned();
                 return Ok(None);
             }
@@ -311,6 +395,7 @@ impl Automation {
 
         match std::mem::replace(&mut self.phase, AutomationPhase::Idle { due_ms: now }) {
             AutomationPhase::AwaitMap { deadline_ms, .. } if now >= deadline_ms => {
+                self.note_incident(store, account_id, Outcome::Timeout, "map window never answered", now).await;
                 self.record_operational_error(store, account_id, now, "a game request timed out").await;
                 self.phase = AutomationPhase::Idle {
                     due_ms: self.safety_pause_until_ms.max(now + 10_000),
@@ -318,6 +403,7 @@ impl Automation {
                 return Ok(None);
             }
             AutomationPhase::AwaitFortressRefresh { deadline_ms, .. } if now >= deadline_ms => {
+                self.note_incident(store, account_id, Outcome::Timeout, "fortress refresh never answered", now).await;
                 self.record_operational_error(store, account_id, now, "a game request timed out").await;
                 self.phase = AutomationPhase::Idle {
                     due_ms: self.safety_pause_until_ms.max(now + 10_000),
@@ -326,7 +412,9 @@ impl Automation {
             }
             AutomationPhase::AwaitRbcRefresh { target, deadline_ms } if now >= deadline_ms => {
                 // A missing tile read says nothing about the tower; it is not an
-                // operational fault. Park the tower and carry on.
+                // operational fault. Park the tower and carry on. It is still a
+                // missing answer, so it is counted for connection health.
+                self.note_incident(store, account_id, Outcome::MissingResponse, "tower tile read never answered", now).await;
                 let _ = store
                     .defer_rbc_target(account_id, &target, now + UNEXPLAINED_REFUSAL_HOLD_MS)
                     .await;
@@ -335,6 +423,7 @@ impl Automation {
             }
             AutomationPhase::AwaitAdi { task, target, deadline_ms, .. } if now >= deadline_ms => {
                 count_event(store, account_id, "timeout_adi", "attack details never answered").await;
+                self.note_incident(store, account_id, Outcome::Timeout, "attack details never answered", now).await;
                 // If ADI times out, it often means the target is on cooldown (e.g. towers).
                 // Quarantine the target for an hour so we don't keep hitting it.
                 if task.target_kind == "fortress" {
@@ -352,6 +441,7 @@ impl Automation {
             }
             AutomationPhase::AwaitCra { task, target, deadline_ms, .. } if now >= deadline_ms => {
                 count_event(store, account_id, "timeout_cra", "attack never acknowledged").await;
+                self.note_incident(store, account_id, Outcome::Timeout, "attack never acknowledged", now).await;
                 if task.target_kind == "fortress" {
                     let _ = store.defer_fortress_target(account_id, &target, now + 3600_000).await;
                 } else if target.kingdom_id == 10 {
@@ -552,12 +642,22 @@ impl Automation {
                 .stop_reason
                 .clone()
                 .unwrap_or_else(|| "No running attack tasks for this account".to_owned());
+            // Stopping the mode is the operator action that clears a health pause.
+            self.health.clear_pause();
+            self.scheduler.clear_next();
             self.phase = AutomationPhase::Idle {
                 due_ms: now + 2_000,
             };
             return Ok(None);
         }
         self.stop_reason = None;
+        if self.health.paused() {
+            // Over the tolerance for unexpected missing responses: nothing new
+            // starts. Work already on the wire has resolved by now (this is only
+            // reached from Idle). It does not resume by itself.
+            self.phase = AutomationPhase::Idle { due_ms: now + 2_000 };
+            return Ok(None);
+        }
         let states = store.commander_states(account_id).await?;
         let rotated = (0..tasks.len())
             .map(|offset| (self.cursor + offset) % tasks.len())
@@ -669,19 +769,39 @@ impl Automation {
             if free_commanders(&task.commander_lids, &states, now).is_empty() {
                 continue;
             }
-            if let Some(target) = store
-                .reserve_rbc_target(
+            // The task's own selector remembers where its spotlight is. Choosing
+            // reads only the database: no request leaves for a pick.
+            let selector = self
+                .selectors
+                .entry(task.task_id.clone())
+                .or_insert_with(Selector::from_entropy);
+            let castle = (task.source_x, task.source_y);
+            let scan = store
+                .reserve_rbc_target_with(
                     account_id,
                     task.kingdom_id,
                     task.level_min,
                     task.level_max,
-                    (task.source_x, task.source_y),
-                    &task.algorithm,
+                    castle,
+                    TargetAlgorithm::from_name(&task.algorithm),
+                    selector,
                     now,
                     now + TARGET_LEASE_MS,
                 )
-                .await?
-            {
+                .await?;
+            self.last_scan = Some(scan.stats);
+            self.focus = Some(Focus {
+                task_id: task.task_id.clone(),
+                kingdom_id: task.kingdom_id,
+                castle,
+            });
+            if let Some(pick) = scan.pick {
+                let target = pick.target;
+                self.pending_pick = Some(PendingPick {
+                    task_id: task.task_id.clone(),
+                    tower: (target.x, target.y),
+                    relocate: pick.relocate,
+                });
                 self.cursor = (index + 1) % tasks.len();
                 let task = task.clone();
                 let navigation = store.navigation(account_id).await?;
@@ -834,6 +954,7 @@ impl Automation {
                      until you start the mode again; check the castle's troops first."
                 );
                 warn!(%account_id, %status, "attack refused for an unexplained reason; mode stopped");
+                self.health.record(Outcome::ExplicitRejection, &format!("attack refused with status {status}"), now);
                 log_event(store, account_id, "attack.stopped", &reason).await;
                 self.stop_reason = Some(reason.clone());
                 self.detail = reason;
@@ -860,7 +981,9 @@ impl Automation {
             let retry_ms = if rejected_cra {
                 COMMANDER_REJECT_HOLD_MS
             } else {
-                (PacingPolicy::default().after_cra_ack(&mut self.rng) * 1_000.0) as i64
+                let pause = self.scheduler.interval(Wait::AfterAck);
+                self.scheduler.applied(Wait::AfterAck, now, pause, None);
+                (pause * 1_000.0) as i64
             };
             self.phase = match refresh_target {
                 Some(target) => AutomationPhase::RefreshRbc {
@@ -890,6 +1013,11 @@ impl Automation {
                 if let AutomationPhase::AwaitRbcRefresh { target, .. } = &self.phase {
                     if packet.payload.get("KID").and_then(Value::as_i64) == Some(target.kingdom_id)
                     {
+                        // An empty tile is a valid answer (the tower is gone), not
+                        // a missing one. Shown for context; never counted.
+                        if packet.payload.get("AI").and_then(Value::as_array).is_some_and(Vec::is_empty) {
+                            self.health.record(Outcome::ExpectedEmpty, "tower tile came back empty", now);
+                        }
                         // The cooldown itself was stored when the response was
                         // first observed; this only decides what to do next.
                         let free_at = store
@@ -982,6 +1110,10 @@ impl Automation {
                     return;
                 };
                 if packet.payload.is_null() {
+                    // Status 0 yet no payload: an answer that should have had
+                    // content did not. (A refusal carries a status and is handled
+                    // above, so this is not one.)
+                    self.note_incident(store, account_id, Outcome::UnexpectedNull, "attack details came back empty", now).await;
                     if task.target_kind == "fortress" {
                         let _ = store
                             .defer_fortress_target(account_id, &target, now + ERROR_WINDOW_MS)
@@ -1063,11 +1195,21 @@ impl Automation {
                     self.phase = AutomationPhase::Idle { due_ms: now + 1_000 };
                     return;
                 };
+                // The wait before the attack comes from the stochastic timer; the
+                // global cra spacing is applied on top and always wins.
                 let policy = PacingPolicy::default();
-                let due_seconds = policy.cra_due_at(
+                let wait = self.scheduler.interval(Wait::BeforeAttack);
+                let (due_seconds, limited) = policy.cra_due_at_with(
                     now as f64 / 1_000.0,
                     self.last_cra_ms.map(|value| value as f64 / 1_000.0),
+                    wait,
                     &mut self.rng,
+                );
+                self.scheduler.applied(
+                    Wait::BeforeAttack,
+                    now,
+                    due_seconds - now as f64 / 1_000.0,
+                    limited.then_some("global cra spacing"),
                 );
                 self.phase = AutomationPhase::ReadyCra {
                     task,
@@ -1164,7 +1306,25 @@ impl Automation {
                 // after the short CRA acknowledgement delay. ADI -> CRA has its
                 // own independent pacing below, so adding `attack_send` here
                 // serialised the commander pool for no additional safety.
-                let pause = PacingPolicy::default().after_cra_ack(&mut self.rng);
+                // The attack is really going ahead, so the geography may move now.
+                // (A pick that was released, refused or timed out never gets here.)
+                if let Some(pick) = self.pending_pick.take()
+                    && pick.task_id == task.task_id
+                    && pick.tower == (target.x, target.y)
+                    && let Some(selector) = self.selectors.get_mut(&pick.task_id)
+                {
+                    selector.accept(pick.tower, pick.relocate);
+                }
+                self.selected = Some((target.x, target.y));
+                self.last_completed = Some(CompletedView {
+                    march_id,
+                    x: target.x,
+                    y: target.y,
+                    lord_id,
+                    at_ms: now,
+                });
+                let pause = self.scheduler.interval(Wait::AfterAck);
+                self.scheduler.applied(Wait::AfterAck, now, pause, None);
                 self.phase = AutomationPhase::Idle {
                     due_ms: now + (pause * 1_000.0) as i64,
                 };

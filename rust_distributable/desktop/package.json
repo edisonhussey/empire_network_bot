@@ -1,12 +1,13 @@
 {
   "name": "empire-desktop",
   "private": true,
-  "version": "0.1.54",
+  "version": "0.1.55",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "tauri": "tauri",
+    "test": "node --test src/",
     "release": "../scripts/release.sh"
   },
   "devDependencies": {

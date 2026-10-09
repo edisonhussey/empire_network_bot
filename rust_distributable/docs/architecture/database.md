@@ -75,6 +75,8 @@ Rare events worth reading one by one:
 | `connection.failed` | A final, non-retryable error (licence, refused login) |
 | `connection.closed` | The server closed the connection cleanly |
 | `attack.stopped` | The mode was stopped because of an unexplained refusal; detail has the status |
+| `health.null_response` | An unexpected missing or null response was counted; detail has the count and tolerance |
+| `health.paused` | The third qualifying incident in a rolling hour stopped new actions |
 | `licence.needed` | The account authenticated but no installed licence matches it; detail has the server, player id and main castle a licence must be issued for |
 
 ### `event_hourly` (counters, forever)

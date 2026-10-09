@@ -1,18 +1,25 @@
 mod automation;
 mod base_scan;
+mod dev;
 mod fortress_discovery;
+mod health;
 mod observe;
 mod packets;
 mod recruitment;
+mod scheduler;
 #[cfg(test)]
 mod tests;
 
 use automation::*;
 use base_scan::*;
+use dev::CompletedView;
+pub use dev::DevSnapshot;
 use fortress_discovery::*;
+use health::*;
 use observe::*;
 use packets::*;
 use recruitment::*;
+use scheduler::*;
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -34,6 +41,7 @@ use empire_core::{
     hunt::{self, MapTarget},
     injection::{InjectionRequest, channel},
     pacing::{self, PacingPolicy, RecruitTempo, Rng, Waits},
+    targeting::{ScanStats, Selector},
     protocol::{encode_client_xt, parse_xt_packet},
     session::{KingdomScan, LoginCredentials, SessionMachine, SessionPhase, SessionSettings},
     store::{
@@ -270,6 +278,7 @@ pub async fn run(
     active_transport: Arc<RwLock<Option<mpsc::Sender<InjectionRequest>>>>,
     status: Arc<RwLock<DirectStatus>>,
     licence: LicenceGate,
+    dev: Arc<RwLock<DevSnapshot>>,
 ) {
     let endpoint = request.endpoint.clone();
     let account_id = request.credentials.player_name.trim().to_ascii_lowercase();
@@ -281,7 +290,7 @@ pub async fn run(
         if attempt > 0 {
             log_event(&store, &account_id, "connection.retry", &format!("retry {attempt}")).await;
         }
-        let result = run_inner(attempt_request.clone(), &store, &active_transport, &status, &licence).await;
+        let result = run_inner(attempt_request.clone(), &store, &active_transport, &status, &licence, &dev).await;
         *active_transport.write().await = None;
         // The session's own bookkeeping says how far this attempt got and how
         // long it lived; read it before it is overwritten below.
@@ -366,6 +375,7 @@ async fn run_inner(
     active_transport: &Arc<RwLock<Option<mpsc::Sender<InjectionRequest>>>>,
     status: &Arc<RwLock<DirectStatus>>,
     licence: &LicenceGate,
+    dev: &Arc<RwLock<DevSnapshot>>,
 ) -> anyhow::Result<()> {
     licence.require_bootstrap("game_network").await?;
     let account_id = request.credentials.player_name.trim().to_ascii_lowercase();
@@ -434,6 +444,8 @@ async fn run_inner(
     let mut base_scan_tick = tokio::time::interval(Duration::from_millis(100));
     let mut fortress_tick = tokio::time::interval(Duration::from_millis(250));
     let mut automation = Automation::new();
+    automation.configure(store).await;
+    let mut last_dev_snapshot_ms = 0_i64;
     let mut recruitment = RecruitmentAutomation::new();
     let mut fortress_rng = Rng::from_entropy();
     let mut scan_rng = Rng::from_entropy();
@@ -1053,9 +1065,19 @@ async fn run_inner(
                         sink.send(Message::Text(packet.into())).await?;
                     }
                     let (bot_state, bot_detail) = if recruitment.holds_transport() { ("recruiting", recruitment.detail.clone()) } else { automation.status() };
-                    let mut current = status.write().await;
-                    current.bot_state = bot_state.to_owned();
-                    current.bot_detail = Some(bot_detail);
+                    {
+                        let mut current = status.write().await;
+                        current.bot_state = bot_state.to_owned();
+                        current.bot_detail = Some(bot_detail);
+                    }
+                    // About once a second, copy the diagnostic state out. This is
+                    // a memory copy, not a database read, and the tab animates
+                    // between snapshots itself.
+                    let now = now_ms();
+                    if now - last_dev_snapshot_ms >= 1_000 {
+                        last_dev_snapshot_ms = now;
+                        *dev.write().await = automation.dev_snapshot(now);
+                    }
                 }
             }
         }

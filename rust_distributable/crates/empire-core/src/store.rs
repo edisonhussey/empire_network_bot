@@ -12,6 +12,7 @@ use crate::{
 };
 
 mod config;
+mod dev;
 mod ledger;
 mod modes;
 mod recruitment;
@@ -24,6 +25,7 @@ mod telemetry;
 mod tests;
 
 pub use config::{AttackProfile, SubscriptionRecord, TaskRecord};
+pub use dev::{MapTower, Movement, MovementPhase, progress as movement_progress};
 pub use ledger::{
     COMMANDER_AVAILABLE, COMMANDER_OUTBOUND, CommanderState, DashboardPoint, DashboardSummary,
     HEARTBEAT_FRESH_MILLIS, HUNT_HEARTBEAT_KEY, HuntSummary, HuntTaskSummary, MARCH_RETURNING,
@@ -134,6 +136,23 @@ pub struct ReservedTarget {
     pub x: i64,
     pub y: i64,
     pub level: Option<i64>,
+}
+
+/// The result of one selection pass: the tower claimed (if any) and what the
+/// pass saw, which is what the diagnostics show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RbcScan {
+    pub pick: Option<RbcPick>,
+    pub stats: crate::targeting::ScanStats,
+}
+
+/// A tower claimed by [`Store::reserve_rbc_target_with`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RbcPick {
+    pub target: ReservedTarget,
+    /// The neighbourhood of the selector's spotlight was used up and this tower is
+    /// where it should relocate once the attack is accepted.
+    pub relocate: bool,
 }
 
 #[derive(Clone)]
@@ -724,6 +743,9 @@ impl Store {
 
     /// Claim one eligible target before its handshake starts. The reservation
     /// survives a runner restart and prevents two tasks choosing the same tower.
+    ///
+    /// This form picks with a throwaway selector, so it has no memory of earlier
+    /// picks. The running bot uses [`Self::reserve_rbc_target_with`].
     #[allow(clippy::too_many_arguments)]
     pub async fn reserve_rbc_target(
         &self,
@@ -736,58 +758,96 @@ impl Store {
         now_ms: i64,
         reserved_until_ms: i64,
     ) -> Result<Option<ReservedTarget>, sqlx::Error> {
+        let mut selector = crate::targeting::Selector::new(now_ms.unsigned_abs());
+        Ok(self
+            .reserve_rbc_target_with(
+                account_id,
+                kingdom_id,
+                level_min,
+                level_max,
+                source,
+                crate::planning::TargetAlgorithm::from_name(algorithm),
+                &mut selector,
+                now_ms,
+                reserved_until_ms,
+            )
+            .await?
+            .pick
+            .map(|pick| pick.target))
+    }
+
+    /// Claim one eligible tower, chosen by `selector` in a single streamed pass.
+    ///
+    /// The eligible towers (cooldown over, not leased, server says ready, level in
+    /// range) are fed to the selector one row at a time, so memory stays constant
+    /// however many there are, and choosing issues no network request. `selector`'s
+    /// geography is **not** changed here: call [`crate::targeting::Selector::accept`]
+    /// once the attack is actually going ahead.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn reserve_rbc_target_with(
+        &self,
+        account_id: &str,
+        kingdom_id: i64,
+        level_min: Option<i64>,
+        level_max: Option<i64>,
+        source: (i64, i64),
+        algorithm: crate::planning::TargetAlgorithm,
+        selector: &mut crate::targeting::Selector,
+        now_ms: i64,
+        reserved_until_ms: i64,
+    ) -> Result<RbcScan, sqlx::Error> {
+        use futures_util::TryStreamExt;
         // Identity is case-insensitive; see `canonical_account_id`.
         let account_id = canonical_account_id(account_id);
-        let rows = sqlx::query(
-            "SELECT kingdom_id, x, y, level, last_attacked_ms
-             FROM rbc_target
-             WHERE lower(account_id) = lower(?) AND kingdom_id = ?
-               AND reserved_until_ms <= ?
-               AND server_free_at_ms <= ?
-               AND NOT EXISTS (
-                   SELECT 1 FROM attack_ledger a
-                   WHERE lower(a.account_id) = lower(rbc_target.account_id)
-                     AND a.kingdom_id = rbc_target.kingdom_id
-                     AND a.x = rbc_target.x AND a.y = rbc_target.y
-                     AND rbc_target.kingdom_id != 10
-                     AND (CASE WHEN a.landed_at_ms IS NOT NULL
-                               THEN MIN(a.landed_at_ms + 10800000, a.sent_at_ms + 14400000)
-                               ELSE a.sent_at_ms + 14400000 END) + 300000 > ?
-               )
-               AND (? IS NULL OR level >= ?)
-               AND (? IS NULL OR level <= ?)",
-        )
-        .bind(&account_id)
-        .bind(kingdom_id)
-        .bind(now_ms)
-        .bind(now_ms)
-        .bind(now_ms)
-        .bind(level_min)
-        .bind(level_min)
-        .bind(level_max)
-        .bind(level_max)
-        .fetch_all(&self.pool)
-        .await?;
-        let chosen = match algorithm {
-            "random" => rows.get((now_ms.unsigned_abs() as usize) % rows.len().max(1)),
-            "closest" => rows.iter().min_by_key(|row| {
-                (row.get::<i64, _>("x") - source.0).abs()
-                    + (row.get::<i64, _>("y") - source.1).abs()
-            }),
-            _ => rows.iter().min_by_key(|row| {
-                (
-                    row.get::<i64, _>("last_attacked_ms"),
-                    (row.get::<i64, _>("x") - source.0).abs()
-                        + (row.get::<i64, _>("y") - source.1).abs(),
-                )
-            }),
+        let mut scan = selector.scan(algorithm, kingdom_id, source);
+        {
+            let mut rows = sqlx::query(
+                "SELECT x, y, level, last_attacked_ms
+                 FROM rbc_target
+                 WHERE lower(account_id) = lower(?) AND kingdom_id = ?
+                   AND reserved_until_ms <= ?
+                   AND server_free_at_ms <= ?
+                   AND NOT EXISTS (
+                       SELECT 1 FROM attack_ledger a
+                       WHERE lower(a.account_id) = lower(rbc_target.account_id)
+                         AND a.kingdom_id = rbc_target.kingdom_id
+                         AND a.x = rbc_target.x AND a.y = rbc_target.y
+                         AND rbc_target.kingdom_id != 10
+                         AND (CASE WHEN a.landed_at_ms IS NOT NULL
+                                   THEN MIN(a.landed_at_ms + 10800000, a.sent_at_ms + 14400000)
+                                   ELSE a.sent_at_ms + 14400000 END) + 300000 > ?
+                   )
+                   AND (? IS NULL OR level >= ?)
+                   AND (? IS NULL OR level <= ?)",
+            )
+            .bind(&account_id)
+            .bind(kingdom_id)
+            .bind(now_ms)
+            .bind(now_ms)
+            .bind(now_ms)
+            .bind(level_min)
+            .bind(level_min)
+            .bind(level_max)
+            .bind(level_max)
+            .fetch(&self.pool);
+            while let Some(row) = rows.try_next().await? {
+                scan.offer(crate::targeting::Candidate {
+                    x: row.get("x"),
+                    y: row.get("y"),
+                    level: row.get("level"),
+                    last_attacked_ms: row.get("last_attacked_ms"),
+                });
+            }
+        }
+        let (choice, stats) = scan.finish();
+        let Some(choice) = choice else {
+            return Ok(RbcScan { pick: None, stats });
         };
-        let Some(row) = chosen else { return Ok(None) };
         let target = ReservedTarget {
-            kingdom_id: row.get("kingdom_id"),
-            x: row.get("x"),
-            y: row.get("y"),
-            level: row.get("level"),
+            kingdom_id,
+            x: choice.tower.x,
+            y: choice.tower.y,
+            level: choice.tower.level,
         };
         let updated = sqlx::query(
             "UPDATE rbc_target SET reserved_until_ms = ?
@@ -805,7 +865,13 @@ impl Store {
         // Pre-canonical databases may contain the same logical account under
         // different username casing. Reserve every matching copy together and
         // treat any update as one successful logical target claim.
-        Ok((updated.rows_affected() > 0).then_some(target))
+        Ok(RbcScan {
+            pick: (updated.rows_affected() > 0).then_some(RbcPick {
+                target,
+                relocate: choice.relocate,
+            }),
+            stats,
+        })
     }
 
     /// Reserve the fortress whose one-minute dispatch window expires first.

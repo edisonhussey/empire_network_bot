@@ -40,6 +40,9 @@ struct AppState {
     active_transport: Arc<RwLock<Option<mpsc::Sender<InjectionRequest>>>>,
     direct_status: Arc<RwLock<direct::DirectStatus>>,
     direct_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// Diagnostic snapshot for the Development tab, refreshed about once a second
+    /// by the running session. Read-only for everything else.
+    dev_snapshot: Arc<RwLock<direct::DevSnapshot>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -145,7 +148,13 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:47821";
 /// 44: one licence per game account. Several licences can be installed, a login picks
 /// the one bound to (or issued for) that account, and an account with none is told
 /// exactly which server and main castle a licence must be issued for.
-pub const API_VERSION: u16 = 44;
+/// 45: `advanced` target selection is nearest-first by straight-line distance instead
+/// of least-recently-attacked first, which had left near towers idle behind untouched
+/// far ones.
+/// 46: spotlight target selection with directional momentum, stochastic wave-timed
+/// waits under the global limits, a rolling-hour response-health pause, and the
+/// read-only Development endpoints (`/v1/dev`, `/v1/dev/map`, `/v1/dev/movements`).
+pub const API_VERSION: u16 = 46;
 
 /// Is something already listening on the service port?
 ///
@@ -186,6 +195,7 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
         store,
         active_transport: Arc::new(RwLock::new(None)),
         direct_status: Arc::new(RwLock::new(direct::DirectStatus::default())),
+        dev_snapshot: Arc::new(RwLock::new(direct::DevSnapshot::default())),
         direct_task: Arc::new(Mutex::new(None)),
     };
 
@@ -233,6 +243,9 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
                 .post(direct_connect)
                 .delete(direct_disconnect),
         )
+        .route("/v1/dev", get(dev_snapshot))
+        .route("/v1/dev/map", get(dev_map))
+        .route("/v1/dev/movements", get(dev_movements))
         .route("/v1/relay", get(relay_socket))
         .layer(cors)
         .with_state(state);
@@ -291,6 +304,7 @@ async fn direct_connect(
         state.active_transport.clone(),
         state.direct_status.clone(),
         state.licence.clone(),
+        state.dev_snapshot.clone(),
     ));
     *state.direct_task.lock().await = Some(task);
     Ok((
@@ -357,6 +371,91 @@ async fn messages(
             .recent_messages(query.limit.unwrap_or(50))
             .await?,
     ))
+}
+
+/// Scheduler, timing, spatial and health state for the Development tab.
+async fn dev_snapshot(State(state): State<AppState>) -> Json<direct::DevSnapshot> {
+    Json(state.dev_snapshot.read().await.clone())
+}
+
+#[derive(Debug, Deserialize)]
+struct DevMapQuery {
+    kingdom: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+struct DevMap {
+    kingdom_id: i64,
+    now_ms: i64,
+    /// The main castle: where marches start and end.
+    castle: Option<[i64; 2]>,
+    towers: Vec<empire_core::store::MapTower>,
+}
+
+#[derive(Debug, Serialize)]
+struct DevMovements {
+    kingdom_id: i64,
+    now_ms: i64,
+    movements: Vec<empire_core::store::Movement>,
+}
+
+/// The kingdom and account the Development tab is looking at: the connected
+/// account, and the kingdom of its active task unless one is asked for.
+async fn dev_focus(state: &AppState, requested: Option<i64>) -> Result<(String, i64), ApiError> {
+    let account = state
+        .direct_status
+        .read()
+        .await
+        .account_id
+        .clone()
+        .ok_or_else(|| ApiError::bad_request("no account is connected"))?;
+    let kingdom = match requested {
+        Some(kingdom) => kingdom,
+        None => state
+            .dev_snapshot
+            .read()
+            .await
+            .spatial
+            .as_ref()
+            .map_or(1, |spatial| spatial.kingdom_id),
+    };
+    Ok((account, kingdom))
+}
+
+/// Towers of one kingdom, read from the same table the bot selects from. The tab
+/// asks for this when it opens or the kingdom changes, not every frame.
+async fn dev_map(
+    State(state): State<AppState>,
+    Query(query): Query<DevMapQuery>,
+) -> Result<Json<DevMap>, ApiError> {
+    let (account, kingdom_id) = dev_focus(&state, query.kingdom).await?;
+    Ok(Json(DevMap {
+        kingdom_id,
+        now_ms: now_ms(),
+        castle: state
+            .store
+            .main_castle(&account, kingdom_id)
+            .await?
+            .map(|(x, y)| [x, y]),
+        towers: state.store.map_towers(&account, kingdom_id).await?,
+    }))
+}
+
+/// Armies out or coming back, with the timestamps the tab animates from.
+async fn dev_movements(
+    State(state): State<AppState>,
+    Query(query): Query<DevMapQuery>,
+) -> Result<Json<DevMovements>, ApiError> {
+    let (account, kingdom_id) = dev_focus(&state, query.kingdom).await?;
+    let now = now_ms();
+    Ok(Json(DevMovements {
+        kingdom_id,
+        now_ms: now,
+        movements: state
+            .store
+            .open_movements(&account, kingdom_id, now - 4 * 3_600_000, now, 200)
+            .await?,
+    }))
 }
 
 /// Aggregated view of the automation run, for the desktop overview.

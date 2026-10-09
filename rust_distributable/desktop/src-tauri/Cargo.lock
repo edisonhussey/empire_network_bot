@@ -913,6 +913,7 @@ dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
  "empire-game",
+ "futures-util",
  "serde",
  "serde_json",
  "sqlx",
@@ -942,7 +943,7 @@ dependencies = [
 
 [[package]]
 name = "empire-desktop"
-version = "0.1.54"
+version = "0.1.55"
 dependencies = [
  "empire-daemon",
  "tauri",

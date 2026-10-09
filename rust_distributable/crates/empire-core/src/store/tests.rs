@@ -2216,6 +2216,144 @@ async fn a_tower_the_server_reports_cooling_is_not_selected_until_it_is_ready() 
 }
 
 #[tokio::test]
+async fn advanced_mode_is_biased_to_near_towers_even_when_far_ones_are_staler() {
+    use crate::{planning::TargetAlgorithm, targeting::Selector};
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    let tower = |x: i64, y: i64| RbcTarget {
+        kingdom_id: 1,
+        x,
+        y,
+        level: Some(61),
+        cooldown_remaining_s: 0,
+    };
+    // Source (593, 613). Distances: 5, 7.6 (the tower `seed_account` adds at
+    // 600, 610), 14.8, 29.5, 54, 88.
+    let layout = [(596, 617), (600, 600), (620, 625), (640, 640), (650, 680)];
+    store
+        .upsert_rbc_targets("ventrilo", &layout.map(|(x, y)| tower(x, y)), NOW)
+        .await
+        .unwrap();
+    // The far ones were attacked long ago, the near ones recently; the old order
+    // would have started with the farthest.
+    for (index, (x, y)) in layout.iter().enumerate() {
+        store
+            .mark_target_attacked(
+                "ventrilo",
+                &ReservedTarget { kingdom_id: 1, x: *x, y: *y, level: Some(61) },
+                NOW - 100_000_000 * (index as i64 + 1),
+            )
+            .await
+            .unwrap();
+    }
+    let mut selector = Selector::new(42);
+    let mut counts = std::collections::HashMap::new();
+    for _ in 0..300 {
+        let pick = store
+            .reserve_rbc_target_with(
+                "ventrilo", 1, Some(61), Some(61), (593, 613), TargetAlgorithm::Advanced,
+                &mut selector, NOW, NOW + 720_000,
+            )
+            .await
+            .unwrap()
+            .pick
+            .expect("a tower is ready");
+        *counts.entry((pick.target.x, pick.target.y)).or_insert(0_u32) += 1;
+        store.release_rbc_target("ventrilo", &pick.target).await.unwrap();
+    }
+    let share = |at: (i64, i64)| counts.get(&at).copied().unwrap_or(0);
+    let near = share((596, 617)) + share((600, 610));
+    let far = share((640, 640)) + share((650, 680));
+    assert!(near > far * 6, "near {near} vs far {far}: {counts:?}");
+    assert!(far > 0 || near > 280, "the far ones are rare, not forbidden");
+    // The selector's geography is only moved by `accept`, never by reserving.
+    assert_eq!(selector.state.active_kingdom, Some(1));
+    assert!(selector.state.spotlight == (593.0, 613.0));
+
+    // `closest` is still exact nearest-first.
+    let mut taken = Vec::new();
+    for _ in 0..=layout.len() {
+        let target = store
+            .reserve_rbc_target(
+                "ventrilo", 1, Some(61), Some(61), (593, 613), "closest", NOW, NOW + 720_000,
+            )
+            .await
+            .unwrap()
+            .expect("another tower is ready");
+        taken.push((target.x, target.y));
+    }
+    let mut expected = layout.to_vec();
+    expected.insert(1, (600, 610));
+    assert_eq!(taken, expected, "nearest first");
+}
+
+#[tokio::test]
+async fn the_development_map_reads_towers_castle_and_open_marches_without_writing() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    store
+        .replace_account_bootstrap(
+            "ventrilo",
+            &[OwnedCastle {
+                kingdom_id: 1,
+                castle_id: 100,
+                area_type: 12,
+                x: 593,
+                y: 613,
+                name: "Sands".to_owned(),
+            }],
+            &[0, 2],
+            NOW,
+        )
+        .await
+        .unwrap();
+    store
+        .upsert_rbc_targets(
+            "ventrilo",
+            &[RbcTarget { kingdom_id: 1, x: 640, y: 640, level: Some(50), cooldown_remaining_s: 1_000 }],
+            NOW,
+        )
+        .await
+        .unwrap();
+    assert_eq!(store.main_castle("Ventrilo", 1).await.unwrap(), Some((593, 613)));
+    assert_eq!(store.main_castle("ventrilo", 3).await.unwrap(), None);
+
+    let towers = store.map_towers("ventrilo", 1).await.unwrap();
+    assert_eq!(towers.len(), 2, "the seeded tower and the cooling one");
+    let cooling = towers.iter().find(|tower| tower.x == 640).unwrap();
+    assert_eq!(cooling.ready_at_ms, NOW + 1_002_000, "ready time includes the server cooldown");
+    assert_eq!(towers.iter().find(|tower| tower.x == 600).unwrap().ready_at_ms, 0);
+    assert!(store.map_towers("ventrilo", 2).await.unwrap().is_empty());
+
+    // One outbound, one returning, one finished, and one old row that never reported.
+    let mut outbound = march(Some("t"), 1, 7);
+    outbound.sent_at_ms = NOW;
+    outbound.duration_s = Some(300);
+    let mut returning = march(Some("t"), 2, 8);
+    returning.sent_at_ms = NOW - 600_000;
+    returning.status = MARCH_RETURNING.into();
+    returning.landed_at_ms = Some(NOW - 100_000);
+    returning.duration_s = Some(280);
+    let mut done = march(Some("t"), 3, 9);
+    done.status = "done".into();
+    let mut stale = march(Some("t"), 4, 10);
+    stale.sent_at_ms = NOW - 10 * 3_600_000;
+    for row in [&outbound, &returning, &done, &stale] {
+        store.record_march(row).await.unwrap();
+    }
+    let movements = store
+        .open_movements("ventrilo", 1, NOW - 4 * 3_600_000, NOW + 50_000, 50)
+        .await
+        .unwrap();
+    assert_eq!(movements.iter().map(|m| m.march_id).collect::<Vec<_>>(), vec![1, 2], "newest first, finished and stale rows left out");
+    assert_eq!(movements[0].phase, MovementPhase::Outbound);
+    assert_eq!(movements[0].end_ms, Some(NOW + 300_000));
+    assert_eq!(movements[1].phase, MovementPhase::Returning);
+    assert_eq!((movements[1].start_ms, movements[1].end_ms), (NOW - 100_000, Some(NOW + 180_000)));
+    assert_eq!(movement_progress(movements[1].start_ms, movements[1].end_ms, NOW + 40_000), Some(0.5));
+}
+
+#[tokio::test]
 async fn an_abandoned_lease_is_released_back_to_the_pool() {
     let store = Store::open("sqlite::memory:").await.unwrap();
     seed_account(&store, "ventrilo").await;

@@ -122,7 +122,7 @@ async fn expected_target_rejections_never_trip_the_global_safety_pause() {
             panic!("expected rejection to queue a cooldown re-read");
         };
         assert!(due_ms >= observed_at + 750);
-        assert!(due_ms <= observed_at + 2_500);
+        assert!(due_ms <= observed_at + 3_500);
         assert!(automation.operational_errors.is_empty());
         assert_eq!(automation.safety_pause_until_ms, 0);
     }
@@ -885,3 +885,218 @@ async fn old_errors_age_out_of_the_rolling_window() {
         observe_account_packet(&store, "ventrilo", &raw, &origins, &settings, true).await;
         assert!(store.account_has_targets("ventrilo", 1).await.unwrap());
     }
+
+// ---------------------------------------------------------------------------
+// stochastic scheduling, spotlight selection and response health
+// ---------------------------------------------------------------------------
+
+fn rbc_task(task_id: &str) -> ActiveModeTask {
+    match awaiting_rbc_info().phase {
+        AutomationPhase::AwaitAdi { mut task, .. } => {
+            task.task_id = task_id.into();
+            task
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[tokio::test]
+async fn the_spotlight_moves_only_when_an_attack_is_acknowledged() {
+    let store = tower_store(0).await;
+    let mut automation = Automation::new();
+    let task = rbc_task("rbc");
+    let mut selector = Selector::new(1);
+    selector
+        .state
+        .initialize_spotlight(1, (593, 613), &selector.params.clone(), &mut Rng::seeded(1));
+    let before = selector.state.clone();
+    automation.selectors.insert("rbc".into(), selector);
+    automation.pending_pick = Some(PendingPick { task_id: "rbc".into(), tower: (636, 574), relocate: false });
+
+    // A refused attack leaves the geography exactly as it was.
+    automation.phase = AutomationPhase::AwaitCra {
+        task: task.clone(),
+        target: tower(),
+        lord_id: 0,
+        deadline_ms: now_ms() + REQUEST_TIMEOUT_MS,
+    };
+    automation.observe(&store, "ventrilo", "%xt%cra%1%95%null%").await;
+    assert_eq!(automation.selectors["rbc"].state, before);
+    assert_eq!(automation.selected, None);
+
+    // An acknowledged one moves it, with momentum.
+    automation.pending_pick = Some(PendingPick { task_id: "rbc".into(), tower: (636, 574), relocate: false });
+    automation.phase = AutomationPhase::AwaitCra {
+        task,
+        target: tower(),
+        lord_id: 0,
+        deadline_ms: now_ms() + REQUEST_TIMEOUT_MS,
+    };
+    automation
+        .observe(&store, "ventrilo", "%xt%cra%1%0%{\"AAM\":{\"M\":{\"MID\":42,\"TT\":300}}}%")
+        .await;
+    let after = &automation.selectors["rbc"].state;
+    assert_ne!(after.spotlight, before.spotlight);
+    assert_eq!(automation.selected, Some((636, 574)));
+    assert_eq!(automation.last_completed.as_ref().map(|done| done.march_id), Some(42));
+    assert!(automation.pending_pick.is_none());
+}
+
+#[tokio::test]
+async fn the_stochastic_wait_never_beats_the_global_cra_spacing() {
+    let store = tower_store(0).await;
+    for _ in 0..40 {
+        let mut automation = Automation::new();
+        automation.last_cra_ms = Some(now_ms());
+        let AutomationPhase::AwaitAdi { mut task, target, deadline_ms } = awaiting_rbc_info().phase
+        else {
+            unreachable!()
+        };
+        task.payload = json!([]);
+        automation.phase = AutomationPhase::AwaitAdi { task, target, deadline_ms };
+        let before = now_ms();
+        automation
+            .observe(&store, "ventrilo", "%xt%adi%1%0%{\"gli\":{\"C\":[{\"ID\":0}]}}%")
+            .await;
+        let AutomationPhase::ReadyCra { due_ms, .. } = automation.phase else {
+            panic!("expected a queued attack: {}", automation.detail);
+        };
+        assert!(due_ms >= before + 4_000, "due in {} ms", due_ms - before);
+        let last = automation.scheduler.last().expect("the wait is recorded");
+        assert!(last.stochastic_s >= 2.0, "its own minimum applies");
+        // The limit is named whenever it decided; if the stochastic wait was
+        // already longer than the spacing, no limit was in play.
+        assert!(
+            last.restriction == Some("global cra spacing") || last.stochastic_s >= 4.0,
+            "{last:?}"
+        );
+        assert!(last.applied_s >= last.stochastic_s);
+    }
+}
+
+#[tokio::test]
+async fn a_long_idle_gap_does_not_queue_a_burst() {
+    // Waking after a long sleep produces one fresh wait from "now", not a run of
+    // overdue actions: the machine is single-flight, so only one handshake exists.
+    let store = tower_store(0).await;
+    let mut automation = Automation::new();
+    automation.last_cra_ms = Some(now_ms() - 3_600_000);
+    let AutomationPhase::AwaitAdi { mut task, target, deadline_ms } = awaiting_rbc_info().phase
+    else {
+        unreachable!()
+    };
+    task.payload = json!([]);
+    automation.phase = AutomationPhase::AwaitAdi { task, target, deadline_ms };
+    let before = now_ms();
+    automation
+        .observe(&store, "ventrilo", "%xt%adi%1%0%{\"gli\":{\"C\":[{\"ID\":0}]}}%")
+        .await;
+    let AutomationPhase::ReadyCra { due_ms, .. } = automation.phase else {
+        panic!("expected a queued attack");
+    };
+    assert!(due_ms >= before + 2_000 && due_ms <= before + 8_000, "{}", due_ms - before);
+    assert_eq!(automation.scheduler.last().unwrap().restriction, None, "no limit was in play");
+}
+
+#[tokio::test]
+async fn the_third_unexpected_timeout_in_an_hour_stops_new_actions_until_the_mode_is_restarted() {
+    let (store, tasks) = two_section_store().await;
+    let mut automation = Automation::new();
+    for round in 1..=3 {
+        automation.last_inbound_ms = now_ms(); // the link is alive: this is not a connection loss
+        automation.phase = AutomationPhase::AwaitAdi {
+            task: tasks[0].clone(),
+            target: tower(),
+            deadline_ms: now_ms() - 1,
+        };
+        automation.safety_pause_until_ms = 0;
+        automation.operational_errors.clear();
+        automation.next_packet(&store, "ventrilo", US1_SERVER_HEADER).await.unwrap();
+        assert_eq!(automation.health.count(now_ms()), round);
+    }
+    assert!(automation.health.paused());
+    assert_eq!(automation.status().0, "paused_on_errors");
+    assert!(automation.detail.starts_with("PAUSED"), "{}", automation.detail);
+    let kinds = store.recent_events("ventrilo", 10).await.unwrap();
+    assert!(kinds.iter().any(|event| event.kind == "health.paused"));
+
+    // Nothing new starts, however long it waits.
+    automation.phase = AutomationPhase::Idle { due_ms: 0 };
+    automation.safety_pause_until_ms = 0;
+    for _ in 0..3 {
+        assert!(automation.next_packet(&store, "ventrilo", US1_SERVER_HEADER).await.unwrap().is_none());
+        assert!(matches!(automation.phase, AutomationPhase::Idle { .. }));
+        automation.phase = AutomationPhase::Idle { due_ms: 0 };
+    }
+    assert!(automation.health.paused(), "it does not resume by itself");
+
+    // Stopping the mode is the operator action that clears it.
+    store.stop_account_mode("ventrilo", now_ms()).await.unwrap();
+    automation.next_packet(&store, "ventrilo", US1_SERVER_HEADER).await.unwrap();
+    assert!(!automation.health.paused());
+}
+
+#[tokio::test]
+async fn timeouts_on_a_silent_link_and_ordinary_refusals_do_not_count_as_null_responses() {
+    let store = tower_store(0).await;
+    let mut automation = Automation::new();
+    // Link down: connection loss, recorded but not counted.
+    automation.last_inbound_ms = now_ms() - 60_000;
+    automation.phase = AutomationPhase::AwaitAdi {
+        task: rbc_task("rbc"),
+        target: tower(),
+        deadline_ms: now_ms() - 1,
+    };
+    automation.next_packet(&store, "ventrilo", US1_SERVER_HEADER).await.unwrap();
+    // An explicit refusal is an answer.
+    automation.phase = awaiting_rbc_info().phase;
+    automation.observe(&store, "ventrilo", "%xt%adi%1%95%null%").await;
+    // A valid empty tile read.
+    automation.phase = AutomationPhase::AwaitRbcRefresh { target: tower(), deadline_ms: now_ms() + REQUEST_TIMEOUT_MS };
+    automation.observe(&store, "ventrilo", "%xt%gaa%1%0%{\"KID\":1,\"AI\":[]}%").await;
+    assert_eq!(automation.health.count(now_ms()), 0);
+    assert!(!automation.health.paused());
+    let outcomes = automation.health.recent().map(|incident| incident.outcome).collect::<Vec<_>>();
+    assert!(outcomes.contains(&Outcome::ConnectionLoss) && outcomes.contains(&Outcome::ExpectedEmpty));
+    // A status-0 reply with no payload is a qualifying null.
+    automation.phase = awaiting_rbc_info().phase;
+    automation.observe(&store, "ventrilo", "%xt%adi%1%0%null%").await;
+    assert_eq!(automation.health.count(now_ms()), 1);
+}
+
+#[tokio::test]
+async fn the_null_tolerance_can_be_configured() {
+    let store = tower_store(0).await;
+    store
+        .set_app_state("automation.null_tolerance", &json!(5), now_ms())
+        .await
+        .unwrap();
+    let mut automation = Automation::new();
+    automation.configure(&store).await;
+    assert_eq!(automation.health.tolerance(), 5);
+}
+
+#[tokio::test]
+async fn taking_a_snapshot_for_the_development_tab_changes_nothing_in_the_bot() {
+    let store = tower_store(0).await;
+    let mut automation = Automation::new();
+    automation.phase = AutomationPhase::AwaitRbcRefresh { target: tower(), deadline_ms: now_ms() + REQUEST_TIMEOUT_MS };
+    automation.last_cra_ms = Some(123);
+    let detail = automation.detail.clone();
+    let first = automation.dev_snapshot(now_ms());
+    let second = automation.dev_snapshot(now_ms());
+    assert!(matches!(automation.phase, AutomationPhase::AwaitRbcRefresh { .. }));
+    assert_eq!((automation.last_cra_ms, &automation.detail), (Some(123), &detail));
+    // The model keeps moving with real time and the snapshot carries what the tab
+    // needs to draw it, without any credentials or packets.
+    assert_eq!(first.timing.waves.len(), 3);
+    assert!(first.timing.waves.iter().all(|wave| wave.frequency_hz > 0.0 && wave.phase.is_finite()));
+    assert_eq!(first.timing.min_interval_s, 0.4);
+    assert_eq!(second.scheduler.state, "refreshing_tower");
+    assert_eq!(first.health.tolerance, 2);
+    let text = serde_json::to_string(&first).unwrap();
+    for forbidden in ["password", "token", "lli"] {
+        assert!(!text.contains(forbidden), "{forbidden}");
+    }
+    drop(store);
+}

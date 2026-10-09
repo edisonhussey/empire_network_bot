@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 pub const CRA_MIN_INTERVAL_SECONDS: f64 = 4.0;
 
 /// Small xorshift64* generator. Deterministic given a seed, which is what the
-/// tests need; jitter quality only has to be "not identical every time"#[derive(Debug, Clone)]
+/// tests need; jitter quality only has to be "not identical every time".
+#[derive(Debug, Clone)]
 pub struct Rng {
     state: u64,
 }
@@ -96,13 +97,28 @@ impl PacingPolicy {
     /// `cra` floor plus jitter. The later deadline wins, so a shortened handshake
     /// can never breach the floor.
     pub fn cra_due_at(&self, now: f64, last_cra_at: Option<f64>, rng: &mut Rng) -> f64 {
-        let adi_due = now + rng.uniform(self.adi_to_cra.0, self.adi_to_cra.1);
+        let wait = rng.uniform(self.adi_to_cra.0, self.adi_to_cra.1);
+        self.cra_due_at_with(now, last_cra_at, wait, rng).0
+    }
+
+    /// As [`Self::cra_due_at`] with the `adi -> cra` wait supplied by the caller
+    /// (the stochastic timer). The second value is `true` when the global `cra`
+    /// spacing, not the supplied wait, decided the time, so a display can tell
+    /// the stochastic interval from extra waiting imposed by a limit.
+    pub fn cra_due_at_with(
+        &self,
+        now: f64,
+        last_cra_at: Option<f64>,
+        adi_wait: f64,
+        rng: &mut Rng,
+    ) -> (f64, bool) {
+        let adi_due = now + adi_wait.max(0.0);
         let Some(last) = last_cra_at.filter(|value| *value > 0.0) else {
-            return adi_due;
+            return (adi_due, false);
         };
         let floor_due =
             last + self.cra_min_interval + rng.uniform(self.cra_jitter.0, self.cra_jitter.1);
-        adi_due.max(floor_due)
+        (adi_due.max(floor_due), floor_due > adi_due)
     }
 
     /// Earliest legal `cra` time. Used as the final guard immediately before
@@ -287,6 +303,20 @@ pub fn now_seconds() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_supplied_wait_still_cannot_beat_the_cra_floor() {
+        let policy = PacingPolicy::default();
+        let mut rng = Rng::seeded(11);
+        let last = 1_000.0;
+        for wait in [0.0, 0.4, 1.0, 3.9, 10.0] {
+            let (due, limited) = policy.cra_due_at_with(last + 0.1, Some(last), wait, &mut rng);
+            assert!(due >= last + CRA_MIN_INTERVAL_SECONDS, "wait {wait}: {due}");
+            assert_eq!(limited, last + 0.1 + wait < last + CRA_MIN_INTERVAL_SECONDS + 0.15, "wait {wait}");
+        }
+        // No previous cra: the supplied wait applies unchanged.
+        assert_eq!(policy.cra_due_at_with(50.0, None, 2.5, &mut rng), (52.5, false));
+    }
 
     #[test]
     fn jitter_is_only_ever_added_above_the_cra_floor() {

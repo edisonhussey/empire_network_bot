@@ -62,6 +62,7 @@
           <button data-view="initialize"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-initialize"/></svg></span>Initialize</button>
           <button data-view="presets"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-modes"/></svg></span>Manage presets</button>
           <button data-view="logs"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-logs"/></svg></span>Logs</button>
+          <button data-view="development"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-dashboard"/></svg></span>Development</button>
           <button data-view="support"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-accounts"/></svg></span>Support</button>
         </nav>
         <div class="side-footer">
@@ -131,7 +132,7 @@
             <div class="field wide"><label for="task-name">Task name</label><input id="task-name" placeholder="e.g. Sands level 61" required /></div>
             <div class="field wide"><label for="task-attack">Attack</label><div class="select-wrap"><select id="task-attack" required></select></div></div>
             <fieldset class="wide"><legend>Farm from</legend><div class="farm-source"><label>Kingdom<div class="select-wrap"><select id="source-kid" required></select></div></label><label class="source-default"><input id="use-main-castle" type="checkbox" checked /><span>Use main castle automatically</span></label><div class="source-coordinates"><label>X<input id="source-x" type="number" value="0" disabled required /></label><label>Y<input id="source-y" type="number" value="0" disabled required /></label></div></div><p class="field-hint">Uncheck the automatic castle to use exact coordinates. Farming attacks stay inside their kingdom.</p></fieldset>
-            <fieldset class="wide"><legend>Dynamic target</legend><div class="target-grid"><label>Target type<div class="select-wrap"><select id="target-kind"><option value="rbc">Robber Baron</option><option value="fortress">Fortress</option><option value="berimond">Berimond Camp</option></select></div></label><label>Algorithm<div class="select-wrap"><select id="target-algorithm"><option value="advanced">Advanced</option><option value="closest">Closest</option><option value="random">Random</option></select></div></label><div id="target-level-fields" class="level-fields"><label>Minimum level<input id="target-level-min" type="number" min="1" value="35" required /></label><label>Maximum level<input id="target-level-max" type="number" min="1" value="60" required /></label></div></div><p id="target-hint" class="field-hint">OpenAuto chooses a learned target in this level range; no destination coordinate is required.</p></fieldset>
+            <fieldset class="wide"><legend>Dynamic target</legend><div class="target-grid"><label>Target type<div class="select-wrap"><select id="target-kind"><option value="rbc">Robber Baron</option><option value="fortress">Fortress</option><option value="berimond">Berimond Camp</option></select></div></label><label>Algorithm<div class="select-wrap"><select id="target-algorithm"><option value="advanced">Advanced (near-biased spotlight)</option><option value="closest">Closest (always nearest first)</option><option value="random">Random</option></select></div></label><div id="target-level-fields" class="level-fields"><label>Minimum level<input id="target-level-min" type="number" min="1" value="35" required /></label><label>Maximum level<input id="target-level-max" type="number" min="1" value="60" required /></label></div></div><p id="target-hint" class="field-hint">OpenAuto chooses a learned target in this level range; no destination coordinate is required.</p></fieldset>
             <div class="field"><label for="travel">Travel</label><div class="select-wrap"><select id="travel"><option value="coin">Coin</option><option value="ruby_1">Ruby slow</option><option value="ruby_2">Ruby fast</option><option value="feather">Feather</option></select></div><p class="field-hint">OpenAuto maps this choice to the source castle's available travel option.</p></div>
             <div class="field wide priority-field"><label>Priority</label><div id="priority-buttons" class="segmented priority-buttons"><button type="button" data-priority="extra_high">Extra high</button><button type="button" data-priority="high">High</button><button type="button" class="selected" data-priority="medium">Medium</button><button type="button" data-priority="low">Low</button></div></div>
             <div class="form-actions wide save-left"><button class="primary-action" type="submit">Save task</button><output id="task-result"></output></div>
@@ -209,6 +210,60 @@
 
         <section id="view-logs" class="view" hidden>
           <section class="card log-card"><div class="card-title"><div><p class="eyebrow">Support console</p><h2>Connection logs</h2></div><div class="row-actions"><span id="log-live" class="log-live offline"><i></i><span id="log-live-label">Offline</span></span><button id="refresh-logs" class="secondary-action" type="button">Refresh now</button><button id="copy-logs" class="secondary-action" type="button">Copy logs</button></div></div><p class="log-note">Updates automatically only while a game socket is connected. Passwords and session tokens are removed.</p><pre id="account-logs" class="log-console">No active connection. Stored events remain available below.</pre><output id="log-result"></output></section>
+        </section>
+
+        <section id="view-development" class="view" hidden>
+          <div class="dev-grid">
+            <section class="card dev-panel dev-timing">
+              <div class="card-title"><div><p class="eyebrow">Scheduler</p><h2>Timing signal</h2></div><span class="dev-legend"><i class="dev-key line"></i>wave <i class="dev-key dots"></i>generated interval <i class="dev-key dash"></i>projection</span></div>
+              <canvas id="dev-wave" class="dev-canvas dev-wave-canvas" aria-label="Stochastic timing waveform"></canvas>
+              <dl class="dev-stats">
+                <div><dt>Wave now</dt><dd id="dev-signal">–</dd></div>
+                <div><dt>Baseline D0</dt><dd id="dev-base">–</dd></div>
+                <div><dt>Stochastic minimum</dt><dd id="dev-min">–</dd></div>
+                <div><dt>Last interval</dt><dd id="dev-interval">–</dd></div>
+                <div><dt>Applied wait</dt><dd id="dev-applied">–</dd></div>
+                <div><dt>Made of</dt><dd id="dev-parts">–</dd></div>
+                <div><dt>Next action in</dt><dd id="dev-countdown" class="dev-big">–</dd></div>
+              </dl>
+            </section>
+            <section class="card dev-panel dev-sched">
+              <div class="card-title"><div><p class="eyebrow">Scheduler</p><h2>Diagnostics</h2></div></div>
+              <dl class="dev-stats dev-stack">
+                <div><dt>State</dt><dd id="dev-state">–</dd></div>
+                <div><dt>Detail</dt><dd id="dev-detail" class="dev-wrap">–</dd></div>
+                <div><dt>Global restriction</dt><dd id="dev-restriction">–</dd></div>
+                <div><dt>Last completed</dt><dd id="dev-completed">–</dd></div>
+                <div><dt>Kingdom</dt><dd id="dev-kingdom">–</dd></div>
+                <div><dt>Eligible towers</dt><dd id="dev-eligible">–</dd></div>
+                <div><dt>Near the spotlight</dt><dd id="dev-local">–</dd></div>
+              </dl>
+              <p class="dev-subhead">Recent waits</p>
+              <ul id="dev-recent" class="dev-list"></ul>
+            </section>
+            <section class="card dev-panel dev-spatial">
+              <div class="card-title"><div><p class="eyebrow">Kingdom</p><h2>Map</h2></div>
+                <div class="row-actions dev-controls">
+                  <button id="dev-zoom-out" class="secondary-action" type="button" title="Show more map">−</button>
+                  <button id="dev-zoom-in" class="secondary-action" type="button" title="Show less map">+</button>
+                  <button id="dev-centre-castle" class="secondary-action" type="button">Castle</button>
+                  <button id="dev-centre-spotlight" class="secondary-action" type="button">Spotlight</button>
+                  <button id="dev-reset" class="secondary-action" type="button">Reset 100 × 100</button>
+                </div>
+              </div>
+              <canvas id="dev-map" class="dev-canvas dev-map-canvas" aria-label="Kingdom map"></canvas>
+              <p class="dev-note">White circles are towers (hollow while cooling), the square is the main castle, the dashed ring and arrow are the spotlight and its direction. Drag to pan, scroll to zoom. Lines show armies out and returning, placed from the game's own timestamps.</p>
+            </section>
+            <section class="card dev-panel dev-health">
+              <div class="card-title"><div><p class="eyebrow">Connection</p><h2>Response health</h2></div></div>
+              <dl class="dev-stats dev-stack">
+                <div><dt>State</dt><dd id="dev-health-state">–</dd></div>
+                <div><dt>Unexpected missing / null responses</dt><dd id="dev-health-count">–</dd></div>
+              </dl>
+              <p class="dev-subhead">Recent incidents (rolling hour)</p>
+              <ul id="dev-incidents" class="dev-list"></ul>
+            </section>
+          </div>
         </section>
 
         <section id="view-support" class="view" hidden>

@@ -3,6 +3,7 @@ import { $, element } from "./dom.js";
 import { compactNumber, expiryLabel, humanWait, humanize, relativeTime, sessionDuration, tempoLabel } from "./format.js";
 import { createHeaderControls, modeUsesFortress } from "./views/header-controls.js";
 import { renderRubyChart } from "./views/ruby-chart.js";
+import { createDevelopment } from "./views/development.js";
 import { renderSparkBars } from "./views/spark-bars.js";
 const activation = $("#activation");
 const appShell = $("#app-shell");
@@ -161,8 +162,11 @@ const viewTitles = {
   initialize: ["Workspace", "Initialize"],
   presets: ["Library", "Manage presets"],
   logs: ["Diagnostics", "Logs"],
+  development: ["Diagnostics", "Development"],
   support: ["Help", "Support"],
 };
+
+const development = createDevelopment();
 
 function switchView(name) {
   document.querySelectorAll(".view").forEach((view) => { view.hidden = view.id !== `view-${name}`; });
@@ -173,6 +177,9 @@ function switchView(name) {
     if (group.querySelector(`[data-view="${name}"]`)) setNavGroup(group, true);
   });
   [$("#page-eyebrow").textContent, $("#page-title").textContent] = viewTitles[name] || ["Overview", "Dashboard"];
+  // The Development tab animates and polls only while it is on screen; the bot
+  // itself is unaffected either way.
+  if (name === "development") development.show(); else development.hide();
 }
 
 function setNavGroup(group, open) {

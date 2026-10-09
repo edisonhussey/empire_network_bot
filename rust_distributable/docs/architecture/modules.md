@@ -21,6 +21,9 @@ One concern, one owner. If a rule exists in two places, one of them is a bug.
 | `base_scan.rs` | Outward map-scan pacing and pending-scan record |
 | `packets.rs` | Pure builders for outbound `gaa` / heartbeat frames |
 | `observe.rs` | Inbound packet observation and diagnostic persistence (packets are tagged with their account) |
+| `scheduler.rs` | The action scheduler: stochastic waits, their recorded diagnostics, history ring |
+| `health.rs` | Rolling-hour response health and the safe pause |
+| `dev.rs` | The diagnostic snapshot behind the Development tab |
 | `tests.rs` | Unit tests for the above |
 
 ## `desktop/src/`

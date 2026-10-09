@@ -15,6 +15,17 @@ handshake is in flight; the global CRA floor (4 s) and the post-ack pause live i
 ~20 commanders busy on a ~9 minute round trip. A refusal or timeout returns to
 `Idle`; nothing else mutates the pipeline.
 
+## Which ready tower, and when
+
+Choosing a tower is pure arithmetic on towers the database already marks ready; it makes
+no network request. The default `advanced` mode uses a moving spotlight with directional
+momentum (see [`target-selection.md`](target-selection.md), which also records what it
+does and does not do to march lengths). The waits between the steps of an attack come from
+a stochastic generator whose output is always capped from below by the global limits (see
+[`timing.md`](timing.md)). Unexpected missing responses are counted over a rolling hour
+(see [`response-health.md`](response-health.md)), and the Development tab shows all of it
+live ([`development-tab.md`](development-tab.md)).
+
 ## Towers: trust the server's cooldown, not our guess
 
 * Every RBC row in a map response carries its remaining cooldown

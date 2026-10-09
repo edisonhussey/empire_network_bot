@@ -13,6 +13,7 @@ application = [
     "dep:tokio",
     "dep:uuid",
     "dep:empire-game",
+    "dep:futures-util",
 ]
 
 [dependencies]
@@ -25,3 +26,4 @@ thiserror.workspace = true
 tokio = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 empire-game = { path = "../empire-game", optional = true }
+futures-util = { workspace = true, optional = true }

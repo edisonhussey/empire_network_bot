@@ -20,6 +20,9 @@ pub mod protocol;
 #[cfg(feature = "application")]
 pub mod scheduler;
 pub mod session;
+pub mod timing;
+#[cfg(feature = "application")]
+pub mod targeting;
 #[cfg(feature = "application")]
 pub mod store;
 

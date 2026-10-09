@@ -481,3 +481,41 @@ dialog[open] { display: grid; gap: 12px; }
 .bot-menu-item.checked { color: var(--ink); }
 .bot-menu-item.checked::after { content: " ●"; color: var(--ok); font-size: 8px; vertical-align: middle; }
 .bot-menu-item.danger { color: var(--ink); border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+
+/* ---- Development tab ---------------------------------------------------- */
+.dev-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 32px 40px; align-items: start; }
+.dev-panel { min-width: 0; }
+.dev-timing, .dev-spatial { grid-column: 1; }
+.dev-sched, .dev-health { grid-column: 2; }
+.dev-sched { grid-row: 1; } .dev-health { grid-row: 2; }
+.dev-spatial { grid-row: 2; }
+.dev-canvas { display: block; width: 100%; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: #050505; }
+.dev-wave-canvas { height: 220px; }
+.dev-map-canvas { height: min(56vh, 520px); min-height: 320px; cursor: grab; touch-action: none; }
+.dev-map-canvas:active { cursor: grabbing; }
+.dev-legend { font-size: 12px; color: var(--ink-3); display: inline-flex; gap: 8px; align-items: center; }
+.dev-key { display: inline-block; width: 14px; height: 0; border-top: 1px solid var(--ink); vertical-align: middle; margin-left: 8px; }
+.dev-key.dots { border-top: 0; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+.dev-key.dash { border-top-style: dashed; border-color: var(--ink-3); }
+.dev-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px 24px; margin: 18px 0 0; }
+.dev-stats.dev-stack { grid-template-columns: 1fr; gap: 10px; margin-top: 0; }
+.dev-stats dt { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
+.dev-stats dd { margin: 2px 0 0; font: 13px/1.5 ui-monospace, Menlo, Consolas, monospace; color: var(--ink); }
+.dev-stack > div { display: grid; grid-template-columns: 170px 1fr; gap: 12px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+.dev-stack dt { align-self: baseline; }
+.dev-big { font-size: 22px !important; }
+.dev-wrap { white-space: normal; word-break: break-word; color: var(--ink-2) !important; }
+.dev-bad { color: #ff7a7a !important; }
+.dev-subhead { margin: 22px 0 6px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
+.dev-list { list-style: none; margin: 0; padding: 0; font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace; color: var(--ink-2); }
+.dev-list li { display: flex; gap: 12px; flex-wrap: wrap; border-bottom: 1px solid var(--line); padding: 4px 0; }
+.dev-list li b { font-weight: 500; color: var(--ink); margin-left: auto; }
+.dev-list li small { color: var(--ink-3); flex-basis: 100%; }
+.dev-list .dev-quiet { color: var(--ink-3); }
+.dev-list .dev-none { color: var(--ink-3); border-bottom: 0; }
+.dev-note { margin: 10px 0 0; font-size: 12px; color: var(--ink-3); }
+.dev-controls { gap: 6px; }
+@media (max-width: 1100px) {
+  .dev-grid { grid-template-columns: 1fr; }
+  .dev-timing, .dev-spatial, .dev-sched, .dev-health { grid-column: 1; grid-row: auto; }
+}
