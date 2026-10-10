@@ -215,15 +215,16 @@
         <section id="view-development" class="view" hidden>
           <div class="dev-grid">
             <section class="card dev-panel dev-timing">
-              <div class="card-title"><div><p class="eyebrow">Scheduler</p><h2>Timing signal</h2></div><span class="dev-legend"><i class="dev-key line"></i>wave <i class="dev-key dots"></i>generated interval <i class="dev-key dash"></i>projection</span></div>
-              <canvas id="dev-wave" class="dev-canvas dev-wave-canvas" aria-label="Stochastic timing waveform"></canvas>
+              <div class="card-title"><div><p class="eyebrow">Scheduler</p><h2>Human-paced waits</h2></div><span class="dev-legend"><i class="dev-key dots"></i>generated wait <i class="dev-key hollow"></i>projected next wait <i class="dev-key band"></i>1–5 s</span></div>
+              <canvas id="dev-wave" class="dev-canvas dev-wave-canvas" aria-label="Generated waits and the projection of the next ones"></canvas>
               <dl class="dev-stats">
-                <div><dt>Wave now</dt><dd id="dev-signal">–</dd></div>
-                <div><dt>Baseline D0</dt><dd id="dev-base">–</dd></div>
-                <div><dt>Stochastic minimum</dt><dd id="dev-min">–</dd></div>
-                <div><dt>Last interval</dt><dd id="dev-interval">–</dd></div>
+                <div><dt>Wave sum, next step</dt><dd id="dev-signal">–</dd></div>
+                <div><dt>Floor m</dt><dd id="dev-base">–</dd></div>
+                <div><dt>Waits generated</dt><dd id="dev-min">–</dd></div>
+                <div><dt>Last generated wait</dt><dd id="dev-interval">–</dd></div>
                 <div><dt>Applied wait</dt><dd id="dev-applied">–</dd></div>
                 <div><dt>Made of</dt><dd id="dev-parts">–</dd></div>
+                <div><dt>Recent waits in 1–5 s</dt><dd id="dev-share">–</dd></div>
                 <div><dt>Next action in</dt><dd id="dev-countdown" class="dev-big">–</dd></div>
               </dl>
             </section>

@@ -336,7 +336,6 @@ impl Automation {
         server_header: &str,
     ) -> anyhow::Result<Option<String>> {
         let now = now_ms();
-        self.scheduler.tick(now);
         if now < self.safety_pause_until_ms {
             // Allow the operator to clear the safety trip by turning the mode off.
             if store.active_mode_tasks(account_id).await?.is_empty() {

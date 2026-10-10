@@ -21,7 +21,7 @@ Choosing a tower is pure arithmetic on towers the database already marks ready; 
 no network request. The default `advanced` mode uses a moving spotlight with directional
 momentum (see [`target-selection.md`](target-selection.md), which also records what it
 does and does not do to march lengths). The waits between the steps of an attack come from
-a stochastic generator whose output is always capped from below by the global limits (see
+a generator of ten superimposed waves, low-heavy with a long tail, whose output is always lengthened by the global limits (see
 [`timing.md`](timing.md)). Unexpected missing responses are counted over a rolling hour
 (see [`response-health.md`](response-health.md)), and the Development tab shows all of it
 live ([`development-tab.md`](development-tab.md)).

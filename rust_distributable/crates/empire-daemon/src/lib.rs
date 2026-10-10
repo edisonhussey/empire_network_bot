@@ -154,7 +154,9 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:47821";
 /// 46: spotlight target selection with directional momentum, stochastic wave-timed
 /// waits under the global limits, a rolling-hour response-health pause, and the
 /// read-only Development endpoints (`/v1/dev`, `/v1/dev/map`, `/v1/dev/movements`).
-pub const API_VERSION: u16 = 46;
+/// 47: waits come from ten superimposed waves stepped once per action (low-heavy,
+/// about 60 % between 1 and 5 s, floor 0.5 + rand/2 s) instead of three slow clock waves.
+pub const API_VERSION: u16 = 47;
 
 /// Is something already listening on the service port?
 ///

@@ -61,6 +61,15 @@ impl Rng {
         low + (high - low) * self.unit()
     }
 
+    /// Normal draw with no clamping: symmetric around `mean`, may be negative.
+    /// (`normal` below clamps at zero, which is right for a wait but would make
+    /// noise one-sided.)
+    pub fn gaussian(&mut self, mean: f64, standard_deviation: f64) -> f64 {
+        let u1 = self.unit().max(f64::MIN_POSITIVE);
+        let u2 = self.unit();
+        mean + standard_deviation * (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()
+    }
+
     /// Normal draw, clamped at zero so a wait is never negative.
     pub fn normal(&mut self, mean: f64, standard_deviation: f64) -> f64 {
         let u1 = self.unit().max(f64::MIN_POSITIVE);

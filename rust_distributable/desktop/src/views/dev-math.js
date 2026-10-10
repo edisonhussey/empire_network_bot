@@ -2,20 +2,18 @@
 /// everything takes the time it needs as an argument, so each function can be
 /// checked on its own (see dev-math.test.js).
 
-const TAU = Math.PI * 2;
-
-/// The deterministic wave sum at `atMs`, evolved from the snapshot taken at
-/// `snapshotMs` with the frequencies as they were then. Past the snapshot this is
-/// a projection, not a promise: frequencies drift slowly on the backend.
-export function signalAt(waves, snapshotMs, atMs) {
-  const seconds = (atMs - snapshotMs) / 1000;
-  return waves.reduce((sum, wave) => sum + wave.amplitude * Math.sin(wave.phase + TAU * wave.frequency_hz * seconds), 0);
+/// Position of `seconds` on a log axis running from `low` to `high`, 0 at the
+/// bottom and 1 at the top, clamped. A log axis is the right one for waits that are
+/// mostly short with a long tail: it keeps both the bulk and the tail readable.
+export function logPosition(seconds, low, high) {
+  const span = Math.log(high) - Math.log(low);
+  return Math.min(1, Math.max(0, (Math.log(Math.max(seconds, low)) - Math.log(low)) / span));
 }
 
-/// The stochastic part of an interval for a wave value (noise excluded):
-/// `D_min + D0 * exp(signal)`.
-export function intervalFromSignal(signal, minInterval, baseline) {
-  return minInterval + baseline * Math.exp(signal);
+/// Share of `values` inside [low, high], as a fraction. `null` with no values.
+export function shareInBand(values, low, high) {
+  if (!values.length) return null;
+  return values.filter((value) => value >= low && value <= high).length / values.length;
 }
 
 /// Fraction of a journey done at `now`, clamped to 0..1. `null` when the end is

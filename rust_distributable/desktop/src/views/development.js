@@ -1,8 +1,8 @@
 import { api } from "../api.js";
 import { element } from "../dom.js";
 import {
-  DEFAULT_VIEW, clampSize, endpoints, intervalFromSignal, makeViewport, movementState, panBy,
-  pointOnPath, shortDuration, signalAt, visible, zoomAbout,
+  DEFAULT_VIEW, clampSize, endpoints, logPosition, makeViewport, movementState, panBy,
+  pointOnPath, shareInBand, shortDuration, visible, zoomAbout,
 } from "./dev-math.js";
 
 /// The Development tab: a read-only window onto the scheduler.
@@ -13,13 +13,15 @@ import {
 ///
 /// Polling is deliberately slow (one snapshot a second, movements every two, the
 /// map when it opens, the kingdom changes, or every half minute for cooldowns).
-/// Smoothness comes from interpolating those snapshots against the clock on every
-/// animation frame: the waveform evolves from its parameters and each march is
-/// placed from its start and end timestamps, so no backend timer exists per
-/// movement and no frames are pushed.
+/// Smoothness comes from interpolating against the clock on every animation frame:
+/// each march is placed from its start and end timestamps, so no backend timer
+/// exists per movement and no frames are pushed. The timing chart is not a clock
+/// trace: the generator is stepped once per action (`t = t + 1`), so it shows the
+/// last waits actually used and the next ones the generator would give.
 
-const HISTORY_WINDOW_MS = 180_000;
-const PROJECTION_MS = 60_000;
+const HISTORY_STEPS = 40;
+const AXIS_LOW_S = 0.5;
+const AXIS_HIGH_S = 120;
 const MAP_REFRESH_MS = 30_000;
 const INK = "#fff";
 const DIM = "rgba(255,255,255,.40)";
@@ -128,69 +130,66 @@ export function createDevelopment() {
     const { context, width, height } = canvasSize(waveCanvas);
     context.clearRect(0, 0, width, height);
     const snap = state.snapshot;
+    context.font = "10px ui-monospace, Menlo, monospace";
     if (!snap || !snap.timing.waves.length) {
-      context.fillStyle = DIM; context.font = "12px ui-monospace, Menlo, monospace";
-      context.fillText("Waiting for a running session…", 12, 24);
+      context.fillStyle = DIM; context.fillText("Waiting for a running session…", 12, 24);
       return;
     }
     const timing = snap.timing;
-    const now = Date.now();
-    const left = now - HISTORY_WINDOW_MS;
-    const right = now + PROJECTION_MS;
-    const budget = timing.waves.reduce((sum, wave) => sum + wave.amplitude, 0) || 1;
-    const pad = { l: 40, r: 12, t: 12, b: 22 };
-    const x = (t) => pad.l + ((t - left) / (right - left)) * (width - pad.l - pad.r);
-    const y = (v) => pad.t + (1 - (v + budget * 1.25) / (budget * 2.5)) * (height - pad.t - pad.b);
+    const ahead = Math.max(1, timing.projection.length);
+    const pad = { l: 44, r: 12, t: 14, b: 22 };
+    // Step offsets run from -HISTORY_STEPS (oldest shown) to ahead-1 (furthest projection);
+    // 0 is the next wait to be generated.
+    const x = (offset) => pad.l + ((offset + HISTORY_STEPS + 0.5) / (HISTORY_STEPS + ahead)) * (width - pad.l - pad.r);
+    const y = (seconds) => pad.t + (1 - logPosition(seconds, AXIS_LOW_S, AXIS_HIGH_S)) * (height - pad.t - pad.b);
 
-    context.lineWidth = 1; context.font = "10px ui-monospace, Menlo, monospace";
-    context.strokeStyle = FAINT; context.fillStyle = DIM;
-    for (const level of [-budget, 0, budget]) {
-      context.beginPath(); context.moveTo(pad.l, y(level)); context.lineTo(width - pad.r, y(level)); context.stroke();
-      context.fillText(level === 0 ? "0" : level.toFixed(2), 4, y(level) + 3);
+    // The band the design aims about 60 % of waits into.
+    const [bandLow, bandHigh] = timing.target_band_s;
+    context.fillStyle = "rgba(94,208,138,.10)";
+    context.fillRect(pad.l, y(bandHigh), width - pad.l - pad.r, y(bandLow) - y(bandHigh));
+    context.lineWidth = 1; context.strokeStyle = FAINT; context.fillStyle = DIM;
+    for (const seconds of [1, 2, 5, 10, 30, 60]) {
+      context.beginPath(); context.moveTo(pad.l, y(seconds)); context.lineTo(width - pad.r, y(seconds)); context.stroke();
+      context.fillText(`${seconds}s`, 8, y(seconds) + 3);
     }
-    for (let seconds = -150; seconds <= 60; seconds += 30) {
-      const px = x(now + seconds * 1000);
-      context.beginPath(); context.moveTo(px, height - pad.b); context.lineTo(px, height - pad.b + 4); context.stroke();
-      context.fillText(seconds === 0 ? "now" : `${seconds > 0 ? "+" : ""}${seconds}s`, px - 10, height - 6);
-    }
+    context.setLineDash([2, 4]); context.strokeStyle = DIM;
+    context.beginPath(); context.moveTo(pad.l, y(timing.floor_s)); context.lineTo(width - pad.r, y(timing.floor_s)); context.stroke();
+    context.setLineDash([]);
+    context.fillText(`floor ${timing.floor_s.toFixed(2)}s`, width - 84, y(timing.floor_s) - 4);
 
-    // Recorded history from the backend, then the live edge evolved from the
-    // current parameters so the line keeps moving between snapshots.
-    context.strokeStyle = INK; context.lineWidth = 1.25; context.beginPath();
-    let started = false;
-    for (const [t, value] of timing.history) {
-      if (t < left || t > snap.at_ms) continue;
-      const px = x(t);
-      if (started) context.lineTo(px, y(value)); else { context.moveTo(px, y(value)); started = true; }
-    }
-    for (let t = snap.at_ms; t <= now; t += 1000) {
-      const px = x(t); const py = y(signalAt(timing.waves, snap.at_ms, t));
-      if (started) context.lineTo(px, py); else { context.moveTo(px, py); started = true; }
-    }
+    // Waits actually used, oldest to newest, ending just before "now".
+    const used = timing.recent.slice(0, HISTORY_STEPS).reverse();
+    context.strokeStyle = "rgba(94,208,138,.35)"; context.beginPath();
+    used.forEach((item, position) => {
+      const px = x(position - used.length); const py = y(item.waited_s);
+      if (position === 0) context.moveTo(px, py); else context.lineTo(px, py);
+    });
     context.stroke();
+    used.forEach((item, position) => {
+      const px = x(position - used.length);
+      context.fillStyle = OK; context.beginPath(); context.arc(px, y(item.waited_s), 2.4, 0, Math.PI * 2); context.fill();
+      if (item.applied_s - item.waited_s > 0.05) {
+        // A global limit made this one longer than the generator's own wait.
+        context.strokeStyle = "rgba(255,255,255,.6)"; context.beginPath(); context.arc(px, y(item.applied_s), 3, 0, Math.PI * 2); context.stroke();
+      }
+    });
 
-    // The projection, drawn dashed and labelled as one.
-    context.setLineDash([4, 4]); context.strokeStyle = DIM; context.beginPath();
-    for (let t = now; t <= right; t += 1000) {
-      const px = x(t); const py = y(signalAt(timing.waves, snap.at_ms, t));
-      if (t === now) context.moveTo(px, py); else context.lineTo(px, py);
-    }
+    // The next waits as the generator stands now. Dashed and hollow: a projection.
+    context.setLineDash([3, 4]); context.strokeStyle = DIM; context.beginPath();
+    timing.projection.forEach((item, position) => {
+      const px = x(position); const py = y(item.interval_s);
+      if (position === 0) context.moveTo(px, py); else context.lineTo(px, py);
+    });
     context.stroke(); context.setLineDash([]);
-    context.fillStyle = DIM; context.fillText("projection, not a promise", x(now) + 8, pad.t + 10);
+    context.strokeStyle = INK;
+    timing.projection.forEach((item, position) => {
+      context.beginPath(); context.arc(x(position), y(item.interval_s), 2.4, 0, Math.PI * 2); context.stroke();
+    });
 
-    // Intervals actually generated: signal + noise. The gap between each dot and
-    // the line is the stochastic residual.
-    context.fillStyle = OK; context.strokeStyle = "rgba(94,208,138,.45)";
-    for (const sample of timing.recent) {
-      if (sample.at_ms < left) continue;
-      const px = x(sample.at_ms);
-      context.beginPath(); context.moveTo(px, y(sample.signal)); context.lineTo(px, y(sample.signal + sample.noise)); context.stroke();
-      context.beginPath(); context.arc(px, y(sample.signal + sample.noise), 2.2, 0, Math.PI * 2); context.fill();
-    }
-
-    context.strokeStyle = FAINT; context.beginPath(); context.moveTo(x(now), pad.t); context.lineTo(x(now), height - pad.b); context.stroke();
-    const live = signalAt(timing.waves, snap.at_ms, now);
-    context.fillStyle = INK; context.beginPath(); context.arc(x(now), y(live), 3, 0, Math.PI * 2); context.fill();
+    context.strokeStyle = FAINT; context.beginPath(); context.moveTo(x(-0.5), pad.t); context.lineTo(x(-0.5), height - pad.b); context.stroke();
+    context.fillStyle = DIM;
+    context.fillText("used", x(-HISTORY_STEPS / 2), height - 6);
+    context.fillText("projection of the next waits, not a promise", x(1), height - 6);
   }
 
   // ---- map ------------------------------------------------------------------
@@ -319,12 +318,14 @@ export function createDevelopment() {
     if (!snap) { text("#dev-state", state.error || "Waiting for a running session…"); return; }
     const now = Date.now();
     const timing = snap.timing; const sched = snap.scheduler; const last = timing.last;
-    text("#dev-signal", signalAt(timing.waves, snap.at_ms, now).toFixed(3));
-    text("#dev-base", `${timing.baseline_s.toFixed(2)} s`);
-    text("#dev-min", `${timing.min_interval_s.toFixed(2)} s`);
-    text("#dev-interval", last ? `${last.stochastic_s.toFixed(2)} s` : "–");
-    text("#dev-applied", last ? `${last.applied_s.toFixed(2)} s${last.applied_s - last.stochastic_s > 0.05 ? ` (+${(last.applied_s - last.stochastic_s).toFixed(2)} s by limit)` : ""}` : "–");
-    text("#dev-parts", last ? `wave ${last.signal.toFixed(2)} · noise ${last.noise.toFixed(2)} · floor ${last.floor_s.toFixed(2)} s` : "–");
+    text("#dev-signal", timing.signal_now.toFixed(3));
+    text("#dev-base", `${timing.floor_s.toFixed(2)} s`);
+    text("#dev-min", String(timing.index));
+    text("#dev-interval", last ? `${last.raw_s.toFixed(2)} s` : "–");
+    text("#dev-applied", last ? `${last.applied_s.toFixed(2)} s${last.applied_s - last.raw_s > 0.05 ? ` (+${(last.applied_s - last.raw_s).toFixed(2)} s from limits)` : ""}` : "–");
+    text("#dev-parts", last ? `wave ${last.signal.toFixed(2)} · noise ${last.noise.toFixed(2)} · protocol min ${last.protocol_floor_s.toFixed(2)} s` : "–");
+    const share = shareInBand(timing.recent.map((item) => item.raw_s), timing.target_band_s[0], timing.target_band_s[1]);
+    text("#dev-share", share == null ? "–" : `${Math.round(share * 100)}% of ${timing.recent.length}`);
     const next = sched.next_action_at_ms;
     text("#dev-countdown", next == null ? "–" : next <= now ? "due" : shortDuration(next - now));
     text("#dev-state", sched.state.replaceAll("_", " "));
@@ -347,7 +348,7 @@ export function createDevelopment() {
     const recent = document.querySelector("#dev-recent");
     recent.replaceChildren(...snap.timing.recent.slice(0, 10).map((item) => {
       const row = element("li");
-      row.append(element("span", "", new Date(item.at_ms).toLocaleTimeString()), element("span", "", item.wait === "before_attack" ? "before attack" : "after ack"), element("b", "", `${item.applied_s.toFixed(2)} s`));
+      row.append(element("span", "", `#${item.index}`), element("span", "", item.wait === "before_attack" ? "before attack" : "after ack"), element("b", "", `${item.applied_s.toFixed(2)} s`));
       if (item.restriction) row.append(element("small", "", item.restriction));
       return row;
     }));

@@ -122,7 +122,8 @@ async fn expected_target_rejections_never_trip_the_global_safety_pause() {
             panic!("expected rejection to queue a cooldown re-read");
         };
         assert!(due_ms >= observed_at + 750);
-        assert!(due_ms <= observed_at + 3_500);
+        // The wait is low-heavy with a long tail, so only its ceiling is fixed.
+        assert!(due_ms <= observed_at + 125_000);
         assert!(automation.operational_errors.is_empty());
         assert_eq!(automation.safety_pause_until_ms, 0);
     }
@@ -947,14 +948,15 @@ async fn the_stochastic_wait_never_beats_the_global_cra_spacing() {
     let store = tower_store(0).await;
     for _ in 0..40 {
         let mut automation = Automation::new();
-        automation.last_cra_ms = Some(now_ms());
         let AutomationPhase::AwaitAdi { mut task, target, deadline_ms } = awaiting_rbc_info().phase
         else {
             unreachable!()
         };
         task.payload = json!([]);
         automation.phase = AutomationPhase::AwaitAdi { task, target, deadline_ms };
+        // The last attack and the reference instant are the same moment.
         let before = now_ms();
+        automation.last_cra_ms = Some(before);
         automation
             .observe(&store, "ventrilo", "%xt%adi%1%0%{\"gli\":{\"C\":[{\"ID\":0}]}}%")
             .await;
@@ -963,14 +965,14 @@ async fn the_stochastic_wait_never_beats_the_global_cra_spacing() {
         };
         assert!(due_ms >= before + 4_000, "due in {} ms", due_ms - before);
         let last = automation.scheduler.last().expect("the wait is recorded");
-        assert!(last.stochastic_s >= 2.0, "its own minimum applies");
+        assert!(last.waited_s >= 2.0, "its own minimum applies");
         // The limit is named whenever it decided; if the stochastic wait was
         // already longer than the spacing, no limit was in play.
         assert!(
-            last.restriction == Some("global cra spacing") || last.stochastic_s >= 4.0,
+            last.restriction == Some("global cra spacing") || last.waited_s >= 4.0,
             "{last:?}"
         );
-        assert!(last.applied_s >= last.stochastic_s);
+        assert!(last.applied_s >= last.waited_s);
     }
 }
 
@@ -1089,9 +1091,11 @@ async fn taking_a_snapshot_for_the_development_tab_changes_nothing_in_the_bot() 
     assert_eq!((automation.last_cra_ms, &automation.detail), (Some(123), &detail));
     // The model keeps moving with real time and the snapshot carries what the tab
     // needs to draw it, without any credentials or packets.
-    assert_eq!(first.timing.waves.len(), 3);
-    assert!(first.timing.waves.iter().all(|wave| wave.frequency_hz > 0.0 && wave.phase.is_finite()));
-    assert_eq!(first.timing.min_interval_s, 0.4);
+    assert_eq!(first.timing.waves.len(), 10);
+    assert!(first.timing.waves.iter().all(|wave| wave.omega > 0.0 && wave.phase.is_finite()));
+    assert!((0.5..1.0).contains(&first.timing.floor_s));
+    assert_eq!(first.timing.projection.len(), 30);
+    assert_eq!(first.timing.projection[0].index, second.timing.projection[0].index, "taking a snapshot uses up no values");
     assert_eq!(second.scheduler.state, "refreshing_tower");
     assert_eq!(first.health.tolerance, 2);
     let text = serde_json::to_string(&first).unwrap();

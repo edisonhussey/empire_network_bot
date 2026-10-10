@@ -6,13 +6,16 @@ Closing it, or leaving the tab, changes nothing about execution.
 
 ## What it shows
 
-* **Timing signal**: a scrolling graph of the recent wave sum (three minutes of history
-  from the backend), a dashed one-minute **projection** labelled as a projection, and
-  green dots for the intervals actually generated. The distance between a dot and the
-  line is the stochastic noise, so the deterministic part and the residual are visible
-  apart. Beside it: the wave value now, the baseline `D0`, the stochastic minimum, the
-  last interval and what it was made of, the wait actually applied (with any extra the
-  global limit added), and a live countdown to the next permitted action.
+* **Human-paced waits**: a log-scale chart (0.5 s to 120 s). Green points are the last 40
+  waits actually used, in order; a hollow ring marks one a global limit made longer. The
+  green band is 1 to 5 s, where about 60 % of waits are meant to fall, and a dashed line
+  marks the floor `m`. To the right, hollow points are the **projection** of the next 30
+  waits from the generator as it stands, labelled a projection. The line is not a clock
+  trace: the generator advances one step per action (`t = t + 1`), so the chart is in
+  actions. Beside it: the wave sum at the next step, the floor, how many waits have been
+  generated, the last generated wait and what it was made of (wave, noise, protocol
+  minimum), the wait actually applied with any extra the limits added, the share of recent
+  waits inside 1 to 5 s, and a live countdown to the next permitted action.
 * **Diagnostics**: scheduler state and detail, the global restriction in force, the last
   completed attack, the current kingdom, eligible towers, how many are near the
   spotlight (and whether it will relocate), and the recent waits.
@@ -34,7 +37,7 @@ Closing it, or leaving the tab, changes nothing about execution.
   database, no network) and the tab reads it with a plain `GET /v1/dev`.
 * The tab polls slowly (snapshot every second, movements every two, tower positions when
   it opens, when the kingdom changes, and every thirty seconds for cooldowns) and does
-  all animation itself. The waveform is evolved from its parameters and each march is
+  all animation itself. each march is
   placed from its start and end timestamps with
   `p = clamp((now - start) / (end - start), 0, 1)`, on every animation frame. There is
   no backend timer per movement, tower or frame.

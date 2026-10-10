@@ -2,27 +2,26 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  DEFAULT_VIEW, MAX_VIEW, MIN_VIEW, endpoints, intervalFromSignal, makeViewport, movementState,
-  panBy, pointOnPath, progressOf, shortDuration, signalAt, visible, zoomAbout,
+  DEFAULT_VIEW, MAX_VIEW, MIN_VIEW, endpoints, logPosition, makeViewport, movementState,
+  panBy, pointOnPath, progressOf, shareInBand, shortDuration, visible, zoomAbout,
 } from "./dev-math.js";
 
 const close = (a, b, epsilon = 1e-9) => assert.ok(Math.abs(a - b) < epsilon, `${a} vs ${b}`);
 
-test("the wave sum matches the backend formula and stays inside the amplitude budget", () => {
-  const waves = [
-    { frequency_hz: 0.01, amplitude: 0.3, phase: 0 },
-    { frequency_hz: 0.05, amplitude: 0.2, phase: 1 },
-  ];
-  close(signalAt(waves, 1_000, 1_000), 0.2 * Math.sin(1));
-  // 25 s later the first wave is a quarter of the way round.
-  close(signalAt([waves[0]], 0, 25_000), 0.3 * Math.sin(2 * Math.PI * 0.01 * 25));
-  for (let t = 0; t < 600_000; t += 500) assert.ok(Math.abs(signalAt(waves, 0, t)) <= 0.5 + 1e-9);
+test("a log axis spreads short waits and still holds the long tail", () => {
+  close(logPosition(0.5, 0.5, 120), 0);
+  close(logPosition(120, 0.5, 120), 1);
+  close(logPosition(Math.sqrt(0.5 * 120), 0.5, 120), 0.5);
+  assert.equal(logPosition(0.01, 0.5, 120), 0, "clamped below");
+  assert.equal(logPosition(999, 0.5, 120), 1, "clamped above");
+  // 1 s to 5 s takes real room on the axis, not a sliver.
+  assert.ok(logPosition(5, 0.5, 120) - logPosition(1, 0.5, 120) > 0.25);
 });
 
-test("the interval is the floor plus the baseline scaled by exp(signal)", () => {
-  close(intervalFromSignal(0, 0.4, 1), 1.4);
-  close(intervalFromSignal(Math.log(2), 0.4, 1.5), 3.4);
-  assert.ok(intervalFromSignal(-5, 0.4, 1) > 0.4, "never below the floor");
+test("the share of waits in the 1 to 5 second band", () => {
+  assert.equal(shareInBand([], 1, 5), null);
+  assert.equal(shareInBand([0.8, 1, 2, 5, 5.01, 30], 1, 5), 3 / 6);
+  assert.equal(shareInBand([2, 3, 4], 1, 5), 1);
 });
 
 test("progress is the clamped fraction and unknown stays unknown", () => {

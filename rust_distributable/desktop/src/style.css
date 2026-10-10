@@ -497,6 +497,8 @@ dialog[open] { display: grid; gap: 12px; }
 .dev-key { display: inline-block; width: 14px; height: 0; border-top: 1px solid var(--ink); vertical-align: middle; margin-left: 8px; }
 .dev-key.dots { border-top: 0; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
 .dev-key.dash { border-top-style: dashed; border-color: var(--ink-3); }
+.dev-key.hollow { border-top: 0; width: 6px; height: 6px; border-radius: 50%; border: 1px solid var(--ink-2); background: transparent; }
+.dev-key.band { border-top: 0; width: 14px; height: 8px; background: rgba(94,208,138,.18); }
 .dev-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px 24px; margin: 18px 0 0; }
 .dev-stats.dev-stack { grid-template-columns: 1fr; gap: 10px; margin-top: 0; }
 .dev-stats dt { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
