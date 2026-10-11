@@ -1,4 +1,4 @@
-"""Receive-only mitmproxy addon, isolated from the automation listener."""
+"""Bidirectional mitmproxy recorder, isolated from the automation listener."""
 from __future__ import annotations
 import asyncio
 import json
@@ -69,20 +69,19 @@ class PacketMonitor:
         if not matches_game_url(flow.request.url) or not flow.websocket:
             return
         message = flow.websocket.messages[-1]
-        if message.from_client:
-            return
         # Timestamp and enqueue only; parsing, summaries and disk writes are off path.
         received_at = getattr(message, "timestamp", None) or time.time()
-        decoded = self.decoder.decode(message.content, str(id(flow)), message.is_text)
+        decoded = self.decoder.decode(message.content, f"{id(flow)}:{message.from_client}", message.is_text)
         if decoded.startswith(("TEXT FRAME; base64:", "BINARY FRAME; base64:")):
             return
-        self.recorder.capture(decoded, received_at)
+        self.recorder.capture(decoded, received_at, "sent" if message.from_client else "received")
         # Long lived sockets otherwise retain every intercepted frame in RAM.
         if len(flow.websocket.messages) > 8:
             del flow.websocket.messages[:-8]
 
     def websocket_end(self, flow: http.HTTPFlow):
-        self.decoder.forget(str(id(flow)))
+        self.decoder.forget(f"{id(flow)}:True")
+        self.decoder.forget(f"{id(flow)}:False")
         if matches_game_url(flow.request.url):
             self.connected = False
             self._status()

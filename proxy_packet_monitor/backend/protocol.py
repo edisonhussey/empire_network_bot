@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import zlib
+from xml.etree import ElementTree
 from urllib.parse import urlparse
 
 
@@ -43,13 +44,13 @@ def parse_xt_packet(packet: str) -> dict | None:
     if len(fields) < 4 or fields[0] != "xt":
         return None
     if fields[1].startswith("EmpireEx_"):
-        if len(fields) < 5:
+        if len(fields) < 4:
             return None
         header, command, request_id = fields[1:4]
         if len(fields) >= 6 and fields[4] in {"0", "1", "2", "3", "4", "5", "256"}:
             status, payload_text = fields[4:6]
         else:
-            status, payload_text = None, fields[4]
+            status, payload_text = None, fields[4] if len(fields) >= 5 else ""
     else:
         header, command, request_id, status = None, fields[1], fields[2], fields[3]
         payload_text = fields[4] if len(fields) >= 5 else ""
@@ -61,9 +62,41 @@ def parse_xt_packet(packet: str) -> dict | None:
             "status": status, "payload": payload, "raw": packet}
 
 
+def _xml_node(element: ElementTree.Element) -> dict:
+    node = {"tag": element.tag}
+    if element.attrib:
+        node["attributes"] = dict(element.attrib)
+    if element.text and element.text.strip():
+        node["text"] = element.text.strip()
+    children = list(element)
+    if children:
+        node["children"] = [_xml_node(child) for child in children]
+    return node
+
+
+def parse_packet(packet: str) -> dict | None:
+    """Parse the observed XT and XML game WebSocket frames in either direction."""
+    xt = parse_xt_packet(packet)
+    if xt is not None:
+        return xt
+    if not packet.lstrip().startswith("<"):
+        return None
+    try:
+        root = ElementTree.fromstring(packet)
+    except ElementTree.ParseError:
+        return None
+    body = root.find("body")
+    command = body.get("action") if body is not None else root.tag
+    return {"format": "xml", "server_header": None, "command": command,
+            "request_id": body.get("r") if body is not None else None,
+            "status": None, "payload": _xml_node(root), "raw": packet}
+
+
 def summary(parsed: dict | None) -> str:
     if not parsed:
-        return "Unparsed server message"
+        return "Unparsed message"
+    if parsed.get("format") == "xml":
+        return f"XML {parsed['payload']['tag']} · {parsed['command']}"
     payload = parsed["payload"]
     if isinstance(payload, dict):
         parts = []

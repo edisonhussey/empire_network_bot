@@ -8,11 +8,12 @@ import time
 import uuid
 from pathlib import Path
 from queue import SimpleQueue
-from .protocol import parse_xt_packet, summary
+from .protocol import parse_packet, summary
 
 SCHEMA = """CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE events(seq INTEGER PRIMARY KEY, received_at REAL NOT NULL, type TEXT NOT NULL,
- summary TEXT NOT NULL, raw TEXT NOT NULL, decoded TEXT NOT NULL);
+ summary TEXT NOT NULL, raw TEXT NOT NULL, decoded TEXT NOT NULL,
+ direction TEXT NOT NULL CHECK(direction IN ('sent', 'received')));
 CREATE INDEX event_type ON events(type, seq);"""
 
 
@@ -31,6 +32,13 @@ def metadata(conn: sqlite3.Connection) -> dict:
 
 def set_meta(conn: sqlite3.Connection, **values) -> None:
     conn.executemany("INSERT OR REPLACE INTO metadata VALUES (?,?)", [(key, json.dumps(value)) for key, value in values.items()])
+
+
+def event_columns(conn: sqlite3.Connection, columns: str = "*") -> str:
+    """Older receive-only sessions have no direction column."""
+    if any(row[1] == "direction" for row in conn.execute("PRAGMA table_info(events)")):
+        return columns
+    return columns.replace("direction", "'received' AS direction") if columns != "*" else "events.*, 'received' AS direction"
 
 
 class Recorder:
@@ -62,12 +70,14 @@ class Recorder:
                 self.active = False
                 self.queue.put(("stop", self.session_id, time.time()))
 
-    def capture(self, raw: str, received_at: float) -> None:
+    def capture(self, raw: str, received_at: float, direction: str = "received") -> None:
+        if direction not in {"sent", "received"}:
+            raise ValueError("invalid packet direction")
         with self.lock:
             if not self.active:
                 return
             self.seq += 1
-            self.queue.put(("event", self.session_id, self.seq, received_at, raw))
+            self.queue.put(("event", self.session_id, self.seq, received_at, raw, direction))
 
     def close(self) -> None:
         self.stop()
@@ -87,14 +97,14 @@ class Recorder:
                     path = self.root / f"{item[1]}.partial.sqlite3"
                     conn = sqlite3.connect(path)
                     conn.executescript(SCHEMA)
-                    set_meta(conn, version=1, id=item[1], started_at=item[2], ended_at=None, event_count=0)
+                    set_meta(conn, version=2, id=item[1], started_at=item[2], ended_at=None, event_count=0)
                     conn.commit()
                     count = 0
                 elif op == "event" and conn:
-                    _, _, seq, received_at, raw = item
-                    parsed = parse_xt_packet(raw)
+                    _, _, seq, received_at, raw, direction = item
+                    parsed = parse_packet(raw)
                     kind = (parsed or {}).get("command") or "unknown"
-                    conn.execute("INSERT INTO events VALUES (?,?,?,?,?,?)", (seq, received_at, kind.upper(), summary(parsed), raw, json.dumps(parsed, ensure_ascii=False)))
+                    conn.execute("INSERT INTO events VALUES (?,?,?,?,?,?,?)", (seq, received_at, kind.upper(), summary(parsed), raw, json.dumps(parsed, ensure_ascii=False), direction))
                     count += 1
                     if count % 100 == 0:
                         conn.commit()
@@ -155,7 +165,7 @@ def events(root: Path, session_id: str, types: list[str], query: str, limit: int
             params.extend([f"%{query}%"] * 3)
         clause = " WHERE " + " AND ".join(where) if where else ""
         count = conn.execute("SELECT count(*) FROM events" + clause, params).fetchone()[0]
-        rows = conn.execute("SELECT seq,received_at,type,summary FROM events" + clause + " ORDER BY seq LIMIT ? OFFSET ?", [*params, limit, offset]).fetchall()
+        rows = conn.execute("SELECT " + event_columns(conn, "seq,received_at,type,summary,direction") + " FROM events" + clause + " ORDER BY seq LIMIT ? OFFSET ?", [*params, limit, offset]).fetchall()
         counts = conn.execute("SELECT type,count(*) FROM events GROUP BY type ORDER BY count(*) DESC").fetchall()
         return {"total": count, "events": [dict(row) for row in rows], "types": dict(counts)}
 
@@ -163,7 +173,7 @@ def events(root: Path, session_id: str, types: list[str], query: str, limit: int
 def event(root: Path, session_id: str, seq: int) -> dict:
     with sqlite3.connect(db_path(root, session_id)) as conn:
         conn.row_factory = sqlite3.Row
-        row = conn.execute("SELECT * FROM events WHERE seq=?", (seq,)).fetchone()
+        row = conn.execute("SELECT " + event_columns(conn) + " FROM events WHERE seq=?", (seq,)).fetchone()
         if row is None:
             raise FileNotFoundError(seq)
         result = dict(row)
@@ -178,7 +188,7 @@ def export_session(root: Path, session_id: str, destination: Path) -> None:
         temp = destination.with_suffix(destination.suffix + ".tmp")
         with temp.open("w", encoding="utf-8") as file:
             file.write('{"metadata":' + json.dumps(info, ensure_ascii=False) + ',"events":[')
-            for index, row in enumerate(conn.execute("SELECT * FROM events ORDER BY seq")):
+            for index, row in enumerate(conn.execute("SELECT " + event_columns(conn) + " FROM events ORDER BY seq")):
                 record = dict(row)
                 record["decoded"] = json.loads(record["decoded"])
                 if index:

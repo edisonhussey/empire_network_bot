@@ -4,3 +4,7 @@
 /desktop/dist/
 /desktop/src-tauri/target/
 /backend/__pycache__/
+
+/web_data/
+/web_config.json
+/tests/__pycache__/
