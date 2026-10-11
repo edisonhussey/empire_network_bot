@@ -1,0 +1,1 @@
+{"name":"proxy-packet-monitor","private":true,"version":"0.1.0","type":"module","scripts":{"dev":"vite --host 127.0.0.1 --port 1421","build":"vite build","tauri":"tauri"},"devDependencies":{"@tauri-apps/cli":"^2.8.0","vite":"^6.1.0"}}

@@ -1,0 +1,6 @@
+/data/
+/config.json
+/desktop/node_modules/
+/desktop/dist/
+/desktop/src-tauri/target/
+/backend/__pycache__/
