@@ -106,6 +106,16 @@ keep `troops_returned` / `troops_lost` empty.
 Which account a captured packet belongs to. The log is still capped at 200 rows
 (`RECENT_MESSAGE_LIMIT`); it is a debugging aid, not history.
 
+## V21: the PVP record
+
+* `pvp_movement`: one row per other-player movement, `(account_id, mid)` key, kept indefinitely
+  (about 250 bytes a row). Learned once; only an unknown army size or name is filled in later.
+  `retreated_at_ms` is final. Indexed for paging and for the map's active query.
+* `account_alliance`: one row per account (player id and name, alliance id and name) from the
+  login `gbd`.
+
+Neither is cleared by "reset account". See [`pvp.md`](pvp.md).
+
 ## Size
 
 For one account running one troop type flat out:

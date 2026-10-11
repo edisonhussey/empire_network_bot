@@ -25,6 +25,7 @@ pub(super) async fn observe_account_packet(
     {
         warn!(%error, %account_id, command = %packet.command, "navigation persistence failed");
     }
+    pvp::observe(store, account_id, &packet).await;
     let result = match packet.command.as_str() {
         "gbd" => {
             let castles = owned_castles(&packet.payload);

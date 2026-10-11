@@ -5,6 +5,7 @@ mod fortress_discovery;
 mod health;
 mod observe;
 mod packets;
+mod pvp;
 mod recruitment;
 mod scheduler;
 #[cfg(test)]

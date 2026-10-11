@@ -4,6 +4,7 @@ import { compactNumber, expiryLabel, humanWait, humanize, relativeTime, sessionD
 import { createHeaderControls, modeUsesFortress } from "./views/header-controls.js";
 import { renderRubyChart } from "./views/ruby-chart.js";
 import { createDevelopment } from "./views/development.js";
+import { createPvp } from "./views/pvp.js";
 import { renderSparkBars } from "./views/spark-bars.js";
 const activation = $("#activation");
 const appShell = $("#app-shell");
@@ -162,11 +163,13 @@ const viewTitles = {
   initialize: ["Workspace", "Initialize"],
   presets: ["Library", "Manage presets"],
   logs: ["Diagnostics", "Logs"],
+  pvp: ["Intelligence", "PVP"],
   development: ["Diagnostics", "Development"],
   support: ["Help", "Support"],
 };
 
 const development = createDevelopment();
+const pvp = createPvp();
 
 function switchView(name) {
   document.querySelectorAll(".view").forEach((view) => { view.hidden = view.id !== `view-${name}`; });
@@ -180,6 +183,7 @@ function switchView(name) {
   // The Development tab animates and polls only while it is on screen; the bot
   // itself is unaffected either way.
   if (name === "development") development.show(); else development.hide();
+  if (name === "pvp") pvp.show(); else pvp.hide();
 }
 
 function setNavGroup(group, open) {

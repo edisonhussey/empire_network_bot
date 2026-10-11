@@ -1,6 +1,7 @@
 mod direct;
 mod licence;
 mod plans;
+mod pvp;
 mod relay;
 
 use std::{
@@ -156,7 +157,9 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:47821";
 /// read-only Development endpoints (`/v1/dev`, `/v1/dev/map`, `/v1/dev/movements`).
 /// 47: waits come from ten superimposed waves stepped once per action (low-heavy,
 /// about 60 % between 1 and 5 s, floor 0.5 + rand/2 s) instead of three slow clock waves.
-pub const API_VERSION: u16 = 47;
+/// 48: the PVP tab: `GET /v1/pvp` pages other players' movements recorded from `gam`
+/// (incoming, outgoing, retreated), and the Development tab can draw them.
+pub const API_VERSION: u16 = 48;
 
 /// Is something already listening on the service port?
 ///
@@ -248,6 +251,7 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
         .route("/v1/dev", get(dev_snapshot))
         .route("/v1/dev/map", get(dev_map))
         .route("/v1/dev/movements", get(dev_movements))
+        .route("/v1/pvp", get(pvp::pvp))
         .route("/v1/relay", get(relay_socket))
         .layer(cors)
         .with_state(state);

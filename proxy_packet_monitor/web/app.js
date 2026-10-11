@@ -1,6 +1,6 @@
 const API = '';
 const app = document.querySelector('#app');
-const state = { sessions: [], selected: null, rows: [], counts: {}, total: 0, offset: 0, types: new Set(), query: '', event: null, raw: false, status: null, busy: false, settings: null, tab: 'sessions', incoming: null };
+const state = { sessions: [], selected: null, rows: [], counts: {}, total: 0, offset: 0, types: new Set(), query: '', event: null, raw: false, status: null, busy: false, settings: null, tab: 'sessions', incoming: null, autoSupport: null };
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const date = value => value ? new Date(value * 1000).toLocaleString() : '—';
 const time = value => value ? new Date(value * 1000).toLocaleTimeString(undefined,{hour12:false, fractionalSecondDigits:3}) : '—';
@@ -104,18 +104,44 @@ function connectionHint(status) {
   return 'Proxy is listening, but no WebSocket has reached it. Check the game client proxy address and mitmproxy certificate.';
 }
 function incomingPanel() {
-  const data = state.incoming || {location:null, active:[], arrived:[], active_count:0};
+  const data = state.incoming || {location:null, castles:[], active:[], arrived:[], active_count:0};
   const loc = data.location;
-  const label = loc ? `Kingdom ${loc.own_kid} · ${loc.own_x}, ${loc.own_y}` : 'No location configured';
-  const row = entry => `<details class="incoming-entry"><summary><span class="mono">${entry.mid}</span><strong>${esc(entry.sender.name || 'Unknown player')}</strong><span>${entry.source.x ?? '—'}, ${entry.source.y ?? '—'}</span><span>${esc(new Date(entry.arrival_at*1000).toLocaleTimeString())}</span><span class="countdown" data-arrival="${entry.arrival_at}"></span><span>${entry.composition.troops ?? 'Unknown'}</span><span>${entry.composition.tools ?? 'Unknown'}</span></summary><div class="incoming-detail"><section><h3>Movement</h3>${nodeView('MID',entry.mid)}${nodeView('KID',entry.kid)}${nodeView('PT at first observation',entry.pt)}${nodeView('TT',entry.tt)}${nodeView('Estimated arrival',date(entry.arrival_at))}${nodeView('First observed',date(entry.first_observed_at))}</section><section><h3>Sender</h3>${personDetail(entry.sender,entry.source,entry.kid)}</section><section><h3>Receiver</h3>${personDetail(entry.receiver,entry.target,entry.kid)}</section><section><h3>Composition</h3>${nodeView('Total troops',entry.composition.troops ?? 'Unknown')}${nodeView('Total tools',entry.composition.tools ?? 'Unknown')}${nodeView('Waves',entry.composition.waves ?? 'Unknown')}${nodeView('Left flank',entry.composition.left ?? 'Unknown')}${nodeView('Centre',entry.composition.middle ?? 'Unknown')}${nodeView('Right flank',entry.composition.right ?? 'Unknown')}</section></div></details>`;
-  return `<section class="incoming-view" ${state.tab==='incoming'?'':'hidden'}><div class="incoming-header"><div><span class="eyebrow">EXPERIMENTAL · GAM ONLY</span><h1>Incoming</h1><p>Watching ${esc(label)} · <b id="active-count">${data.active_count}</b> active incoming candidates · ${state.status?.connected ? "Game connected" : state.status?.proxy_running ? "Proxy waiting for game" : "Proxy stopped"}</p></div><form id="location-form" class="location-form"><label>Kingdom<input name="own_kid" type="number" min="0" required value="${loc?.own_kid ?? ''}"></label><label>X<input name="own_x" type="number" min="0" required value="${loc?.own_x ?? ''}"></label><label>Y<input name="own_y" type="number" min="0" required value="${loc?.own_y ?? ''}"></label><button class="primary" type="submit">Set location</button></form></div><div class="incoming-note"><strong>Connection:</strong> Set the game client HTTP proxy to <code>127.0.0.1:${state.status?.proxy_port || 8080}</code>. The dashboard runs separately on <code>127.0.0.1:8799</code>. ${connectionHint(state.status)}<br>A matching GAM movement is an incoming candidate. Arrival is estimated from TT − PT; passing the ETA does not confirm arrival.</div><div class="incoming-list"><h2>Active incoming <span>${data.active.length}</span></h2><div class="incoming-table-head"><span>MID</span><span>SENDER</span><span>SOURCE</span><span>ARRIVAL</span><span>REMAINING</span><span>TROOPS</span><span>TOOLS</span></div>${data.active.length ? data.active.map(row).join('') : '<div class="empty">No matching incoming movements yet.</div>'}<h2>Predicted arrival passed <span>${data.arrived.length}</span></h2>${data.arrived.length ? data.arrived.map(row).join('') : '<div class="empty">None yet.</div>'}</div></section>`;
+  const castles = data.castles || [];
+  const label = castles.length ? castles.map(c => `KID ${c.kid}: ${c.x}, ${c.y}`).join(' · ') : loc ? `Kingdom ${loc.own_kid} · ${loc.own_x}, ${loc.own_y}` : 'No location configured';
+  const row = entry => {
+    const composition = entry.composition;
+    const groups = composition.unit_groups;
+    const groupRows = groups ? nodeView('Left units',groups.left) + nodeView('Centre units',groups.middle) + nodeView('Right units',groups.right) + nodeView('RW units',groups.courtyard) : '';
+    return `<details class="incoming-entry"><summary><span class="mono">${entry.mid}</span><strong>${esc(entry.sender.name || 'Unknown player')}</strong><span>${entry.source.x ?? '—'}, ${entry.source.y ?? '—'}</span><span>${esc(new Date(entry.arrival_at*1000).toLocaleTimeString())}</span><span class="countdown" data-arrival="${entry.arrival_at}" ${entry.retreated_at?'data-retreated="1"':''}></span><span>${composition.troops ?? 'Unknown'}</span><span>${composition.courtyard ?? 'Unknown'}</span></summary><div class="incoming-detail"><section><h3>Movement</h3>${nodeView('MID',entry.mid)}${nodeView('KID',entry.kid)}${nodeView('PT at first observation',entry.pt)}${nodeView('TT',entry.tt)}${nodeView('Estimated arrival',date(entry.arrival_at))}${nodeView('First observed',date(entry.first_observed_at))}${entry.retreated_at?nodeView('Retreated',date(entry.retreated_at)):''}</section><section><h3>Sender</h3>${personDetail(entry.sender,entry.source,entry.kid)}</section><section><h3>Receiver</h3>${personDetail(entry.receiver,entry.target,entry.kid)}</section><section><h3>Composition</h3>${nodeView('Total troops',composition.troops ?? 'Unknown')}${nodeView('Left flank',composition.left ?? 'Unknown')}${nodeView('Centre',composition.middle ?? 'Unknown')}${nodeView('Right flank',composition.right ?? 'Unknown')}${nodeView('RW / reserve-courtyard',composition.courtyard ?? 'Unknown')}${groupRows}${nodeView('Tools',composition.tools ?? 'Unknown')}${nodeView('Waves',composition.waves ?? 'Unknown')}</section></div></details>`;
+  };
+  return `<section class="incoming-view" ${state.tab==='incoming'?'':'hidden'}><div class="incoming-header"><div><span class="eyebrow">EXPERIMENTAL · GAM / MRM</span><h1>Incoming</h1><p>Watching ${esc(label)} · <b id="active-count">${data.active_count}</b> active incoming candidates · ${state.status?.connected ? "Game connected" : state.status?.proxy_running ? "Proxy waiting for game" : "Proxy stopped"}</p></div><form id="location-form" class="location-form" ${castles.length?'hidden':''}><label>Kingdom<input name="own_kid" type="number" min="0" required value="${loc?.own_kid ?? ''}"></label><label>X<input name="own_x" type="number" min="0" required value="${loc?.own_x ?? ''}"></label><label>Y<input name="own_y" type="number" min="0" required value="${loc?.own_y ?? ''}"></label><button class="primary" type="submit">Set location</button></form></div><div class="incoming-note"><strong>Connection:</strong> Set the game client HTTP proxy to <code>127.0.0.1:${state.status?.proxy_port || 8080}</code>. The dashboard runs separately on <code>127.0.0.1:8799</code>. ${connectionHint(state.status)}<br>${castles.length?'Watching the owned castles configured in Auto Support.':'Set a fallback location here, or add owned castles in Auto Support.'} Arrival is estimated from TT − PT. GA unit counts include L, M, R, and RW; the exact RW battle role needs further packet confirmation.</div><div class="incoming-list"><h2>Active incoming <span>${data.active.length}</span></h2><div class="incoming-table-head"><span>MID</span><span>SENDER</span><span>SOURCE</span><span>ARRIVAL</span><span>REMAINING</span><span>TROOPS</span><span>RW</span></div>${data.active.length ? data.active.map(row).join('') : '<div class="empty">No matching incoming movements yet.</div>'}<h2>Predicted arrival passed <span>${data.arrived.length}</span></h2>${data.arrived.length ? data.arrived.map(row).join('') : '<div class="empty">None yet.</div>'}<h2>Retreated <span>${data.retreated?.length || 0}</span></h2>${data.retreated?.length ? data.retreated.map(row).join('') : '<div class="empty">None yet.</div>'}</div></section>`;
+}
+function supportPanel() {
+  const cfg = state.autoSupport?.config || {enabled:false, castles:[], destinations:{}, lid:0};
+  const status = state.autoSupport?.status || {jobs:[], last_event:'Waiting for proxy'};
+  const castleRows = cfg.castles.map((castle, index) => `<tr><td>${castle.kid}</td><td>${castle.x}, ${castle.y}</td><td><button type="button" data-remove-castle="${index}">Remove</button></td></tr>`).join('');
+  const destinationRows = Object.entries(cfg.destinations).map(([kid, point]) => `<tr><td>${esc(kid)}</td><td>${point.x}, ${point.y}</td><td><button type="button" data-remove-destination="${esc(kid)}">Remove</button></td></tr>`).join('');
+  const jobs = [...status.jobs].reverse().map(job => {
+    const details = [job.sent_mid != null ? `Support MID ${job.sent_mid}` : null,
+      job.recall_reason ? `Recall: ${job.recall_reason}` : null,
+      job.return_at ? `Estimated return ${date(job.return_at)}` : null,
+      job.error || (job.units ? job.units.map(row => row.join(' × ')).join(', ') : null)]
+      .filter(Boolean).map(esc).join('<br>') || '—';
+    return `<tr><td>${job.mid}</td><td>${job.kid}: ${job.sx}, ${job.sy}</td><td>${esc(date(job.landing))}</td><td>${esc(job.state)}</td><td>${details}</td></tr>`;
+  }).join('');
+  return `<section class="incoming-view support-view" ${state.tab==='support'?'':'hidden'}><div class="incoming-header"><div><span class="eyebrow">PROXY PROOF OF CONCEPT</span><h1>Auto Support</h1><p>${cfg.enabled?'On':'Off'} · ${esc(status.last_event)}</p></div><button id="support-toggle" class="${cfg.enabled?'secondary':'primary'}">${cfg.enabled?'Turn off':'Turn on'}</button></div>
+    <div class="incoming-note">Auto Support triggers when a GAM targets a configured owned castle and its sender and receiver have different alliance IDs in the matched O[] player records. Missing alliance records or equal IDs are skipped. It requests DCL about 7 seconds before estimated landing, SDI at 5 seconds, then CDS. After dispatch, it recalls support at estimated landing or on an earlier confirmed attack retreat. Outstanding recalls continue when this toggle is off. LID availability is not shared with the Rust bot.</div>
+    <div class="support-grid"><div class="support-card"><h2>Owned source castles</h2><table><thead><tr><th>KID</th><th>Coordinates</th><th></th></tr></thead><tbody>${castleRows || '<tr><td colspan="3">None configured</td></tr>'}</tbody></table><form id="source-form" class="location-form"><label>KID<input name="kid" type="number" min="0" required></label><label>X<input name="x" type="number" min="0" required></label><label>Y<input name="y" type="number" min="0" required></label><button type="submit">Add castle</button></form></div>
+    <div class="support-card"><h2>Send support to</h2><table><thead><tr><th>KID</th><th>Destination X, Y</th><th></th></tr></thead><tbody>${destinationRows || '<tr><td colspan="3">None configured</td></tr>'}</tbody></table><form id="destination-form" class="location-form"><label>KID<input name="kid" type="number" min="0" required></label><label>X<input name="x" type="number" min="0" required></label><label>Y<input name="y" type="number" min="0" required></label><button type="submit">Set destination</button></form></div></div>
+    <div class="support-card support-wide"><h2>Support LID</h2><form id="support-lid-form" class="location-form"><label>Server LID<input name="lid" type="number" min="0" required value="${cfg.lid}"></label><button type="submit">Save LID</button></form><p>The proxy does not yet reserve a commander against the Rust bot; choose an idle LID.</p></div>
+    <div class="support-card support-wide"><h2>Recent attempts</h2><table><thead><tr><th>MID</th><th>Source</th><th>Estimated landing</th><th>State</th><th>Result or selected units</th></tr></thead><tbody>${jobs || '<tr><td colspan="5">No attempts yet</td></tr>'}</tbody></table></div></section>`;
 }
 function personDetail(person,location,kid) {
   return nodeView('Name',person.name ?? 'Unknown') + nodeView('Player ID',person.id ?? 'Unknown') + nodeView('Level',person.level ?? 'Unknown') + nodeView('Legendary level',person.legendary_level ?? 'Unknown') + nodeView('Might points',person.might_points ?? 'Unknown') + nodeView('Kingdom',kid) + nodeView('Coordinates',location.x == null || location.y == null ? 'Unknown' : `${location.x}, ${location.y}`);
 }
 function updateCountdowns() {
   const now=Date.now()/1000;
-  document.querySelectorAll('.countdown').forEach(element => { const seconds=Math.max(0,Math.ceil(Number(element.dataset.arrival)-now)); element.textContent=seconds ? `${String(Math.floor(seconds/3600)).padStart(2,'0')}:${String(Math.floor(seconds%3600/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}` : 'ETA passed'; });
+  document.querySelectorAll('.countdown').forEach(element => { if (element.dataset.retreated) { element.textContent='Retreated'; return; } const seconds=Math.max(0,Math.ceil(Number(element.dataset.arrival)-now)); element.textContent=seconds ? `${String(Math.floor(seconds/3600)).padStart(2,'0')}:${String(Math.floor(seconds%3600/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}` : 'ETA passed'; });
   const count=document.querySelector('#active-count'); if(count && state.incoming) count.textContent=state.incoming.active.filter(item=>item.arrival_at>now).length;
 }
 async function refreshIncoming() {
@@ -124,12 +150,26 @@ async function refreshIncoming() {
 function render() {
   const focused = document.activeElement?.id;
   const selection = focused === 'search' ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
-  app.innerHTML = `${header()}<nav class="tabs"><button data-tab="sessions" class="${state.tab==='sessions'?'active':''}">Recorded sessions</button><button data-tab="incoming" class="${state.tab==='incoming'?'active':''}">Incoming <span>${state.incoming?.active_count ?? 0}</span></button></nav><main ${state.tab==='sessions'?'':'hidden'}>${sessionPanel()}${eventsPanel()}${detailPanel()}</main>${incomingPanel()}${settingsDialog()}<div id="notice" hidden></div>`;
+  app.innerHTML = `${header()}<nav class="tabs"><button data-tab="sessions" class="${state.tab==='sessions'?'active':''}">Recorded sessions</button><button data-tab="incoming" class="${state.tab==='incoming'?'active':''}">Incoming <span>${state.incoming?.active_count ?? 0}</span></button><button data-tab="support" class="${state.tab==='support'?'active':''}">Auto Support</button></nav><main ${state.tab==='sessions'?'':'hidden'}>${sessionPanel()}${eventsPanel()}${detailPanel()}</main>${incomingPanel()}${supportPanel()}${settingsDialog()}<div id="notice" hidden></div>`;
   bind();
   updateCountdowns();
   if (selection) { const input = document.querySelector('#search'); input.focus(); input.setSelectionRange(...selection); }
 }
 async function refreshStatus() { try { const previous=state.status; state.status=await api('/api/status'); if (JSON.stringify(previous)!==JSON.stringify(state.status)) render(); } catch {} }
+async function refreshSupport() {
+  try {
+    const next=await api('/api/auto-support');
+    if (JSON.stringify(next)!==JSON.stringify(state.autoSupport)) {
+      state.autoSupport=next;
+      if (state.tab==='support' && !document.activeElement?.closest('#source-form, #destination-form, #support-lid-form')) render();
+    }
+  } catch(e) { notice(e.message); }
+}
+async function saveSupport(config) {
+  await api('/api/auto-support/config','POST',config);
+  await refreshSupport();
+  render();
+}
 async function refreshSessions() { try { const previous = JSON.stringify(state.sessions); state.sessions=await api('/api/sessions'); if (!state.selected && state.sessions.length) { state.selected=state.sessions[0].id; await loadEvents(); } else if (previous!==JSON.stringify(state.sessions)) render(); } catch(e) { notice(e.message); } }
 async function loadEvents(append=false) {
   if (!state.selected) return;
@@ -157,6 +197,13 @@ function bind() {
   document.querySelectorAll('[data-tab]').forEach(button => button.onclick=() => { state.tab=button.dataset.tab; render(); });
   const locationForm=document.querySelector('#location-form');
   locationForm.onsubmit=async event => { event.preventDefault(); const value=Object.fromEntries(new FormData(locationForm)); try { await api('/api/incoming/config','POST',value); await refreshIncoming(); notice('Incoming location updated. Previous location ledger cleared.'); } catch(e) { notice(e.message); } };
+  const supportConfig = () => JSON.parse(JSON.stringify(state.autoSupport?.config || {enabled:false,castles:[],destinations:{},lid:0}));
+  document.querySelector('#support-toggle').onclick=async () => { const config=supportConfig(); config.enabled=!config.enabled; try { await saveSupport(config); notice(`Auto Support ${config.enabled?'on':'off'}`); } catch(e) { notice(e.message); } };
+  document.querySelector('#source-form').onsubmit=async event => { event.preventDefault(); const config=supportConfig(); const row=Object.fromEntries(new FormData(event.target)); config.castles.push(Object.fromEntries(Object.entries(row).map(([key,value])=>[key,Number(value)]))); try { await saveSupport(config); } catch(e) { notice(e.message); } };
+  document.querySelector('#destination-form').onsubmit=async event => { event.preventDefault(); const config=supportConfig(); const row=Object.fromEntries(new FormData(event.target)); config.destinations[String(Number(row.kid))]={x:Number(row.x),y:Number(row.y)}; try { await saveSupport(config); } catch(e) { notice(e.message); } };
+  document.querySelector('#support-lid-form').onsubmit=async event => { event.preventDefault(); const config=supportConfig(); config.lid=Number(new FormData(event.target).get('lid')); try { await saveSupport(config); } catch(e) { notice(e.message); } };
+  document.querySelectorAll('[data-remove-castle]').forEach(button => button.onclick=async () => { const config=supportConfig(); config.castles.splice(Number(button.dataset.removeCastle),1); try { await saveSupport(config); } catch(e) { notice(e.message); } });
+  document.querySelectorAll('[data-remove-destination]').forEach(button => button.onclick=async () => { const config=supportConfig(); delete config.destinations[button.dataset.removeDestination]; try { await saveSupport(config); } catch(e) { notice(e.message); } });
 
   document.querySelector('#proxy-button').onclick=async () => { try { await api(`/api/proxy/${state.status?.proxy_running?'stop':'start'}`,'POST'); await refreshStatus(); } catch(e) { notice(e.message); } };
   document.querySelector('#record-button').onclick=async () => { try { await api('/api/recording/toggle','POST'); setTimeout(refreshStatus,250); } catch(e) { notice(e.message); } };
@@ -178,8 +225,9 @@ function bind() {
   for (const [id,step] of [['prev-event',-1],['next-event',1]]) { const button=document.querySelector('#'+id); if(button) button.onclick=() => { const index=state.rows.findIndex(row=>row.seq===state.event.seq); if(state.rows[index+step]) selectEvent(state.rows[index+step].seq); }; }
 }
 render();
-refreshStatus(); refreshSessions(); refreshIncoming();
+refreshStatus(); refreshSessions(); refreshIncoming(); refreshSupport();
 setInterval(async () => { await refreshStatus(); await refreshSessions(); }, 2500);
 
 setInterval(refreshIncoming, 1500);
+setInterval(refreshSupport, 1500);
 setInterval(updateCountdowns, 1000);

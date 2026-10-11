@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 20;
+pub const SCHEMA_VERSION: i64 = 21;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -642,13 +642,67 @@ pub const V20: Migration = &[
         ON licence_activation (server, player_id)",
 ];
 
+/// Other players' movements seen in `gam` (the PVP tab), one row per movement.
+///
+/// Keyed by `(account_id, mid)`: a movement is learned once and never rewritten,
+/// except that a still-unknown army size or name is filled in when a later packet
+/// carries it. `retreated_at_ms` is set by a retreat (`mrm`) and is final.
+/// Retention: kept for good (about 250 bytes a row; this is the history the tab
+/// exists to show). `account_alliance` holds one row per account: who we are, read
+/// from the login `gbd`, so a movement can be called incoming or outgoing.
+pub const V21: Migration = &[
+    "CREATE TABLE IF NOT EXISTS account_alliance (
+        account_id TEXT PRIMARY KEY,
+        player_id INTEGER NOT NULL,
+        player_name TEXT,
+        alliance_id INTEGER,
+        alliance_name TEXT,
+        updated_at_ms INTEGER NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS pvp_movement (
+        account_id TEXT NOT NULL,
+        mid INTEGER NOT NULL,
+        kingdom_id INTEGER NOT NULL,
+        direction TEXT NOT NULL,
+        owner TEXT NOT NULL,
+        sender_id INTEGER,
+        sender_name TEXT,
+        sender_alliance_id INTEGER,
+        sender_alliance TEXT,
+        sender_x INTEGER NOT NULL,
+        sender_y INTEGER NOT NULL,
+        sender_place TEXT,
+        target_id INTEGER,
+        target_name TEXT,
+        target_alliance_id INTEGER,
+        target_alliance TEXT,
+        target_x INTEGER NOT NULL,
+        target_y INTEGER NOT NULL,
+        target_place TEXT,
+        army_size INTEGER,
+        kind INTEGER,
+        flag INTEGER,
+        duration_s INTEGER NOT NULL,
+        detected_at_ms INTEGER NOT NULL,
+        land_at_ms INTEGER NOT NULL,
+        retreated_at_ms INTEGER,
+        PRIMARY KEY (account_id, mid)
+    )",
+    "CREATE INDEX IF NOT EXISTS pvp_movement_recent_idx
+        ON pvp_movement (account_id, detected_at_ms, mid)",
+    "CREATE INDEX IF NOT EXISTS pvp_movement_active_idx
+        ON pvp_movement (account_id, kingdom_id, land_at_ms)",
+];
+
 pub const MIGRATIONS: &[Migration] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
 ];
 
 /// Every table that holds user data, for the storage report and full wipe.
 /// Order matters for deletion: children before parents.
 pub const DATA_TABLES: &[&str] = &[
+    "pvp_movement",
+    "account_alliance",
     "event_hourly",
     "event_log",
     "castle_stock_hourly",

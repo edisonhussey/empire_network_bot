@@ -8,6 +8,7 @@ from backend.incoming import IncomingLedger
 from backend.protocol import parse_xt_packet
 
 SAMPLE = (Path(__file__).parent / "fixtures" / "gam_sample.txt").read_text(encoding="utf-8").strip()
+OWN_CASTLE_ATTACK = (Path(__file__).parent / "fixtures" / "gam_156095506.txt").read_text(encoding="utf-8").strip()
 
 
 def packet(payload):
@@ -68,6 +69,43 @@ class IncomingTests(unittest.TestCase):
         self.assertIsNone(added[0]["sender"]["name"])
         self.assertEqual(self.ledger.observe('%xt%adi%1%0%{}%', 1000), [])
         self.assertEqual(self.ledger.observe('%xt%gam%1%0%{"M":[null,{}]}%', 1000), [])
+
+    def test_owned_castles_override_stale_single_location_and_count_rw(self):
+        self.ledger.configure({"own_kid": 0, "own_x": 546, "own_y": 520})
+        self.ledger.watch_castles([{"kid": 0, "x": 543, "y": 520}])
+        added = self.ledger.observe(OWN_CASTLE_ATTACK, 1000)
+        self.assertEqual(len(added), 1)
+        item = added[0]
+        self.assertEqual((item["mid"], item["target"]), (156095506, {"x": 543, "y": 520}))
+        self.assertEqual(item["arrival_at"], 1181)
+        self.assertEqual(item["composition"]["middle"], 22)
+        self.assertEqual(item["composition"]["courtyard"], 67)
+        self.assertEqual(item["composition"]["troops"], 89)
+        self.assertEqual(item["composition"]["unit_groups"]["middle"], [{"id": 10, "count": 22}])
+        self.assertEqual(item["composition"]["unit_groups"]["courtyard"], [{"id": 655, "count": 67}])
+        self.assertEqual(self.ledger.snapshot(1001)["castles"], [{"kid": 0, "x": 543, "y": 520}])
+
+    def test_later_ga_fills_unknown_count_without_changing_eta(self):
+        self.ledger.watch_castles([{"kid": 0, "x": 543, "y": 520}])
+        early = parse_xt_packet(OWN_CASTLE_ATTACK)["payload"]
+        early["M"][0].pop("GA")
+        early["M"][0]["GS"] = 89
+        self.ledger.observe(packet(early), 1000)
+        self.assertIsNone(self.ledger.snapshot(1001)["active"][0]["composition"]["troops"])
+        self.ledger.observe(OWN_CASTLE_ATTACK, 1010)
+        item = self.ledger.snapshot(1011)["active"][0]
+        self.assertEqual(item["arrival_at"], 1181)
+        self.assertEqual(item["composition"]["troops"], 89)
+
+    def test_confirmed_retreat_moves_entry_out_of_active(self):
+        self.ledger.watch_castles([{"kid": 0, "x": 543, "y": 520}])
+        self.ledger.observe(OWN_CASTLE_ATTACK, 1000)
+        self.ledger.observe('%xt%mrm%1%0%{"MID":156095506}%', 1010)
+        view = self.ledger.snapshot(1011)
+        self.assertEqual(view["active_count"], 0)
+        self.assertEqual(view["active"], [])
+        self.assertEqual(view["retreated"][0]["composition"]["troops"], 89)
+        self.assertEqual(view["retreated"][0]["retreated_at"], 1010)
 
 
 if __name__ == "__main__":

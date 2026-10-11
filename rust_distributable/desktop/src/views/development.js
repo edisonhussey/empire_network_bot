@@ -4,6 +4,7 @@ import {
   DEFAULT_VIEW, clampSize, endpoints, logPosition, makeViewport, movementState, panBy,
   pointOnPath, shareInBand, shortDuration, visible, zoomAbout,
 } from "./dev-math.js";
+import { KINGDOMS, arrowFor } from "./pvp-model.js";
 
 /// The Development tab: a read-only window onto the scheduler.
 ///
@@ -18,6 +19,12 @@ import {
 /// exists per movement and no frames are pushed. The timing chart is not a clock
 /// trace: the generator is stepped once per action (`t = t + 1`), so it shows the
 /// last waits actually used and the next ones the generator would give.
+///
+/// The kingdom shown follows the bot unless one is chosen in the map's own
+/// chooser. Other players' active movements in that kingdom (from the PVP record)
+/// are drawn as bold arrows: green when the sender is in our alliance, red when
+/// it is anyone else, attacks on the account included. Each has dots for its
+/// sender and target and exists on the map only while it is travelling.
 
 const HISTORY_STEPS = 40;
 const AXIS_LOW_S = 0.5;
@@ -36,6 +43,8 @@ export function createDevelopment() {
     snapshot: null,
     map: null,
     movements: [],
+    pvp: [],
+    chosenKingdom: null,
     movementsAt: 0,
     mapAt: 0,
     mapKingdom: null,
@@ -56,11 +65,16 @@ export function createDevelopment() {
 
   // ---- data ---------------------------------------------------------------
 
+  /// The kingdom on screen: the one chosen, else the one the bot is working in.
+  function shownKingdom() {
+    return state.chosenKingdom ?? state.snapshot?.spatial?.kingdom_id ?? null;
+  }
+
   async function pollSnapshot() {
     try {
       state.snapshot = await api("/dev");
       state.error = "";
-      const kingdom = state.snapshot.spatial?.kingdom_id ?? null;
+      const kingdom = shownKingdom();
       if (kingdom !== null && kingdom !== state.mapKingdom) await pollMap(true);
       renderLists();
     } catch (error) {
@@ -70,7 +84,7 @@ export function createDevelopment() {
 
   async function pollMap(force = false) {
     if (!force && Date.now() - state.mapAt < MAP_REFRESH_MS) return;
-    const kingdom = state.snapshot?.spatial?.kingdom_id;
+    const kingdom = shownKingdom();
     try {
       state.map = await api(kingdom == null ? "/dev/map" : `/dev/map?kingdom=${kingdom}`);
       state.mapKingdom = state.map.kingdom_id;
@@ -81,11 +95,21 @@ export function createDevelopment() {
 
   async function pollMovements() {
     try {
-      const kingdom = state.mapKingdom ?? state.snapshot?.spatial?.kingdom_id;
+      const kingdom = state.mapKingdom ?? shownKingdom();
       const data = await api(kingdom == null ? "/dev/movements" : `/dev/movements?kingdom=${kingdom}`);
       state.movements = data.movements;
       state.movementsAt = Date.now();
     } catch (_) { state.movements = []; }
+  }
+
+  /// Active movements of other players in the shown kingdom. Only what is still
+  /// travelling is asked for, so the answer stays small however long the record is.
+  async function pollPvp() {
+    const kingdom = state.mapKingdom ?? shownKingdom();
+    if (kingdom == null) { state.pvp = []; return; }
+    try {
+      state.pvp = (await api(`/pvp?state=active&kingdom=${kingdom}&limit=200`)).rows;
+    } catch (_) { state.pvp = []; }
   }
 
   // ---- viewport -------------------------------------------------------------
@@ -204,6 +228,37 @@ export function createDevelopment() {
     context.stroke();
   }
 
+  const IN_RED = "#ff5a5a";
+
+  /// Other players' travelling movements: a bold arrow from sender to target with
+  /// the head at the army's current position, a dot at each end, and the people
+  /// named. Placed from the landing time on every frame; nothing is asked per frame.
+  function drawPvp(context, view, now) {
+    context.font = "10px ui-monospace, Menlo, monospace";
+    for (const row of state.pvp) {
+      const arrow = arrowFor(row, now);
+      if (!arrow) continue;
+      if (!visible(view, arrow.from.x, arrow.from.y, 400) && !visible(view, arrow.to.x, arrow.to.y, 400)) continue;
+      const colour = arrow.colour === "out" ? OK : IN_RED;
+      const a = view.toScreen(arrow.from.x, arrow.from.y);
+      const b = view.toScreen(arrow.to.x, arrow.to.y);
+      const here = view.toScreen(...Object.values(pointOnPath(arrow.from, arrow.to, arrow.progress)));
+      context.lineCap = "round";
+      context.strokeStyle = colour; context.globalAlpha = 0.3; context.lineWidth = 2;
+      context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(b.x, b.y); context.stroke();
+      context.globalAlpha = 1; context.lineWidth = 3.5;
+      context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(here.x, here.y); context.stroke();
+      if (Math.hypot(here.x - a.x, here.y - a.y) > 4) arrowHead(context, a, here, 11);
+      context.lineWidth = 1; context.lineCap = "butt";
+      // Sender: a filled dot. Target: a ring. Both exist only while travelling.
+      context.fillStyle = colour;
+      context.beginPath(); context.arc(a.x, a.y, 4, 0, Math.PI * 2); context.fill();
+      context.beginPath(); context.arc(b.x, b.y, 6, 0, Math.PI * 2); context.stroke();
+      context.fillText(arrow.senderLabel, a.x + 8, a.y - 7);
+      context.fillText(`${arrow.targetLabel} · ${shortDuration(arrow.remainingMs)}`, b.x + 9, b.y + 14);
+    }
+  }
+
   function drawMap() {
     const { context, width, height } = canvasSize(mapCanvas);
     context.clearRect(0, 0, width, height);
@@ -300,6 +355,8 @@ export function createDevelopment() {
       }
     }
 
+    drawPvp(context, view, now);
+
     // The main castle: a white square.
     if (castle && visible(view, castle.x, castle.y, 4)) {
       const p = view.toScreen(castle.x, castle.y);
@@ -375,9 +432,10 @@ export function createDevelopment() {
   function start() {
     if (state.open) return;
     state.open = true;
-    pollSnapshot().then(() => pollMap(true)).then(pollMovements);
+    pollSnapshot().then(() => pollMap(true)).then(pollMovements).then(pollPvp);
     state.timers.push(setInterval(pollSnapshot, 1000));
     state.timers.push(setInterval(pollMovements, 2000));
+    state.timers.push(setInterval(pollPvp, 3000));
     state.timers.push(setInterval(() => pollMap(), 5000));
     state.frame = requestAnimationFrame(frame);
   }
@@ -414,6 +472,21 @@ export function createDevelopment() {
     state.viewSize = state.viewport.size;
     state.follow = "free";
   }, { passive: false });
+  const chooser = document.querySelector("#dev-kingdom-select");
+  if (chooser) {
+    chooser.replaceChildren(
+      new Option("Follow the bot", ""),
+      ...KINGDOMS.map((kingdom) => new Option(kingdom.name, String(kingdom.id))),
+    );
+    chooser.addEventListener("change", async () => {
+      state.chosenKingdom = chooser.value === "" ? null : Number(chooser.value);
+      state.pvp = []; state.movements = [];
+      await pollMap(true);
+      recentre("castle");
+      pollMovements();
+      pollPvp();
+    });
+  }
   const on = (selector, handler) => document.querySelector(selector)?.addEventListener("click", handler);
   on("#dev-zoom-in", () => setSize(state.viewSize / 1.4));
   on("#dev-zoom-out", () => setSize(state.viewSize * 1.4));

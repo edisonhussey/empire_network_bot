@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .storage import db_path, event, events, export_session, list_sessions
 from .incoming import IncomingLedger
+from .auto_support import load_config as load_support_config, save_config as save_support_config
 from .protocol import matches_game_url
 
 BASE = Path(__file__).resolve().parents[1]
@@ -36,6 +37,8 @@ class Service:
         self.sessions = BASE / "data" / "sessions"
         self.sessions.mkdir(parents=True, exist_ok=True)
         self.incoming = IncomingLedger(self.data / "incoming_location.json")
+        self.support_config_path = self.data / "auto_support.json"
+        self.support_status_path = self.data / "auto_support_status.json"
         self.proxy = None
         self.keyboard = None
         self.shortcut_error = None
@@ -165,7 +168,15 @@ class Handler(BaseHTTPRequestHandler):
         parts = path.path.strip("/").split("/")
         try:
             if path.path == "/api/status": result = self.service.status()
-            elif path.path == "/api/incoming": result = self.service.incoming.snapshot(time.time())
+            elif path.path == "/api/incoming":
+                self.service.incoming.watch_castles(load_support_config(self.service.support_config_path)["castles"])
+                result = self.service.incoming.snapshot(time.time())
+            elif path.path == "/api/auto-support":
+                try:
+                    status = json.loads(self.service.support_status_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    status = {"jobs": [], "last_event": "Proxy has not reported yet"}
+                result = {"config": load_support_config(self.service.support_config_path), "status": status}
             elif path.path == "/api/config": result = self.service.config
             elif path.path == "/api/sessions": result = list_sessions(self.service.sessions)
             elif len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "events":
@@ -190,7 +201,10 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/recording/start": result = self.service.control("start")
             elif path == "/api/recording/stop": result = self.service.control("stop")
             elif path == "/api/incoming/config": result = self.service.incoming.configure(body)
+            elif path == "/api/auto-support/config":
+                result = save_support_config(self.service.support_config_path, body)
             elif path == "/api/incoming/observe":
+                self.service.incoming.watch_castles(load_support_config(self.service.support_config_path)["castles"])
                 result = {"added": self.service.incoming.observe(str(body.get("raw", "")), float(body.get("received_at", time.time())))}
             elif path == "/api/shutdown":
                 threading.Thread(target=self.server_instance.shutdown, daemon=True).start()

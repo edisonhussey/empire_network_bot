@@ -18,6 +18,8 @@ pub mod paths;
 pub mod planning;
 pub mod protocol;
 #[cfg(feature = "application")]
+pub mod pvp;
+#[cfg(feature = "application")]
 pub mod scheduler;
 pub mod session;
 pub mod timing;

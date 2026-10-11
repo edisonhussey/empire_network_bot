@@ -521,3 +521,18 @@ dialog[open] { display: grid; gap: 12px; }
   .dev-grid { grid-template-columns: 1fr; }
   .dev-timing, .dev-spatial, .dev-sched, .dev-health { grid-column: 1; grid-row: auto; }
 }
+
+/* ---- PVP tab ------------------------------------------------------------- */
+.pvp-filters { margin: 22px 0 14px; gap: 18px; }
+.pvp-filters label { display: inline-flex; gap: 8px; align-items: center; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
+.pvp-scroll { overflow-x: auto; border-top: 1px solid var(--line); }
+.pvp-row { display: grid; grid-template-columns: 84px 82px 82px minmax(170px, 1.4fr) minmax(170px, 1.4fr) 74px 82px 96px 70px 110px; gap: 12px; align-items: baseline; min-width: 1060px; padding: 7px 0; border-bottom: 1px solid var(--line); font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; color: var(--ink-2); }
+.pvp-head { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
+.pvp-party { display: flex; flex-direction: column; min-width: 0; }
+.pvp-party b { font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pvp-party small { color: var(--ink-3); }
+.pvp-incoming .pvp-state { color: #ff7a7a; }
+.pvp-outgoing .pvp-state { color: var(--ok); }
+.pvp-landed, .pvp-retreated { color: var(--ink-3); }
+.pvp-landed .pvp-state, .pvp-retreated .pvp-state { color: var(--ink-3); }
+#pvp-more { margin-top: 14px; }

@@ -37,10 +37,38 @@ def _player(players, player_id):
             "legendary_level": None, "might_points": None}
 
 
-def extract_composition(_movement):
-    """No verified GAM formation paths are available in the observed sample."""
-    return {"troops": None, "tools": None, "waves": None,
-            "left": None, "middle": None, "right": None}
+def extract_composition(record):
+    """Count observed GA unit pairs, including RW (reserve/courtyard group).
+
+    GS alone has no verified count semantics. Tools and wave count are not
+    established by GA, so they remain unknown.
+    """
+    groups = record.get("GA") if isinstance(record, dict) else None
+    result = {"troops": None, "tools": None, "waves": None,
+              "left": None, "middle": None, "right": None, "courtyard": None,
+              "unit_groups": None}
+    if not isinstance(groups, dict):
+        return result
+    rows_by_group = {}
+    for key, label in (("L", "left"), ("M", "middle"), ("R", "right"), ("RW", "courtyard")):
+        rows = groups.get(key)
+        if not isinstance(rows, list):
+            return result
+        decoded = []
+        for row in rows:
+            if (not isinstance(row, list) or len(row) < 2
+                    or not isinstance(row[0], int) or isinstance(row[0], bool)
+                    or not isinstance(row[1], int) or isinstance(row[1], bool)
+                    or row[0] < 0 or row[1] < 0):
+                return result
+            if row[1] > 0:
+                decoded.append({"id": row[0], "count": row[1]})
+        rows_by_group[label] = decoded
+    for label, rows in rows_by_group.items():
+        result[label] = sum(row["count"] for row in rows)
+    result["troops"] = sum(result[label] for label in rows_by_group)
+    result["unit_groups"] = rows_by_group
+    return result
 
 
 def is_incoming(movement, location):
@@ -56,6 +84,7 @@ class IncomingLedger:
         self.config_path = config_path
         self.lock = threading.Lock()
         self.location = None
+        self.castles = []
         self.entries = {}
         try:
             saved = json.loads(config_path.read_text(encoding="utf-8"))
@@ -83,16 +112,40 @@ class IncomingLedger:
                 temporary.replace(self.config_path)
         return location
 
+    def watch_castles(self, castles):
+        """Use Auto Support's owned tuple list when present, else legacy location."""
+        normalized = sorted({
+            (int(castle["kid"]), int(castle["x"]), int(castle["y"]))
+            for castle in castles
+        })
+        with self.lock:
+            if normalized != self.castles:
+                self.castles = normalized
+                self.entries.clear()
+
     def snapshot(self, now):
         with self.lock:
             records = sorted(self.entries.values(), key=lambda item: (item["arrival_at"], item["mid"]))
-            return {"location": self.location, "active_count": sum(item["arrival_at"] > now for item in records),
-                    "active": [item for item in records if item["arrival_at"] > now],
-                    "arrived": [item for item in records if item["arrival_at"] <= now]}
+            active = [item for item in records if item["retreated_at"] is None and item["arrival_at"] > now]
+            arrived = [item for item in records if item["retreated_at"] is None and item["arrival_at"] <= now]
+            retreated = [item for item in records if item["retreated_at"] is not None]
+            return {"location": self.location,
+                    "castles": [{"kid": kid, "x": x, "y": y} for kid, x, y in self.castles],
+                    "active_count": len(active), "active": active, "arrived": arrived,
+                    "retreated": retreated}
 
     def observe(self, raw: str, received_at: float):
         packet = parse_xt_packet(raw)
-        if not packet or packet.get("command") != "gam":
+        if not packet:
+            return []
+        if packet.get("command") == "mrm":
+            if packet.get("status") == "0" and isinstance(packet.get("payload"), dict):
+                mid = _integer(packet["payload"].get("MID"))
+                with self.lock:
+                    if mid in self.entries:
+                        self.entries[mid]["retreated_at"] = received_at
+            return []
+        if packet.get("command") != "gam":
             return []
         payload = packet.get("payload")
         if not isinstance(payload, dict):
@@ -105,8 +158,10 @@ class IncomingLedger:
             players = []
         added = []
         with self.lock:
-            location = self.location
-            if location is None:
+            locations = ([{"own_kid": kid, "own_x": x, "own_y": y}
+                          for kid, x, y in self.castles]
+                         if self.castles else ([self.location] if self.location else []))
+            if not locations:
                 return added
             for record in movements:
                 if not isinstance(record, dict) or not isinstance(record.get("M"), dict):
@@ -118,8 +173,16 @@ class IncomingLedger:
                 tt = _integer(movement.get("TT"))
                 source = _location(movement.get("SA"))
                 target = _location(movement.get("TA"))
-                if (mid is None or mid in self.entries or pt is None or tt is None
-                        or not is_incoming(movement, location)):
+                if (mid is None or pt is None or tt is None
+                        or not any(is_incoming(movement, location) for location in locations)):
+                    continue
+                if mid in self.entries:
+                    # A later GAM can replace an initial GS-only view with GA.
+                    # Keep the first-observation ETA and identity unchanged.
+                    if self.entries[mid]["composition"]["troops"] is None:
+                        composition = extract_composition(record)
+                        if composition["troops"] is not None:
+                            self.entries[mid]["composition"] = composition
                     continue
                 source_id = _integer(movement.get("SID"))
                 if source_id is None:
@@ -128,6 +191,7 @@ class IncomingLedger:
                 entry = {"mid": mid, "kid": kid, "pt": pt, "tt": tt,
                          "first_observed_at": received_at,
                          "arrival_at": received_at + (tt - pt),
+                         "retreated_at": None,
                          "source": source, "target": target,
                          "sender": _player(players, source_id),
                          "receiver": _player(players, target_id),

@@ -10,7 +10,7 @@ This note records what the current proof of concept knows about incoming movemen
 | **Established for this POC** | The timing or matching rule was provided and is exercised by tests. |
 | **Unknown** | The packet does not establish the field's meaning or location. Keep the original data for later inspection. |
 
-The detector processes **incoming server messages with XT command `gam` only**. A matching movement is an **incoming candidate**. The fields that distinguish a hostile attack from support or another movement type have not been verified. A calculated ETA is not confirmation that the movement arrived.
+The detector processes incoming server `gam` movements and inbound confirmed `mrm` retreats. A matching movement is an **incoming candidate**. Auto Support applies the owned-castle and differing-alliance rule below. A calculated ETA is not confirmation that the movement arrived.
 
 ## Wire and decoded structure
 
@@ -85,7 +85,7 @@ The web page updates its countdown from the stored arrival timestamp about once 
 
 ## Current incoming-candidate rule
 
-The user configures `own_kid`, `own_x`, and `own_y` in the Incoming tab. The current [predicate](../backend/incoming.py) accepts a movement when all three match:
+The Incoming tab now watches the owned `(KID,x,y)` tuples configured in Auto Support when any exist. Its old single `own_kid`, `own_x`, `own_y` setting is a fallback only when that tuple list is empty. The [predicate](../backend/incoming.py) accepts a movement when all three target values match one watched tuple:
 
 ```text
 M[i].M.KID   == own_kid
@@ -95,15 +95,17 @@ M[i].M.TA[2] == own_y
 
 For the fixture, `(own_kid, own_x, own_y) = (0, 677, 688)` matches. `(0, 647, 759)` does **not** match: those are the sender coordinates. This rule does not establish that the movement is hostile. Keep any later hostile/support distinction in the isolated `is_incoming()` predicate after it is verified from real packets.
 
-The ledger is in memory and keyed by MID. **First observation wins** for the ETA, player details, and other stored attributes; duplicate GAM messages do not overwrite them. Multiple distinct MIDs are tracked independently and sorted by estimated arrival. Changing the configured location clears the ledger to prevent movements for the previous location from appearing under the new one. The location is saved to `web_data/incoming_location.json`; ledger entries are not persisted across server restarts.
+The ledger is in memory and keyed by MID. **First observation wins** for the ETA and player details. A later GAM for the same MID may fill an unknown composition when the first packet had only `GS`. Multiple distinct MIDs are tracked independently and sorted by estimated arrival. Changing the watched castle tuples clears the ledger; the legacy location is saved to `web_data/incoming_location.json` and Auto Support castles to `web_data/auto_support.json`. Ledger entries are not persisted across server restarts.
 
-An attack can be logically retreated using an [`mrm` frame](mrm.md) containing its `MID`. The user reports that retreat is irreversible and the MID is terminal. This is a movement lifecycle fact; the current incoming ledger does not yet consume `mrm` frames.
+An inbound successful [`mrm` frame](mrm.md) containing its `MID` moves a known entry to **Retreated**. The user reports that retreat is irreversible and the MID is terminal. A request alone is not a confirmed retreat.
 
-## Troops, tools, and waves: still unknown
+## GA troop counts; tools and waves still unknown
 
-The supplied `payload.M[0]` contains `UM`, `GS`, `AST`, and `ATT`, but the fixture and existing decoder do not establish troop formations, tool formations, flank positions, or wave counts. In particular, `UM.L.EQ` is a commander equipment array; it must not be summed as troops or tools. `UM.PWD` and `UM.TWD` are observed values, but their names alone are insufficient to treat them as total counts.
+The original supplied `payload.M[0]` has only `GS`, so troop quantity remains Unknown in that version. A later GAM can carry `GA` with arrays `L`, `M`, `R`, `RW`, each containing `[unit_id,count]` pairs. Sum all four groups for the march's visible troop count. `UM.L.EQ` is commander equipment and must not be counted as troops or tools; `UM.PWD` and `UM.TWD` are not verified totals. Tool and wave counts remain Unknown.
 
-The detector's isolated `extract_composition()` function currently returns **Unknown** (`null` internally) for total troops, total tools, waves, and left/centre/right distributions. When real GAM examples reveal the formation schema, document the exact paths, array positions, and summation rule before implementing counts. Missing composition must remain Unknown rather than zero.
+For the [latest owned-castle attack fixture](../tests/fixtures/gam_156095506.txt), `TA[1:3]=[543,520]` is the receiver and `SA[1:3]=[546,520]` the sender. `TID=596904` resolves to receiver alliance `3026`, while `SID=432945` resolves to sender alliance `3652`; their positions in `O[]` are reversed from the earlier fixture. `TT-PT=185-4=181` seconds remain at observation. `GA.M=[[10,22]]` means 22 of unit 10 (Veteran Deathly Horror); `GA.RW=[[655,67]]` means 67 of unit 655 (Traveling Knight). `L` and `R` are empty, so **22 + 67 = 89 visible troops**. The operator describes the RW amount as courtyard attack troops; the packet key alone does not establish its exact battle role, so the UI labels it RW / reserve-courtyard. It is included in the total. `GS` alone is still Unknown, and a later GA fills that value without moving the original ETA.
+
+This MID was scheduled by Auto Support according to `web_data/auto_support_status.json`, then marked **Retreated**. It did not reach the DCL/SDI/CDS dispatch window. The Incoming tab had independently been set to `(0,546,520)`, the sender coordinates, which explains why it did not list this movement before the tabs were synchronized.
 
 ## Comparing the alliance-target and original samples
 
@@ -128,14 +130,18 @@ Both packets use the same XT command and the same outer `M[]`/`O[]` structure. T
 
 To isolate perspective, capture the same `MID` and `TID` from the owning account and an allied account, with each account's player/alliance ID recorded separately. To classify movement type, obtain labeled attack and support examples and compare their movement fields independently of viewing account.
 
+### Auto Support operational rule
+
+For the proxy Auto Support proof of concept, the operator supplies owned castle `(KID,x,y)` tuples. A movement is eligible only when `M.KID` and `M.TA[1:3]` match one of those tuples **and** the sender and receiver have different `AID` values. Resolve sender `O[]` by `M.SID` (fallback `M.OID`) and receiver `O[]` by `M.TID`; never rely on array positions. Both player records and both numeric `AID` fields must exist. Equal or missing IDs are skipped. `AID=-1` is the observed no-alliance value; two unaffiliated players therefore compare equal and are skipped. Before dispatch, the DCL reply must also confirm `PID == M.TID` and contain the matched castle area ID. This is the user's chosen operational definition of an attack on an owned castle, not a separately proven GAM movement-type field.
+
 ## Capture path and current limits
 
-The experimental [mitmproxy addon](../backend/incoming_addon.py) watches only server-to-client messages on game WebSockets matching `ep-live-*-game.goodgamestudios.com`. It decodes UTF-8 (including supported compressed frames), queues frames starting `%xt%gam%`, and sends them to the local web service outside the traffic callback. Detection does **not** require session recording to be on. The [web service](../backend/web_server.py) parses the GAM, applies the location rule, and exposes the in-memory ledger to the web tab.
+The experimental [mitmproxy addon](../backend/incoming_addon.py) watches server-to-client messages on game WebSockets matching `ep-live-*-game.goodgamestudios.com`. It decodes UTF-8 (including supported compressed frames), queues frames starting `%xt%gam%` or `%xt%mrm%`, and sends them to the local web service outside the traffic callback. Detection does **not** require session recording to be on. The [web service](../backend/web_server.py) parses the movement, applies the watched castle rule, and exposes the in-memory ledger to the web tab.
 
 Known limits to revisit with additional captured GAM packets:
 
 1. Which movement field definitively separates hostile attacks from support or other movements?
-2. Which paths represent wave, troop, tool, and flank composition, if GAM carries them at all?
+2. The `GA` troop groups are visible, but which paths reveal tool and wave counts, and what precisely does `RW` represent in battle?
 3. Do all server GAM frames use the observed `%xt%gam%...%` form? The generic XT parser supports a server-header variant, while the addon currently queues only the observed prefix.
 4. Are `SID`, `OID`, and `TID` consistent across multiple players, kingdoms, and movement types?
 5. What do the remaining `SA`/`TA` array positions and `UM`, `GS`, `AST`, `ATT` fields mean?

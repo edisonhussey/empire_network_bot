@@ -15,6 +15,7 @@ mod config;
 mod dev;
 mod ledger;
 mod modes;
+mod pvp;
 mod recruitment;
 mod schema;
 mod state;
@@ -32,6 +33,7 @@ pub use ledger::{
     MARCH_SENT, MarchRecord, ScanActivity,
 };
 pub use modes::{AccountModeRecord, ActiveModeTask, ImportModeError, ModeRecord, TaskRuntime};
+pub use pvp::{PvpCount, PvpPage, PvpQuery, PvpRow, PvpState};
 pub use recruitment::{
     AccountRecruitBot, ActiveRecruitment, OwnedCastleRecord, RecruitBot, RecruitBotCastle,
     RecruitmentTemplate,

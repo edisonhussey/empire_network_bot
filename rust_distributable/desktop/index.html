@@ -62,6 +62,7 @@
           <button data-view="initialize"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-initialize"/></svg></span>Initialize</button>
           <button data-view="presets"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-modes"/></svg></span>Manage presets</button>
           <button data-view="logs"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-logs"/></svg></span>Logs</button>
+          <button data-view="pvp"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-logs"/></svg></span>PVP</button>
           <button data-view="development"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-dashboard"/></svg></span>Development</button>
           <button data-view="support"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-accounts"/></svg></span>Support</button>
         </nav>
@@ -212,6 +213,26 @@
           <section class="card log-card"><div class="card-title"><div><p class="eyebrow">Support console</p><h2>Connection logs</h2></div><div class="row-actions"><span id="log-live" class="log-live offline"><i></i><span id="log-live-label">Offline</span></span><button id="refresh-logs" class="secondary-action" type="button">Refresh now</button><button id="copy-logs" class="secondary-action" type="button">Copy logs</button></div></div><p class="log-note">Updates automatically only while a game socket is connected. Passwords and session tokens are removed.</p><pre id="account-logs" class="log-console">No active connection. Stored events remain available below.</pre><output id="log-result"></output></section>
         </section>
 
+        <section id="view-pvp" class="view" hidden>
+          <section class="card pvp-card">
+            <div class="card-title"><div><p class="eyebrow">Movements seen</p><h2>PVP</h2></div><span id="pvp-who" class="dev-legend">–</span></div>
+            <dl id="pvp-summary" class="dev-stats"></dl>
+            <div class="row-actions pvp-filters">
+              <label>Direction <select id="pvp-filter-direction"><option value="">All</option><option value="incoming">Incoming</option><option value="outgoing">Outgoing</option><option value="internal">Internal</option><option value="other">Other</option></select></label>
+              <label>State <select id="pvp-filter-state"><option value="">All</option><option value="active">Active</option><option value="landed">Landed</option><option value="retreated">Retreated</option></select></label>
+              <label>Target <select id="pvp-filter-owner"><option value="">All</option><option value="mine">Mine</option><option value="alliance">Alliance</option></select></label>
+              <span id="pvp-loaded" class="dev-legend"></span>
+            </div>
+            <div class="pvp-scroll">
+              <div class="pvp-row pvp-head"><span>Detected</span><span>Direction</span><span>State</span><span>From</span><span>To</span><span>Army</span><span>Duration</span><span>Lands</span><span>Target</span><span>Kingdom</span></div>
+              <div id="pvp-rows"></div>
+            </div>
+            <p id="pvp-empty" class="dev-note" hidden></p>
+            <button id="pvp-more" class="secondary-action" type="button" hidden>Load older</button>
+            <p class="dev-note">Each movement is recorded once, by its movement id, when first seen; a later packet only fills in details that were missing. "Landed" is the estimated landing time passing, not a confirmed arrival. Army is the sum of the units in the packet, "?" when the packet does not carry them. Only the newest page is loaded; counts above cover the whole history.</p>
+          </section>
+        </section>
+
         <section id="view-development" class="view" hidden>
           <div class="dev-grid">
             <section class="card dev-panel dev-timing">
@@ -245,6 +266,7 @@
             <section class="card dev-panel dev-spatial">
               <div class="card-title"><div><p class="eyebrow">Kingdom</p><h2>Map</h2></div>
                 <div class="row-actions dev-controls">
+                  <select id="dev-kingdom-select" title="Kingdom to show" aria-label="Kingdom to show"></select>
                   <button id="dev-zoom-out" class="secondary-action" type="button" title="Show more map">−</button>
                   <button id="dev-zoom-in" class="secondary-action" type="button" title="Show less map">+</button>
                   <button id="dev-centre-castle" class="secondary-action" type="button">Castle</button>
@@ -253,7 +275,7 @@
                 </div>
               </div>
               <canvas id="dev-map" class="dev-canvas dev-map-canvas" aria-label="Kingdom map"></canvas>
-              <p class="dev-note">White circles are towers (hollow while cooling), the square is the main castle, the dashed ring and arrow are the spotlight and its direction. Drag to pan, scroll to zoom. Lines show armies out and returning, placed from the game's own timestamps.</p>
+              <p class="dev-note">White circles are towers (hollow while cooling), the square is the main castle, the dashed ring and arrow are the spotlight and its direction. Drag to pan, scroll to zoom. Lines show our armies out and returning, placed from the game's own timestamps. Bold green arrows are attacks by someone in your alliance, bold red arrows are anyone else's (including attacks on you); each is drawn only while it is travelling, with its sender and target dots labelled &ldquo;name | alliance&rdquo;.</p>
             </section>
             <section class="card dev-panel dev-health">
               <div class="card-title"><div><p class="eyebrow">Connection</p><h2>Response health</h2></div></div>

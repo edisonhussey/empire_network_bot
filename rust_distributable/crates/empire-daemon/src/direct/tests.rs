@@ -996,7 +996,9 @@ async fn a_long_idle_gap_does_not_queue_a_burst() {
     let AutomationPhase::ReadyCra { due_ms, .. } = automation.phase else {
         panic!("expected a queued attack");
     };
-    assert!(due_ms >= before + 2_000 && due_ms <= before + 8_000, "{}", due_ms - before);
+    // The wait is heavy-tailed on purpose, so only its floor and "far shorter than
+    // the idle gap" are fixed. The point is that it starts from now.
+    assert!(due_ms >= before + 500 && due_ms < before + 1_800_000, "{}", due_ms - before);
     assert_eq!(automation.scheduler.last().unwrap().restriction, None, "no limit was in play");
 }
 
@@ -1103,4 +1105,84 @@ async fn taking_a_snapshot_for_the_development_tab_changes_nothing_in_the_bot() 
         assert!(!text.contains(forbidden), "{forbidden}");
     }
     drop(store);
+}
+
+mod pvp_stream {
+    use super::*;
+    use empire_core::store::{PvpQuery, PvpState};
+
+    const GAM: &str = include_str!("../../../../docs/network_packets/gam.txt");
+    const MRM: &str = include_str!("../../../../docs/network_packets/mrm.txt");
+
+    async fn observe(store: &Store, raw: &str) {
+        observe_account_packet(
+            store,
+            "ventrilo",
+            raw.trim(),
+            &HashMap::new(),
+            &SessionSettings::default(),
+            false,
+        )
+        .await;
+    }
+
+    /// The account the captured `gam` targets: castle at (546, 520) in Green.
+    async fn logged_in_as_the_target() -> Store {
+        let store = tower_store(0).await;
+        let bootstrap = json!({
+            "gpi": {"PID": 432945, "PN": "WIZRAD007"},
+            "gal": {"AID": 3652, "N": "Electi"},
+            "gcl": {"C": [{"KID": 0, "AI": [{"AI": [1, 546, 520, 326003, 432945, 0, 0, 0, 0, 0, "wendlestein"]}]}]},
+            "gli": {"C": [{"ID": 1}]}
+        });
+        observe(&store, &format!("%xt%gbd%1%0%{bootstrap}%")).await;
+        store
+    }
+
+    async fn rows(store: &Store, now_ms: i64) -> Vec<empire_core::store::PvpRow> {
+        let query = PvpQuery { limit: 10, ..PvpQuery::default() };
+        store.pvp_page("ventrilo", &query, now_ms).await.unwrap().rows
+    }
+
+    #[tokio::test]
+    async fn an_attack_on_our_castle_is_recorded_once_as_mine_and_incoming() {
+        let store = logged_in_as_the_target().await;
+        observe(&store, GAM).await;
+        observe(&store, GAM).await;
+        let found = rows(&store, now_ms()).await;
+        assert_eq!(found.len(), 1, "the same MID is learned once");
+        let row = &found[0];
+        assert_eq!((row.mid, row.owner.as_str(), row.direction.as_str()), (155307796, "mine", "incoming"));
+        assert_eq!(row.army_size, Some(9));
+        assert_eq!(row.sender_alliance.as_deref(), Some("top secret"));
+        assert_eq!(row.state, PvpState::Active);
+    }
+
+    #[tokio::test]
+    async fn an_attack_on_someone_else_in_our_alliance_is_recorded_as_alliance() {
+        let store = logged_in_as_the_target().await;
+        // Same alliance, but another member's castle: not our id, not our tuple.
+        let gam = GAM.replace("432945", "999").replace("[1,546,520,326003", "[1,700,700,326003");
+        observe(&store, &gam).await;
+        let found = rows(&store, now_ms()).await;
+        assert_eq!((found[0].owner.as_str(), found[0].direction.as_str()), ("alliance", "incoming"));
+    }
+
+    #[tokio::test]
+    async fn nothing_is_recorded_before_the_account_is_known() {
+        let store = tower_store(0).await;
+        observe(&store, GAM).await;
+        assert!(rows(&store, now_ms()).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_retreat_frame_ends_the_movement_it_names() {
+        let store = logged_in_as_the_target().await;
+        observe(&store, GAM).await;
+        observe(&store, &MRM.replace("155312686", "155307796")).await;
+        assert_eq!(rows(&store, now_ms()).await[0].state, PvpState::Retreated);
+        // The unmodified capture names a movement we never saw: nothing changes.
+        observe(&store, MRM).await;
+        assert_eq!(rows(&store, now_ms()).await.len(), 1);
+    }
 }

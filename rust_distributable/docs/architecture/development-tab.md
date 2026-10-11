@@ -52,8 +52,16 @@ Closing it, or leaving the tab, changes nothing about execution.
 | `GET /v1/dev` | the snapshot: timing (wave parameters, history, recent waits), scheduler, spatial (castle, spotlight, velocity, last selection) and health |
 | `GET /v1/dev/map?kingdom=` | the kingdom's towers with the time each is next ready, and the main castle |
 | `GET /v1/dev/movements?kingdom=` | armies out or returning, with start and end timestamps |
+| `GET /v1/pvp?state=active&kingdom=` | other players' travelling movements, drawn as arrows (see [`pvp.md`](pvp.md)) |
 
 None of them carries credentials, tokens or packet payloads.
+
+## Kingdom chooser and PVP arrows
+
+The map's drop-down picks the kingdom shown: "Follow the bot" (the default) or a specific one.
+Bold green arrows are alliance attacks going out, bold red arrows attacks coming in to the
+alliance (the account included). Sender and target get a dot each, labelled `name | alliance`,
+and exist only while the movement is active. Details and limits: [`pvp.md`](pvp.md).
 
 ## Movements, from the ledger
 
