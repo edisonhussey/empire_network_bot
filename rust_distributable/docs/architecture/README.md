@@ -14,6 +14,7 @@ about the system that uses them.
 | [`response-health.md`](response-health.md) | Missing and null responses, the rolling-hour tolerance and the safe pause |
 | [`development-tab.md`](development-tab.md) | The read-only Development tab: timing graph, kingdom map, movements |
 | [`pvp.md`](pvp.md) | The PVP tab: which `gam` movements are recorded, how they are classified, paged and drawn |
+| [`station.md`](station.md) | Auto-station: moving an attacked castle's troops out and back, the five second window, and how it shares the connection |
 | [`attack-scheduling.md`](attack-scheduling.md) | How towers and commanders are chosen, cooldowns, why throughput is what it is |
 | [`connection-supervision.md`](connection-supervision.md) | What happens when the game connection drops |
 | [`database.md`](database.md) | What is stored, per account, for how long, and how to query it |

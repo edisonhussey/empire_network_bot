@@ -35,11 +35,19 @@ pub struct PlanLibrary {
     account_recruit_bots: Vec<AccountRecruitBot>,
     recruit_states: Vec<RecruitCastleState>,
     castles: Vec<OwnedCastleRecord>,
+    station_bots: Vec<empire_core::store::StationBot>,
+    account_station_bots: Vec<empire_core::store::AccountStationBot>,
 }
 
 #[derive(Serialize)]
 pub struct CreatedId {
     id: String,
+}
+
+impl CreatedId {
+    pub fn new(id: i64) -> Self {
+        Self { id: id.to_string() }
+    }
 }
 
 /// Names are unique, so a repeat is a mistake the operator can fix rather than a
@@ -88,6 +96,10 @@ pub struct StartBotsRequest {
     account_id: String,
     mode_id: i64,
     recruit_bot_id: Option<i64>,
+    /// The support bot, or `None` for no auto-station. Chosen together with the
+    /// attack and recruit bots and started and stopped with them.
+    #[serde(default)]
+    station_bot_id: Option<i64>,
     running: bool,
 }
 
@@ -141,6 +153,16 @@ pub async fn library(State(state): State<AppState>) -> Result<Json<PlanLibrary>,
         castles: state
             .store
             .owned_castles()
+            .await
+            .map_err(ApiError::internal)?,
+        station_bots: state
+            .store
+            .station_bots()
+            .await
+            .map_err(ApiError::internal)?,
+        account_station_bots: state
+            .store
+            .account_station_bots()
             .await
             .map_err(ApiError::internal)?,
     }))
@@ -269,6 +291,16 @@ pub async fn start_bots(
             request.account_id.trim(),
             request.recruit_bot_id,
             request.running && request.recruit_bot_id.is_some(),
+            now_ms(),
+        )
+        .await
+        .map_err(ApiError::bad_request)?;
+    state
+        .store
+        .subscribe_account_station_bot(
+            request.account_id.trim(),
+            request.station_bot_id,
+            request.running && request.station_bot_id.is_some(),
             now_ms(),
         )
         .await

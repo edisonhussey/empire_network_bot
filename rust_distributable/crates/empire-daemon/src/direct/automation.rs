@@ -85,6 +85,11 @@ pub(super) struct Automation {
     /// The last tower an attack was acknowledged for.
     pub(super) selected: Option<(i64, i64)>,
     pub(super) last_completed: Option<CompletedView>,
+    /// Castles whose troops are out as support or on the way home, as
+    /// `(kingdom, x, y)`. Set from the station each tick. No attack is sent from
+    /// one: the troops are not there, the server refuses, and repeated refusals lock
+    /// the account.
+    pub(super) station_holds: Vec<(i64, i64, i64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -237,6 +242,23 @@ impl Automation {
             focus: None,
             selected: None,
             last_completed: None,
+            station_holds: Vec::new(),
+        }
+    }
+
+    pub(super) fn castle_held(&self, task: &ActiveModeTask) -> bool {
+        self.station_holds
+            .contains(&(task.kingdom_id, task.source_x, task.source_y))
+    }
+
+    /// The source castle of a `cra` that has left and not been answered. Support
+    /// from the same castle waits for the answer: both draw on the same troops.
+    pub(super) fn cra_in_flight_source(&self) -> Option<(i64, i64, i64)> {
+        match &self.phase {
+            AutomationPhase::AwaitCra { task, .. } => {
+                Some((task.kingdom_id, task.source_x, task.source_y))
+            }
+            _ => None,
         }
     }
 
@@ -484,6 +506,12 @@ impl Automation {
             if now < *due_ms {
                 return Ok(None);
             }
+            if self.castle_held(task) {
+                release_unattacked(store, account_id, task, target).await;
+                self.detail = "Castle's troops are out as support; inspection dropped".to_owned();
+                self.phase = AutomationPhase::Idle { due_ms: now + 5_000 };
+                return Ok(None);
+            }
             if task.target_kind == "fortress"
                 && !store
                     .fortress_is_dispatchable(account_id, target, now, None)
@@ -534,6 +562,14 @@ impl Automation {
         } = &self.phase
         {
             if now < *due_ms {
+                return Ok(None);
+            }
+            // The inspection saw troops that support has since taken: a cra now
+            // would be refused. Let it go; the next inspection sees the truth.
+            if self.castle_held(task) {
+                release_unattacked(store, account_id, task, target).await;
+                self.detail = "Castle's troops went out as support; attack cancelled safely".to_owned();
+                self.phase = AutomationPhase::Idle { due_ms: now + 5_000 };
                 return Ok(None);
             }
             if task.target_kind == "fortress"
@@ -668,7 +704,9 @@ impl Automation {
             .collect::<Vec<_>>();
         for index in indexes {
             let task = &tasks[index];
-            if free_commanders(&task.commander_lids, &states, now).is_empty() {
+            if free_commanders(&task.commander_lids, &states, now).is_empty()
+                || self.castle_held(task)
+            {
                 continue;
             }
             let target = store
@@ -765,7 +803,9 @@ impl Automation {
             .filter(|index| tasks[*index].target_kind != "fortress")
         {
             let task = &tasks[index];
-            if free_commanders(&task.commander_lids, &states, now).is_empty() {
+            if free_commanders(&task.commander_lids, &states, now).is_empty()
+                || self.castle_held(task)
+            {
                 continue;
             }
             // The task's own selector remembers where its spotlight is. Choosing

@@ -116,6 +116,19 @@ Which account a captured packet belongs to. The log is still capped at 200 rows
 
 Neither is cleared by "reset account". See [`pvp.md`](pvp.md).
 
+## V22: auto-station
+
+* `station_bot` / `station_bot_kingdom`: a named support bot and its destination per
+  kingdom; `account_station_bot` picks at most one per account and whether it runs.
+* `castle_inventory`: the latest `dcl` reading per castle (units as JSON, food, mead, wood,
+  stone); one row per castle, replaced each time.
+* `station_job`: one row per stationed castle (state blob, support MID, commander, the
+  acknowledgement and recall times, and `lead_ms`, the time the support was acknowledged
+  before the estimated landing). Kept for good, about 600 bytes a job; finished jobs older
+  than 180 days are pruned when a session starts. Not cleared by "reset account".
+
+See [`station.md`](station.md).
+
 ## Size
 
 For one account running one troop type flat out:

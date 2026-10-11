@@ -47,17 +47,7 @@ pub async fn pvp(
     State(state): State<AppState>,
     Query(params): Query<PvpParams>,
 ) -> Result<Json<PvpResponse>, ApiError> {
-    let account_id = match params.account_id.clone() {
-        Some(account) => account,
-        None => match state.direct_status.read().await.account_id.clone() {
-            Some(account) => account,
-            None => state
-                .store
-                .latest_alliance_account()
-                .await?
-                .ok_or_else(|| ApiError::bad_request("no account has been seen yet"))?,
-        },
-    };
+    let account_id = crate::focus_account(&state, params.account_id.clone()).await?;
     let query = parse_query(&params)?;
     let now = now_ms();
     let first_page = query.before.is_none();

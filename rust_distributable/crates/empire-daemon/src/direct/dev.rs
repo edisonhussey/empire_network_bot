@@ -13,7 +13,8 @@ use empire_core::timing::WaveKind;
 use super::{
     automation::Automation,
     health::{Incident, Verdict},
-    scheduler::Applied,
+    scheduler::{Applied, Histogram},
+    station::StationAutomation,
 };
 
 /// Upcoming waits shown ahead of the present.
@@ -27,6 +28,8 @@ pub struct DevSnapshot {
     pub scheduler: SchedulerView,
     pub spatial: Option<SpatialView>,
     pub health: HealthView,
+    /// Stationed castles, recalls and their timing (see `station`).
+    pub station: super::station_view::StationView,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -69,6 +72,17 @@ pub struct TimingView {
     pub recent: Vec<Applied>,
     /// The band the design aims about 60 % of waits into, seconds.
     pub target_band_s: [f64; 2],
+    /// How often each generated wait was used, over the session.
+    pub histogram: HistogramView,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct HistogramView {
+    /// Upper edge of each bin, seconds; there is one more count than edges, the
+    /// last being everything above the final edge.
+    pub edges_s: Vec<f64>,
+    pub counts: Vec<u64>,
+    pub total: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -119,6 +133,23 @@ pub struct HealthView {
     pub incidents: Vec<Incident>,
     /// What the latest qualifying incident meant for the run.
     pub last_verdict: Option<Verdict>,
+}
+
+impl HistogramView {
+    fn from_histogram(histogram: &Histogram) -> Self {
+        let (edges_s, counts) = histogram.edges_and_counts();
+        Self { edges_s, counts, total: histogram.total() }
+    }
+}
+
+/// The whole snapshot: the scheduler's, plus the station's jobs and the frequency
+/// of every human-paced wait either of them used.
+pub(super) fn snapshot(automation: &mut Automation, station: &StationAutomation, now_ms: i64) -> DevSnapshot {
+    let mut snapshot = automation.dev_snapshot(now_ms);
+    snapshot.timing.histogram =
+        HistogramView::from_histogram(&automation.scheduler.histogram().merged(station.histogram()));
+    snapshot.station = station.view(now_ms);
+    snapshot
 }
 
 impl Automation {
@@ -175,6 +206,7 @@ impl Automation {
                 last: last.clone(),
                 recent: self.scheduler.recent().cloned().collect(),
                 target_band_s: [1.0, 5.0],
+                histogram: HistogramView::default(),
             },
             scheduler: SchedulerView {
                 state: state.to_owned(),
@@ -197,6 +229,7 @@ impl Automation {
                 incidents: self.health.recent().take(20).cloned().collect(),
                 last_verdict: self.last_verdict,
             },
+            station: Default::default(),
         }
     }
 }

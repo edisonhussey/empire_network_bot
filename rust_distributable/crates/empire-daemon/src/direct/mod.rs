@@ -3,11 +3,16 @@ mod base_scan;
 mod dev;
 mod fortress_discovery;
 mod health;
+mod inventory;
 mod observe;
 mod packets;
 mod pvp;
 mod recruitment;
 mod scheduler;
+mod station;
+mod station_view;
+#[cfg(test)]
+mod station_tests;
 #[cfg(test)]
 mod tests;
 
@@ -17,10 +22,13 @@ use dev::CompletedView;
 pub use dev::DevSnapshot;
 use fortress_discovery::*;
 use health::*;
+use inventory::InventoryPoll;
 use observe::*;
 use packets::*;
 use recruitment::*;
 use scheduler::*;
+use station::{Gate, StationAutomation};
+pub use inventory::REFRESH_KEY as OVERVIEW_REFRESH_KEY;
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -448,6 +456,12 @@ async fn run_inner(
     automation.configure(store).await;
     let mut last_dev_snapshot_ms = 0_i64;
     let mut recruitment = RecruitmentAutomation::new();
+    // Auto-station: takes priority over everything else on the connection while
+    // a job is in its window (see station.rs for the gate).
+    let mut station = StationAutomation::new();
+    station.restore(store, &account_id, now_ms()).await;
+    let mut inventory = InventoryPoll::new();
+    let mut station_tick = tokio::time::interval(Duration::from_millis(50));
     let mut fortress_rng = Rng::from_entropy();
     let mut scan_rng = Rng::from_entropy();
     let mut base_scan_queue = VecDeque::<String>::new();
@@ -635,6 +649,7 @@ async fn run_inner(
                     record_text(store, &account_id, Direction::ServerToClient, &text).await;
                     automation.observe(store, &account_id, &text).await;
                     recruitment.observe(store, &account_id, &text).await;
+                    station.observe(store, &account_id, &text, now_ms()).await;
                     let frames = machine.on_server_text(&text)?;
                     if let Some(packet) = parsed_packet.as_ref()
                         && packet.command == "lli"
@@ -779,7 +794,7 @@ async fn run_inner(
                             base_scan_due_ms = now + 4_000;
                         }
                     }
-                } else if now >= base_scan_due_ms {
+                } else if now >= base_scan_due_ms && station.gate(now) == Gate::Open {
                     // Control frames introducing a kingdom may go immediately,
                     // but stop after one GAA until its response is observed.
                     while let Some(frame) = base_scan_queue.pop_front() {
@@ -827,6 +842,7 @@ async fn run_inner(
                     && active_base_scan.is_none()
                 {
                     let now = now_ms();
+                    let station_open = station.gate(now) == Gate::Open;
                     // Which sweeps the running bot needs. Rebuilt rather than
                     // fixed at connect, because the bot is chosen *after* the
                     // socket opens: a session that never starts a fortress bot
@@ -891,6 +907,7 @@ async fn run_inner(
                             status.write().await.phase = SessionPhase::DiscoveringFortresses;
                         }
                         if now >= fortress_initialization_due_ms
+                            && station_open
                             && let Some(&(kingdom_id, lattice_offset)) =
                                 fortress_sweeps.get(fortress_sweep_index)
                         {
@@ -1045,6 +1062,25 @@ async fn run_inner(
                     }
                 }
             }
+            _ = station_tick.tick() => {
+                if machine.phase() == SessionPhase::SandsReady {
+                    let now = now_ms();
+                    automation.station_holds = station.holds(now);
+                    if let Some(packet) = station
+                        .next_packet(
+                            store,
+                            &account_id,
+                            &request.settings.server_header,
+                            now,
+                            automation.cra_in_flight_source(),
+                        )
+                        .await?
+                    {
+                        record_safe_outbound(store, &account_id, &packet).await;
+                        sink.send(Message::Text(packet.into())).await?;
+                    }
+                }
+            }
             _ = automation_tick.tick() => {
                 // Automation waits only while a walk the running bot asked for is
                 // still in progress. No fortress task means nothing to wait for.
@@ -1052,14 +1088,44 @@ async fn run_inner(
                     && active_fortress_block.is_none()
                     && fortress_sweep_index >= fortress_sweeps.len()
                 {
-                    let recruit_packet = if recruitment.holds_transport() || !automation.holds_transport() {
-                        recruitment.next_packet(store, &account_id, &request.settings.server_header).await?
-                    } else { None };
-                    if let Some(packet) = recruit_packet {
+                    // The station's window comes first. Close to one, sequences
+                    // already running may finish but none starts; inside it
+                    // nothing else sends at all.
+                    let now = now_ms();
+                    let station_gate = station.gate(now);
+                    automation.station_holds = station.holds(now);
+                    let mut sent = false;
+                    if station_gate != Gate::Owned
+                        && (station_gate == Gate::Open || recruitment.holds_transport())
+                        && (recruitment.holds_transport() || !automation.holds_transport())
+                        && let Some(packet) = recruitment.next_packet(store, &account_id, &request.settings.server_header).await?
+                    {
                         record_safe_outbound(store, &account_id, &packet).await;
                         sink.send(Message::Text(packet.into())).await?;
-                    } else if !recruitment.holds_transport() && let Some(packet) = automation
+                        sent = true;
+                    }
+                    if !sent
+                        && station_gate != Gate::Owned
+                        && !recruitment.holds_transport()
+                        && (station_gate == Gate::Open || automation.holds_transport())
+                        && let Some(packet) = automation
                             .next_packet(store, &account_id, &request.settings.server_header)
+                            .await?
+                    {
+                        record_safe_outbound(store, &account_id, &packet).await;
+                        sink.send(Message::Text(packet.into())).await?;
+                        sent = true;
+                    }
+                    if !sent
+                        && let Some(packet) = inventory
+                            .next_packet(
+                                store,
+                                &request.settings.server_header,
+                                now,
+                                station_gate == Gate::Open
+                                    && !automation.holds_transport()
+                                    && !recruitment.holds_transport(),
+                            )
                             .await?
                     {
                         record_safe_outbound(store, &account_id, &packet).await;
@@ -1077,7 +1143,7 @@ async fn run_inner(
                     let now = now_ms();
                     if now - last_dev_snapshot_ms >= 1_000 {
                         last_dev_snapshot_ms = now;
-                        *dev.write().await = automation.dev_snapshot(now);
+                        *dev.write().await = dev::snapshot(&mut automation, &station, now);
                     }
                 }
             }

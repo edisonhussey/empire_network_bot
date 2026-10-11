@@ -16,6 +16,12 @@ Closing it, or leaving the tab, changes nothing about execution.
   generated, the last generated wait and what it was made of (wave, noise, protocol
   minimum), the wait actually applied with any extra the limits added, the share of recent
   waits inside 1 to 5 s, and a live countdown to the next permitted action.
+* **Frequency of the waits used**: a histogram of every human-paced wait either generator
+  produced (24 log-spaced bins from 0.25 s to 240 s and an overflow bin), the bars inside
+  1 to 5 s in green and the share printed. The attack sequence and the station both feed it.
+* **Station**: the stationed castles, each with its state, the attackers, and the time
+  before the landing at every step (`dcl`, `sdi`, `cds` sent and acknowledged), plus the
+  gate and the delay the deadlines allow for.
 * **Diagnostics**: scheduler state and detail, the global restriction in force, the last
   completed attack, the current kingdom, eligible towers, how many are near the
   spotlight (and whether it will relocate), and the recent waits.
@@ -28,6 +34,9 @@ Closing it, or leaving the tab, changes nothing about execution.
   tower with a marker, a direction arrow and the remaining time. The line ahead of the
   marker stays and the line behind it disappears. When a return time is not known it is
   drawn dashed and labelled "return unknown"; it is never estimated.
+* **Support on the map**: the attacked castle is ringed; a dashed line runs to its
+  destination, moving the way the troops move; a marker shows the support out or back and
+  the labels count down to the recall and to the landing. Only for the kingdom shown.
 * **Response health**: the rolling-hour count of unexpected missing or null responses
   against the tolerance, the state, and the recent incidents.
 

@@ -405,7 +405,7 @@ mod tests {
             alliance_name: Some("Electi".into()),
             x,
             y: 520,
-            place: None,
+            ..Party::default()
         };
         (
             SeenMovement {

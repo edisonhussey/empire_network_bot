@@ -1186,3 +1186,54 @@ mod pvp_stream {
         assert_eq!(rows(&store, now_ms()).await.len(), 1);
     }
 }
+
+mod station_holds {
+    use super::*;
+
+    fn task_and_target() -> (ActiveModeTask, ReservedTarget) {
+        let AutomationPhase::AwaitAdi { task, target, .. } = awaiting_rbc_info().phase else {
+            unreachable!()
+        };
+        (task, target)
+    }
+
+    #[tokio::test]
+    async fn an_inspection_that_saw_troops_support_has_since_taken_is_not_followed_by_a_cra() {
+        let store = tower_store(0).await;
+        let (task, target) = task_and_target();
+        let mut automation = Automation::new();
+        automation.phase = AutomationPhase::ReadyCra { task, target, lord_id: 0, due_ms: 0 };
+        // The support left the Sands castle (593, 613) after the ADI.
+        automation.station_holds = vec![(1, 593, 613)];
+        let packet = automation.next_packet(&store, "ventrilo", US1_SERVER_HEADER).await.unwrap();
+        assert_eq!(packet, None, "a cra for troops that are away is refused, and refusals lock the account");
+        assert!(matches!(automation.phase, AutomationPhase::Idle { .. }));
+        assert_eq!(automation.last_cra_ms, None);
+    }
+
+    #[tokio::test]
+    async fn another_castle_is_not_held_and_the_pending_cra_is_not_blocked_by_the_check() {
+        let (task, _) = task_and_target();
+        let mut automation = Automation::new();
+        automation.station_holds = vec![(1, 1, 1), (0, 593, 613)];
+        assert!(!automation.castle_held(&task), "same coordinates in another kingdom are another castle");
+        automation.station_holds = vec![(1, 593, 613)];
+        assert!(automation.castle_held(&task));
+    }
+
+    #[tokio::test]
+    async fn only_an_unanswered_cra_counts_as_troops_in_flight() {
+        let (task, target) = task_and_target();
+        let mut automation = Automation::new();
+        assert_eq!(automation.cra_in_flight_source(), None);
+        automation.phase = AutomationPhase::AwaitCra {
+            task: task.clone(),
+            target: target.clone(),
+            lord_id: 0,
+            deadline_ms: now_ms() + 1_000,
+        };
+        assert_eq!(automation.cra_in_flight_source(), Some((1, 593, 613)));
+        automation.phase = AutomationPhase::ReadyCra { task, target, lord_id: 0, due_ms: 0 };
+        assert_eq!(automation.cra_in_flight_source(), None);
+    }
+}

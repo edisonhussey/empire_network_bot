@@ -22,6 +22,8 @@ pub mod pvp;
 #[cfg(feature = "application")]
 pub mod scheduler;
 pub mod session;
+#[cfg(feature = "application")]
+pub mod station;
 pub mod timing;
 #[cfg(feature = "application")]
 pub mod targeting;

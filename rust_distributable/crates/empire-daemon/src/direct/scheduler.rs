@@ -30,7 +30,67 @@ use serde::Serialize;
 /// Waits kept for the diagnostics and the Development tab's chart.
 const RECENT_LEN: usize = 120;
 
-/// The two waits in an attack, each with the protocol minimum that already applied
+/// Where the frequency chart's bins start and end, seconds. Log-spaced, because the
+/// design puts most waits in a few seconds and keeps a tail of minutes.
+const HISTOGRAM_LOW_S: f64 = 0.25;
+const HISTOGRAM_HIGH_S: f64 = 240.0;
+const HISTOGRAM_BINS: usize = 24;
+
+/// How often each wait the generator produced was used: a fixed number of
+/// log-spaced bins, so it never grows however long the session runs.
+#[derive(Debug, Clone)]
+pub struct Histogram {
+    counts: [u64; HISTOGRAM_BINS],
+    /// Draws beyond the last bin.
+    above: u64,
+}
+
+impl Histogram {
+    fn new() -> Self {
+        Self { counts: [0; HISTOGRAM_BINS], above: 0 }
+    }
+
+    /// The upper edge of bin `index`, seconds.
+    fn edge(index: usize) -> f64 {
+        HISTOGRAM_LOW_S * (HISTOGRAM_HIGH_S / HISTOGRAM_LOW_S).powf((index + 1) as f64 / HISTOGRAM_BINS as f64)
+    }
+
+    fn add(&mut self, seconds: f64) {
+        if !seconds.is_finite() {
+            return;
+        }
+        match (0..HISTOGRAM_BINS).find(|index| seconds < Self::edge(*index)) {
+            Some(index) => self.counts[index] += 1,
+            None => self.above += 1,
+        }
+    }
+
+    /// Fold another histogram in: the station keeps its own generator, and the
+    /// chart shows both.
+    pub fn merged(&self, other: &Histogram) -> Histogram {
+        let mut sum = self.clone();
+        for (mine, theirs) in sum.counts.iter_mut().zip(other.counts) {
+            *mine += theirs;
+        }
+        sum.above += other.above;
+        sum
+    }
+
+    pub fn total(&self) -> u64 {
+        self.counts.iter().sum::<u64>() + self.above
+    }
+
+    /// Bin upper edges (seconds) and counts. The last count is everything above the
+    /// last edge.
+    pub fn edges_and_counts(&self) -> (Vec<f64>, Vec<u64>) {
+        let edges = (0..HISTOGRAM_BINS).map(Self::edge).collect();
+        let mut counts = self.counts.to_vec();
+        counts.push(self.above);
+        (edges, counts)
+    }
+}
+
+/// The waits in the sequences, each with the protocol minimum that already applied
 /// to it before the generator existed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -39,6 +99,10 @@ pub enum Wait {
     BeforeAttack,
     /// After a `cra` acknowledgement, before the next handshake.
     AfterAck,
+    /// A gap inside the station sequence. The raw draw is not used as it is: the
+    /// station maps it into a window that fits the time left (see
+    /// `empire_core::station::normalise_gaps`).
+    Station,
 }
 
 impl Wait {
@@ -47,6 +111,7 @@ impl Wait {
         match self {
             Self::BeforeAttack => 2.0,
             Self::AfterAck => 0.75,
+            Self::Station => 0.5,
         }
     }
 }
@@ -77,6 +142,7 @@ pub(super) struct ActionScheduler {
     pending: Option<(Sample, Wait)>,
     next_action_at_ms: Option<i64>,
     restriction: Option<&'static str>,
+    histogram: Histogram,
 }
 
 impl ActionScheduler {
@@ -91,7 +157,12 @@ impl ActionScheduler {
             pending: None,
             next_action_at_ms: None,
             restriction: None,
+            histogram: Histogram::new(),
         }
+    }
+
+    pub(super) fn histogram(&self) -> &Histogram {
+        &self.histogram
     }
 
     pub(super) fn timer(&self) -> &WaveTimer {
@@ -123,6 +194,7 @@ impl ActionScheduler {
     ) {
         let Some((sample, pending_wait)) = self.pending.take() else { return };
         debug_assert_eq!(wait, pending_wait);
+        self.histogram.add(sample.raw_s);
         if self.recent.len() == RECENT_LEN {
             self.recent.pop_front();
         }
@@ -226,6 +298,34 @@ mod tests {
         // An unrequested record (no value pending) changes nothing.
         scheduler.applied(Wait::AfterAck, T0, 1.0, None);
         assert_eq!(scheduler.recent().count(), 1);
+    }
+
+    #[test]
+    fn the_histogram_counts_every_used_wait_once_in_a_fixed_number_of_bins() {
+        let mut scheduler = ActionScheduler::new(7);
+        for index in 0..500 {
+            let value = scheduler.interval(Wait::AfterAck);
+            scheduler.applied(Wait::AfterAck, T0 + index, value, None);
+        }
+        let (edges, counts) = scheduler.histogram().edges_and_counts();
+        assert_eq!(counts.len(), edges.len() + 1);
+        assert_eq!(counts.iter().sum::<u64>(), 500);
+        assert!(edges.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!((edges[0] - 0.25 * (240.0f64 / 0.25).powf(1.0 / 24.0)).abs() < 1e-9);
+        assert!((edges[23] - 240.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn histograms_add_and_ignore_nonsense() {
+        let mut one = Histogram::new();
+        let mut two = Histogram::new();
+        one.add(1.0);
+        one.add(f64::NAN);
+        two.add(1.0);
+        two.add(10_000.0);
+        let both = one.merged(&two);
+        assert_eq!(both.total(), 3);
+        assert_eq!(both.edges_and_counts().1.last(), Some(&1), "the overflow bin");
     }
 
     #[test]

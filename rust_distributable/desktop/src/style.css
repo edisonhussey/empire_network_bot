@@ -379,6 +379,7 @@ legend { padding: 0 16px 0 0; }
 .account-mode-control > label { text-transform: none; letter-spacing: .01em; font-size: 13px; color: var(--ink-3); }
 .account-mode-control > select:nth-of-type(1) { grid-area: 2 / 1; } .account-mode-control > label:nth-of-type(1) { grid-area: 3 / 1; }   /* label sits under the field, as in the reference */
 .account-mode-control > select:nth-of-type(2) { grid-area: 2 / 2; } .account-mode-control > label:nth-of-type(2) { grid-area: 3 / 2; }
+.account-mode-control > select:nth-of-type(3), .account-mode-control > label:nth-of-type(3) { grid-column: 1 / -1; }   /* the auto-station choice runs the full width, label under it */
 .recruit-estimate, .account-mode-control > .empty-copy, .bot-start-actions { grid-column: 1 / -1; }
 .bot-start-actions { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
 .bot-state { margin-left: auto; color: var(--ink-3); } .bot-state.running { color: var(--ok); }
@@ -486,8 +487,8 @@ dialog[open] { display: grid; gap: 12px; }
 .dev-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 32px 40px; align-items: start; }
 .dev-panel { min-width: 0; }
 .dev-timing, .dev-spatial { grid-column: 1; }
-.dev-sched, .dev-health { grid-column: 2; }
-.dev-sched { grid-row: 1; } .dev-health { grid-row: 2; }
+.dev-sched, .dev-health, .dev-station { grid-column: 2; }
+.dev-sched { grid-row: 1; } .dev-station { grid-row: 2; } .dev-health { grid-row: 3; }
 .dev-spatial { grid-row: 2; }
 .dev-canvas { display: block; width: 100%; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: #050505; }
 .dev-wave-canvas { height: 220px; }
@@ -519,7 +520,7 @@ dialog[open] { display: grid; gap: 12px; }
 .dev-controls { gap: 6px; }
 @media (max-width: 1100px) {
   .dev-grid { grid-template-columns: 1fr; }
-  .dev-timing, .dev-spatial, .dev-sched, .dev-health { grid-column: 1; grid-row: auto; }
+  .dev-timing, .dev-spatial, .dev-sched, .dev-health, .dev-station { grid-column: 1; grid-row: auto; }
 }
 
 /* ---- PVP tab ------------------------------------------------------------- */
@@ -536,3 +537,19 @@ dialog[open] { display: grid; gap: 12px; }
 .pvp-landed, .pvp-retreated { color: var(--ink-3); }
 .pvp-landed .pvp-state, .pvp-retreated .pvp-state { color: var(--ink-3); }
 #pvp-more { margin-top: 14px; }
+
+/* ---- Station and Overview ----------------------------------------------- */
+.support-kingdoms { display: grid; border-top: 1px solid var(--line); }
+.support-kingdom { display: grid; grid-template-columns: auto minmax(140px, 1fr) 110px 110px; gap: 14px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line); text-transform: none; letter-spacing: .01em; font-size: 14px; color: var(--ink); }
+.support-kingdom > input[type="checkbox"] { width: 15px; height: 15px; margin: 0; }
+.overview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 28px 36px; margin-top: 18px; }
+.overview-castle { display: grid; gap: 12px; border-top: 1px solid var(--line); padding-top: 14px; align-content: start; }
+.overview-castle header { display: grid; gap: 2px; } .overview-castle header b { font-weight: 400; }
+.overview-castle .dev-stats { margin-top: 0; grid-template-columns: repeat(2, 1fr); }
+.overview-units .list-label { margin: 0 0 4px; }
+.dev-hist-canvas { height: 150px; }
+.dev-list li.dev-job { display: grid; gap: 4px; border-bottom: 1px solid var(--line); padding: 8px 0; }
+.dev-job-head { display: flex; gap: 12px; flex-wrap: wrap; align-items: baseline; }
+.dev-job-head b { font-weight: 500; color: var(--ink); margin-left: auto; }
+.dev-job small { color: var(--ink-3); flex-basis: 100%; }
+.dev-tone-ok { color: var(--ok) !important; } .dev-tone-warn { color: #e6c35c !important; } .dev-tone-bad { color: #ff7a7a !important; } .dev-tone-quiet { color: var(--ink-3) !important; }

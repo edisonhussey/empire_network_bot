@@ -3,6 +3,7 @@ mod licence;
 mod plans;
 mod pvp;
 mod relay;
+mod station;
 
 use std::{
     env,
@@ -159,7 +160,10 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:47821";
 /// about 60 % between 1 and 5 s, floor 0.5 + rand/2 s) instead of three slow clock waves.
 /// 48: the PVP tab: `GET /v1/pvp` pages other players' movements recorded from `gam`
 /// (incoming, outgoing, retreated), and the Development tab can draw them.
-pub const API_VERSION: u16 = 48;
+/// 49: auto-station. Support bots (`/v1/plans/station-bots`, chosen with `station_bot_id`
+/// on `/v1/plans/start`), the Overview (`/v1/overview`, `/v1/overview/refresh`), the job
+/// history (`/v1/station/jobs`), and `station` jobs plus a wait histogram in `/v1/dev`.
+pub const API_VERSION: u16 = 49;
 
 /// Is something already listening on the service port?
 ///
@@ -252,6 +256,11 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
         .route("/v1/dev/map", get(dev_map))
         .route("/v1/dev/movements", get(dev_movements))
         .route("/v1/pvp", get(pvp::pvp))
+        .route("/v1/plans/station-bots", post(station::create_station_bot))
+        .route("/v1/plans/station-bots/{id}", delete(station::delete_station_bot))
+        .route("/v1/overview", get(station::overview))
+        .route("/v1/overview/refresh", post(station::refresh_overview))
+        .route("/v1/station/jobs", get(station::jobs))
         .route("/v1/relay", get(relay_socket))
         .layer(cors)
         .with_state(state);
@@ -587,6 +596,22 @@ async fn activate_licence(
         .await
         .map_err(|error| ApiError::bad_request(error.to_string()))?;
     Ok(Json(status))
+}
+
+/// The account a read-only view is about: the one asked for, else the connected
+/// one, else the one most recently seen, so history can be read while offline.
+async fn focus_account(state: &AppState, requested: Option<String>) -> Result<String, ApiError> {
+    if let Some(account) = requested.filter(|account| !account.trim().is_empty()) {
+        return Ok(account);
+    }
+    if let Some(account) = state.direct_status.read().await.account_id.clone() {
+        return Ok(account);
+    }
+    state
+        .store
+        .latest_alliance_account()
+        .await?
+        .ok_or_else(|| ApiError::bad_request("no account has been seen yet"))
 }
 
 fn now_ms() -> i64 {

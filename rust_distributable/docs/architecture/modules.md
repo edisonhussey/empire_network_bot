@@ -24,6 +24,9 @@ One concern, one owner. If a rule exists in two places, one of them is a bug.
 | `scheduler.rs` | The action scheduler: stochastic waits, their recorded diagnostics, history ring |
 | `health.rs` | Rolling-hour response health and the safe pause |
 | `dev.rs` | The diagnostic snapshot behind the Development tab |
+| `station.rs` | Auto-station state machine: one job per attacked castle, gate, castle holds, commander lease (rules in `empire-core/src/station.rs`) |
+| `station_view.rs` | The station's part of the Development snapshot |
+| `inventory.rs` | Sends the Overview's `dcl` when the window asks and the connection is free |
 | `pvp.rs` | Feeds `gbd` identity, `gam` movements and `mrm` retreats to the PVP record (rules live in `empire-core/src/pvp.rs`) |
 | `tests.rs` | Unit tests for the above |
 

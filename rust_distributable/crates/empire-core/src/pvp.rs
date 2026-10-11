@@ -52,8 +52,14 @@ pub struct Party {
     pub name: Option<String>,
     pub alliance_id: Option<i64>,
     pub alliance_name: Option<String>,
+    /// The record's `AID` exactly as sent, `-1` (no alliance) included; `None`
+    /// only when no player record matched. `alliance_id` drops the `-1`.
+    pub alliance_raw: Option<i64>,
     pub x: i64,
     pub y: i64,
+    /// The castle's area id (index 3 of the area array), the id `cds` and `dcl`
+    /// know it by.
+    pub area_id: Option<i64>,
     /// Castle or outpost name from the area array (index 10).
     pub place: Option<String>,
 }
@@ -131,17 +137,19 @@ fn party(players: &[Value], player_id: Option<i64>, area: &Value) -> Option<Part
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
     };
-    let alliance_id = record
+    let alliance_raw = record
         .and_then(|player| player.get("AID"))
-        .and_then(Value::as_i64)
-        .filter(|id| *id >= 0);
+        .and_then(Value::as_i64);
+    let alliance_id = alliance_raw.filter(|id| *id >= 0);
     Some(Party {
         player_id,
         name: text("N"),
         alliance_id,
         alliance_name: alliance_id.and_then(|_| text("AN")),
+        alliance_raw,
         x,
         y,
+        area_id: area.get(3).and_then(Value::as_i64),
         place: area
             .get(10)
             .and_then(Value::as_str)

@@ -5,6 +5,7 @@ import {
   pointOnPath, shareInBand, shortDuration, visible, zoomAbout,
 } from "./dev-math.js";
 import { KINGDOMS, arrowFor } from "./pvp-model.js";
+import { drawHistogram, drawStationOnMap, renderStationPanel } from "./dev-station.js";
 
 /// The Development tab: a read-only window onto the scheduler.
 ///
@@ -38,6 +39,7 @@ const OK = "#5ed08a";
 export function createDevelopment() {
   const waveCanvas = document.querySelector("#dev-wave");
   const mapCanvas = document.querySelector("#dev-map");
+  const histCanvas = document.querySelector("#dev-hist");
   const state = {
     open: false,
     snapshot: null,
@@ -356,6 +358,7 @@ export function createDevelopment() {
     }
 
     drawPvp(context, view, now);
+    drawStationOnMap(context, view, state.snapshot?.station, map.kingdom_id, now);
 
     // The main castle: a white square.
     if (castle && visible(view, castle.x, castle.y, 4)) {
@@ -405,7 +408,7 @@ export function createDevelopment() {
     const recent = document.querySelector("#dev-recent");
     recent.replaceChildren(...snap.timing.recent.slice(0, 10).map((item) => {
       const row = element("li");
-      row.append(element("span", "", `#${item.index}`), element("span", "", item.wait === "before_attack" ? "before attack" : "after ack"), element("b", "", `${item.applied_s.toFixed(2)} s`));
+      row.append(element("span", "", `#${item.index}`), element("span", "", ({ before_attack: "before attack", station: "station step" })[item.wait] || "after ack"), element("b", "", `${item.applied_s.toFixed(2)} s`));
       if (item.restriction) row.append(element("small", "", item.restriction));
       return row;
     }));
@@ -417,6 +420,7 @@ export function createDevelopment() {
       return row;
     }));
     if (!snap.health.incidents.length) incidents.append(element("li", "dev-none", "No incidents in the last hour."));
+    renderStationPanel(snap.station, Date.now());
   }
 
   // ---- loop -----------------------------------------------------------------
@@ -424,6 +428,7 @@ export function createDevelopment() {
   function frame(timestamp) {
     if (!state.open) return;
     drawWave();
+    drawHistogram(histCanvas, canvasSize, state.snapshot?.timing.histogram, state.snapshot?.timing.target_band_s ?? [1, 5]);
     drawMap();
     if (timestamp - state.lastText > 250) { state.lastText = timestamp; updateText(); }
     state.frame = requestAnimationFrame(frame);

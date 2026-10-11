@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 21;
+pub const SCHEMA_VERSION: i64 = 22;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -694,13 +694,89 @@ pub const V21: Migration = &[
         ON pvp_movement (account_id, kingdom_id, land_at_ms)",
 ];
 
+/// Auto-station: the support bot, the per-castle stock and the job record.
+///
+/// * `station_bot` / `station_bot_kingdom`: a named set of destinations, one
+///   coordinate per kingdom. A kingdom with no row has no destination, so a castle
+///   there is never stationed. `account_station_bot` picks one for an account.
+/// * `castle_inventory`: the latest `dcl` reading per castle (troops, tools, food,
+///   mead). One row per castle, replaced each time; it is what the Overview shows.
+/// * `station_job`: one row per stationed castle, from detection to recall. The
+///   columns are what the UI and the timing measurements need; `state_json` holds the
+///   state machine so an outstanding support march survives a restart. Retention:
+///   kept for good (about 600 bytes a job), jobs older than 180 days are pruned when
+///   a session starts.
+pub const V22: Migration = &[
+    "CREATE TABLE IF NOT EXISTS station_bot (
+        station_bot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS station_bot_kingdom (
+        station_bot_id INTEGER NOT NULL,
+        kingdom_id INTEGER NOT NULL,
+        x INTEGER NOT NULL,
+        y INTEGER NOT NULL,
+        PRIMARY KEY (station_bot_id, kingdom_id),
+        FOREIGN KEY (station_bot_id) REFERENCES station_bot(station_bot_id) ON DELETE CASCADE
+    )",
+    "CREATE TABLE IF NOT EXISTS account_station_bot (
+        account_id TEXT PRIMARY KEY,
+        station_bot_id INTEGER NOT NULL,
+        running INTEGER NOT NULL DEFAULT 0,
+        updated_at_ms INTEGER NOT NULL,
+        FOREIGN KEY (station_bot_id) REFERENCES station_bot(station_bot_id) ON DELETE CASCADE
+    )",
+    "CREATE TABLE IF NOT EXISTS castle_inventory (
+        account_id TEXT NOT NULL,
+        kingdom_id INTEGER NOT NULL,
+        castle_id INTEGER NOT NULL,
+        observed_at_ms INTEGER NOT NULL,
+        units_json TEXT NOT NULL,
+        food REAL NOT NULL DEFAULT 0,
+        mead REAL NOT NULL DEFAULT 0,
+        wood REAL NOT NULL DEFAULT 0,
+        stone REAL NOT NULL DEFAULT 0,
+        PRIMARY KEY (account_id, castle_id)
+    )",
+    "CREATE TABLE IF NOT EXISTS station_job (
+        job_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id TEXT NOT NULL,
+        kingdom_id INTEGER NOT NULL,
+        castle_id INTEGER NOT NULL,
+        castle_x INTEGER NOT NULL,
+        castle_y INTEGER NOT NULL,
+        dest_x INTEGER,
+        dest_y INTEGER,
+        lid INTEGER,
+        phase TEXT NOT NULL,
+        outcome TEXT,
+        support_mid INTEGER,
+        landing_ms INTEGER NOT NULL,
+        detected_at_ms INTEGER NOT NULL,
+        cds_acked_at_ms INTEGER,
+        recalled_at_ms INTEGER,
+        lead_ms INTEGER,
+        state_json TEXT NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+    )",
+    "CREATE INDEX IF NOT EXISTS station_job_recent_idx ON station_job (account_id, detected_at_ms)",
+    "CREATE INDEX IF NOT EXISTS station_job_open_idx ON station_job (account_id, phase)",
+];
+
 pub const MIGRATIONS: &[Migration] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22,
 ];
 
 /// Every table that holds user data, for the storage report and full wipe.
 /// Order matters for deletion: children before parents.
 pub const DATA_TABLES: &[&str] = &[
+    "station_job",
+    "castle_inventory",
+    "account_station_bot",
+    "station_bot_kingdom",
+    "station_bot",
     "pvp_movement",
     "account_alliance",
     "event_hourly",

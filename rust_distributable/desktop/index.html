@@ -43,6 +43,7 @@
         <div class="brand"><svg class="logo small" aria-hidden="true"><use href="#logo"/></svg><div>OpenAuto<small>Automation, simplified.</small><b id="plan-badge" class="plan-badge" hidden>Pro</b></div></div>
         <nav aria-label="Primary navigation">
           <button class="active" data-view="dashboard"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-dashboard"/></svg></span>Dashboard</button>
+          <button data-view="overview"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-accounts"/></svg></span>Overview</button>
           <div class="nav-group" data-group="attack">
             <button class="nav-parent" type="button" aria-expanded="false" aria-controls="nav-attack"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-attacks"/></svg></span>Attack<span class="nav-caret" aria-hidden="true"></span></button>
             <div class="nav-sub" id="nav-attack" hidden>
@@ -56,6 +57,12 @@
             <div class="nav-sub" id="nav-recruit" hidden>
               <button data-view="recruitments">Create recruitment</button>
               <button data-view="recruit-bots">Create recruit bot</button>
+            </div>
+          </div>
+          <div class="nav-group" data-group="station">
+            <button class="nav-parent" type="button" aria-expanded="false" aria-controls="nav-station"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-modes"/></svg></span>Station<span class="nav-caret" aria-hidden="true"></span></button>
+            <div class="nav-sub" id="nav-station" hidden>
+              <button data-view="support-bots">Create support bot</button>
             </div>
           </div>
           <button data-view="accounts"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-accounts"/></svg></span>Control Panel</button>
@@ -179,6 +186,25 @@
           <section class="card library-card" hidden><div id="recruit-bot-library" class="library-list"></div></section>
         </section>
 
+        <section id="view-overview" class="view" hidden>
+          <section class="card overview-card">
+            <div class="card-title"><div><p class="eyebrow">Castles</p><h2>Overview</h2></div><div class="row-actions"><span id="overview-age" class="dev-legend">–</span><button id="overview-refresh" class="secondary-action" type="button">Read castles now</button></div></div>
+            <p id="overview-note" class="dev-note"></p>
+            <div id="overview-castles" class="overview-grid"></div>
+            <p class="dev-note">Troops, tools, food and mead as the game last reported them for every castle (one <code>dcl</code> request answers all of them). A reading is taken when this tab is opened and the last one is more than two minutes old, and when you press the button; never more often than every fifteen seconds, and only while the bot is between actions.</p>
+          </section>
+        </section>
+
+        <section id="view-support-bots" class="view" hidden>
+          <section class="welcome-card compact-welcome"><div class="welcome-copy"><p class="eyebrow">Station</p><h2>Create a support bot</h2><p>When an owned castle is attacked by another alliance, its troops are sent to a spot you choose, just before the landing, and called back once the danger has passed. A support bot is only that spot for each kingdom; leave a kingdom empty and a castle there is never stationed. Pick the bot in the Control Panel, step 2.</p></div></section>
+          <form id="support-bot-form" class="card mode-builder">
+            <div class="builder-name"><label for="support-bot-name">Support bot name</label><input id="support-bot-name" placeholder="e.g. Quiet corner" required /></div>
+            <div><p class="list-label">Destination per kingdom</p><div id="support-kingdoms" class="support-kingdoms"></div><p class="field-hint">Where the troops wait, as map coordinates in that kingdom. Your castles are known from sign-in, so nothing else is needed.</p></div>
+            <div class="form-actions"><output id="support-bot-result"></output><button class="primary-action" type="submit">Save support bot</button></div>
+          </form>
+          <section class="card library-card"><div id="support-bot-library" class="library-list"></div></section>
+        </section>
+
         <section id="view-initialize" class="view" hidden>
           <div id="account-onboarding">
           <section class="welcome-card"><div class="welcome-copy"><p class="eyebrow">Account setup</p><h2>Connect your kingdom</h2><p>Choose your server and sign in. OpenAuto discovers your castles and prepares everything automatically.</p></div><div class="readiness"><span>Setup status</span><strong id="phase">Ready to connect</strong></div></section>
@@ -238,6 +264,8 @@
             <section class="card dev-panel dev-timing">
               <div class="card-title"><div><p class="eyebrow">Scheduler</p><h2>Human-paced waits</h2></div><span class="dev-legend"><i class="dev-key dots"></i>generated wait <i class="dev-key hollow"></i>projected next wait <i class="dev-key band"></i>1–5 s</span></div>
               <canvas id="dev-wave" class="dev-canvas dev-wave-canvas" aria-label="Generated waits and the projection of the next ones"></canvas>
+              <p class="dev-subhead">Frequency of the waits used <span id="dev-hist-summary" class="dev-legend"></span></p>
+              <canvas id="dev-hist" class="dev-canvas dev-hist-canvas" aria-label="How often each human-paced wait length was used"></canvas>
               <dl class="dev-stats">
                 <div><dt>Wave sum, next step</dt><dd id="dev-signal">–</dd></div>
                 <div><dt>Floor m</dt><dd id="dev-base">–</dd></div>
@@ -276,6 +304,11 @@
               </div>
               <canvas id="dev-map" class="dev-canvas dev-map-canvas" aria-label="Kingdom map"></canvas>
               <p class="dev-note">White circles are towers (hollow while cooling), the square is the main castle, the dashed ring and arrow are the spotlight and its direction. Drag to pan, scroll to zoom. Lines show our armies out and returning, placed from the game's own timestamps. Bold green arrows are attacks by someone in your alliance, bold red arrows are anyone else's (including attacks on you); each is drawn only while it is travelling, with its sender and target dots labelled &ldquo;name | alliance&rdquo;.</p>
+            </section>
+            <section class="card dev-panel dev-station">
+              <div class="card-title"><div><p class="eyebrow">Station</p><h2>Support</h2></div><span id="dev-station-gate" class="dev-legend">–</span></div>
+              <p id="dev-station-note" class="dev-note"></p>
+              <ul id="dev-station-jobs" class="dev-list"></ul>
             </section>
             <section class="card dev-panel dev-health">
               <div class="card-title"><div><p class="eyebrow">Connection</p><h2>Response health</h2></div></div>

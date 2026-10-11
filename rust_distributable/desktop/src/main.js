@@ -4,7 +4,9 @@ import { compactNumber, expiryLabel, humanWait, humanize, relativeTime, sessionD
 import { createHeaderControls, modeUsesFortress } from "./views/header-controls.js";
 import { renderRubyChart } from "./views/ruby-chart.js";
 import { createDevelopment } from "./views/development.js";
+import { createOverview } from "./views/overview.js";
 import { createPvp } from "./views/pvp.js";
+import { createSupportBots } from "./views/support-bots.js";
 import { renderSparkBars } from "./views/spark-bars.js";
 const activation = $("#activation");
 const appShell = $("#app-shell");
@@ -163,6 +165,8 @@ const viewTitles = {
   initialize: ["Workspace", "Initialize"],
   presets: ["Library", "Manage presets"],
   logs: ["Diagnostics", "Logs"],
+  overview: ["Castles", "Overview"],
+  "support-bots": ["Station", "Create support bot"],
   pvp: ["Intelligence", "PVP"],
   development: ["Diagnostics", "Development"],
   support: ["Help", "Support"],
@@ -170,6 +174,9 @@ const viewTitles = {
 
 const development = createDevelopment();
 const pvp = createPvp();
+const overview = createOverview();
+// A support bot is stored only; which one an account runs is chosen in the Control Panel.
+const supportBots = createSupportBots({ getLibrary: () => library, reload: () => loadLibrary() });
 
 function switchView(name) {
   document.querySelectorAll(".view").forEach((view) => { view.hidden = view.id !== `view-${name}`; });
@@ -184,6 +191,7 @@ function switchView(name) {
   // itself is unaffected either way.
   if (name === "development") development.show(); else development.hide();
   if (name === "pvp") pvp.show(); else pvp.hide();
+  if (name === "overview") overview.show(); else overview.hide();
 }
 
 function setNavGroup(group, open) {
@@ -844,7 +852,10 @@ async function loadLibrary() {
   library.account_recruit_bots ||= [];
   library.recruit_states ||= [];
   library.castles ||= [];
+  library.station_bots ||= [];
+  library.account_station_bots ||= [];
   library.kingdoms ||= fallbackKingdoms;
+  supportBots.render();
   renderKingdoms();
   renderWave();
   renderPicker();
@@ -914,6 +925,8 @@ async function refreshAccounts(knownDirect = null) {
   renderAddAccount();
     const pendingAttack = new Map();
   const pendingRecruit = new Map();
+  const pendingStation = new Map();
+  document.querySelectorAll("[data-account-station]").forEach(sel => pendingStation.set(sel.dataset.accountStation, sel.value));
   document.querySelectorAll("[data-account-attack]").forEach(sel => pendingAttack.set(sel.dataset.accountAttack, sel.value));
   document.querySelectorAll("[data-account-recruit]").forEach(sel => pendingRecruit.set(sel.dataset.accountRecruit, sel.value));
 if (!connectedAccounts.length) { emptyAccounts(); renderModes(); return; }
@@ -978,6 +991,27 @@ if (!connectedAccounts.length) { emptyAccounts(); renderModes(); return; }
     recruitSelect.dataset.accountRecruit = account.account_id;
     if (pendingRecruit.has(account.account_id)) recruitSelect.value = pendingRecruit.get(account.account_id);
     else if (currentRecruit) recruitSelect.value = currentRecruit.recruit_bot_id;
+    // Auto-station: none, or one support bot (a destination per kingdom).
+    const currentStation = library.account_station_bots.find((value) => value.account_id.toLowerCase() === account.account_id.toLowerCase());
+    const stationLabel = document.createElement("label"); stationLabel.textContent = "Auto-station bot (optional)";
+    const stationSelect = document.createElement("select");
+    const noStation = element("option", "", "None — no auto-station"); noStation.value = ""; stationSelect.append(noStation);
+    stationSelect.append(...library.station_bots.map((bot) => {
+      const option = element("option", "", `${bot.name} · ${bot.kingdoms.length} kingdom${bot.kingdoms.length === 1 ? "" : "s"}`);
+      option.value = bot.station_bot_id; return option;
+    }));
+    stationSelect.dataset.accountStation = account.account_id;
+    if (pendingStation.has(account.account_id)) stationSelect.value = pendingStation.get(account.account_id);
+    else if (currentStation) stationSelect.value = currentStation.station_bot_id;
+    const stationNote = element("p", "recruit-estimate");
+    const describeStation = () => {
+      const bot = library.station_bots.find((value) => String(value.station_bot_id) === stationSelect.value);
+      stationNote.textContent = bot
+        ? `Troops of an attacked castle go to ${bot.kingdoms.map((kingdom) => `${kingdomName(fallbackKingdoms.find((value) => value.id === kingdom.kingdom_id)?.name || `kingdom ${kingdom.kingdom_id}`)} ${kingdom.x}:${kingdom.y}`).join(", ")}; a castle in any other kingdom is not stationed.`
+        : "No troops are moved when a castle is attacked.";
+    };
+    stationSelect.addEventListener("change", describeStation);
+    describeStation();
     const recruitEstimate = element("p", "recruit-estimate");
     const describeRecruit = () => {
       const bot = library.recruit_bots.find((value) => String(value.recruit_bot_id) === recruitSelect.value);
@@ -987,25 +1021,25 @@ if (!connectedAccounts.length) { emptyAccounts(); renderModes(); return; }
     };
     recruitSelect.addEventListener("change", describeRecruit);
     describeRecruit();
-    const summary = element("span", running ? "bot-state running" : "bot-state", running ? `● Running${currentRecruit?.running ? " with recruitment" : ""}` : "● Stopped");
+    const summary = element("span", running ? "bot-state running" : "bot-state", running ? `● Running${currentRecruit?.running ? " with recruitment" : ""}${currentStation?.running ? " + auto-station" : ""}` : "● Stopped");
     const controls = element("div", "bot-start-actions");
     const start = actionButton(running ? "Bot running" : "Start bot", async () => {
       try {
-        await api("/plans/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: account.account_id, mode_id: Number(attackSelect.value), recruit_bot_id: recruitSelect.value ? Number(recruitSelect.value) : null, running: true }) });
+        await api("/plans/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: account.account_id, mode_id: Number(attackSelect.value), recruit_bot_id: recruitSelect.value ? Number(recruitSelect.value) : null, station_bot_id: stationSelect.value ? Number(stationSelect.value) : null, running: true }) });
         await loadLibrary(); await refreshAccounts(); await refreshDashboard();
       } catch (error) { connectionResult.textContent = error.message; }
     });
     start.disabled = !isReady || running || !library.modes.length;
     const stop = actionButton("End bot", async () => {
       try {
-        await api("/plans/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: account.account_id, mode_id: Number(attackSelect.value), recruit_bot_id: recruitSelect.value ? Number(recruitSelect.value) : null, running: false }) });
+        await api("/plans/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: account.account_id, mode_id: Number(attackSelect.value), recruit_bot_id: recruitSelect.value ? Number(recruitSelect.value) : null, station_bot_id: stationSelect.value ? Number(stationSelect.value) : null, running: false }) });
         await loadLibrary(); await refreshAccounts(); await refreshDashboard();
       } catch (error) { connectionResult.textContent = error.message; }
     }, true);
     stop.disabled = !running;
-    attackSelect.disabled = running; recruitSelect.disabled = running;
+    attackSelect.disabled = running; recruitSelect.disabled = running; stationSelect.disabled = running;
     controls.append(start, stop, summary);
-    assignment.append(attackLabel, attackSelect, recruitLabel, recruitSelect, recruitEstimate, controls);
+    assignment.append(attackLabel, attackSelect, recruitLabel, recruitSelect, recruitEstimate, stationSelect, stationLabel, stationNote, controls);
     if (!isReady && !running) assignment.append(element("p", "empty-copy", "Start the connection in step 1 to run automation."));
     if (!library.modes.length) assignment.append(element("p", "empty-copy", "Create an attack bot before starting automation."));
     card.append(connection, assignment); return card;
