@@ -4,6 +4,9 @@ use serde_json::{Value, json};
 use crate::protocol::{PacketError, encode_client_xt, parse_xt_packet};
 
 pub const DEFAULT_SERVER_HEADER: &str = "EmpireEx_21";
+/// The web client's version as it sends it in `vck`: the game bundle's `1.170.22` with each
+/// part padded to three digits. The server hangs up on a version it no longer accepts.
+pub const CLIENT_VERSION: &str = "1170022";
 
 #[derive(Clone, Deserialize)]
 pub struct LoginCredentials {
@@ -59,7 +62,7 @@ impl Default for SessionSettings {
     fn default() -> Self {
         Self {
             server_header: DEFAULT_SERVER_HEADER.to_owned(),
-            client_version: "1169011".to_owned(),
+            client_version: CLIENT_VERSION.to_owned(),
             language: "en".to_owned(),
             platform_id: 1,
             connection_time: 676,
@@ -255,6 +258,12 @@ impl SessionMachine {
                 "<msg t='sys'><body action='autoJoin' r='-1'></body></msg>".to_owned(),
             ]),
             "vck" if self.phase == SessionPhase::AwaitingVersion => {
+                // Anything but 0 is the server refusing our client version; the
+                // credentials are not sent to a server that is about to hang up.
+                if packet.status.as_deref().is_some_and(|status| status != "0") {
+                    self.phase = SessionPhase::Failed;
+                    return Ok(Vec::new());
+                }
                 self.phase = SessionPhase::Authenticating;
                 Ok(vec![self.login_packet()?])
             }
@@ -515,6 +524,20 @@ mod tests {
             },
             SessionSettings::default(),
         )
+    }
+
+    #[test]
+    fn a_refused_client_version_ends_the_handshake_without_sending_credentials() {
+        let mut session = machine();
+        session.on_connected();
+        session.on_server_text("<body action='apiOK'>").unwrap();
+        session.on_server_text("<body action='joinOK'>").unwrap();
+        let sent = session
+            .on_server_text("%xt%vck%1%1%6.1174.6%41.8.0%")
+            .unwrap();
+        assert!(sent.is_empty(), "no lli goes to a server that refused the version");
+        assert_eq!(session.phase(), SessionPhase::Failed);
+        assert_eq!(SessionSettings::default().client_version, CLIENT_VERSION);
     }
 
     #[test]

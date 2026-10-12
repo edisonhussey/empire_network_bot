@@ -12,6 +12,7 @@ mod recruitment;
 mod scheduler;
 mod station;
 mod station_view;
+mod version;
 #[cfg(test)]
 mod station_tests;
 #[cfg(test)]
@@ -698,6 +699,13 @@ async fn run_inner(
                     recruitment.observe(store, &account_id, &text).await;
                     station.observe(store, &account_id, &text, now_ms()).await;
                     let frames = machine.on_server_text(&text)?;
+                    if let Some(packet) = parsed_packet.as_ref()
+                        && let Some(refused) =
+                            version::refusal(packet, &request.settings.client_version)
+                    {
+                        log_event(store, &account_id, "connection.version_rejected", &refused.to_string()).await;
+                        return Err(refused.into());
+                    }
                     if let Some(packet) = parsed_packet.as_ref()
                         && packet.command == "lli"
                         && let Some(status) = packet.status.as_deref().filter(|status| *status != "0")

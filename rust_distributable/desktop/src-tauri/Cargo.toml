@@ -1,6 +1,6 @@
 [package]
 name = "empire-desktop"
-version = "0.1.61"
+version = "0.1.63"
 edition = "2024"
 
 [build-dependencies]
