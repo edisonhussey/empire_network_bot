@@ -9,13 +9,17 @@
 
 use super::*;
 
-/// The application-state key the API writes a refresh request into.
-pub const REFRESH_KEY: &str = "overview.refresh_requested_ms";
+/// The application-state key the API writes an account's refresh request into. Each
+/// account has its own, so one account asking never makes another read its castles.
+pub fn overview_refresh_key(account_id: &str) -> String {
+    format!("overview.refresh_requested_ms.{}", account_id.trim().to_ascii_lowercase())
+}
 /// No two readings closer than this, however often the window asks.
 const MIN_GAP_MS: i64 = 15_000;
 const CHECK_EVERY_MS: i64 = 1_500;
 
 pub(super) struct InventoryPoll {
+    key: String,
     /// The request time already acted on.
     handled_ms: i64,
     checked_ms: i64,
@@ -25,8 +29,9 @@ pub(super) struct InventoryPoll {
 }
 
 impl InventoryPoll {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(account_id: &str) -> Self {
         Self {
+            key: overview_refresh_key(account_id),
             handled_ms: 0,
             checked_ms: i64::MIN / 2,
             last_sent_ms: i64::MIN / 2,
@@ -47,7 +52,7 @@ impl InventoryPoll {
         if self.due_ms.is_none() && now - self.checked_ms >= CHECK_EVERY_MS {
             self.checked_ms = now;
             let requested = store
-                .app_state(REFRESH_KEY)
+                .app_state(&self.key)
                 .await?
                 .and_then(|value| value.as_i64())
                 .unwrap_or(0);

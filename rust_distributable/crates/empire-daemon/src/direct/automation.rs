@@ -370,7 +370,7 @@ impl Automation {
         if now.saturating_sub(self.last_heartbeat_ms) >= 5_000 {
             if store.account_mode_running(account_id).await? {
                 store
-                    .set_app_state(HUNT_HEARTBEAT_KEY, &json!(now), now)
+                    .set_app_state(&empire_core::store::hunt_heartbeat_key(account_id), &json!(now), now)
                     .await?;
             }
             self.last_heartbeat_ms = now;

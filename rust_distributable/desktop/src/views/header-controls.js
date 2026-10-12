@@ -40,8 +40,9 @@ export function createHeaderControls({ read, connect, refreshAll }) {
     const ready = connected && direct.phase === "sands_ready";
     const current = account && library.account_modes.find((value) => sameAccount(value.account_id, account.account_id));
     const currentRecruit = account && library.account_recruit_bots.find((value) => sameAccount(value.account_id, account.account_id));
+    const currentStation = account && (library.account_station_bots || []).find((value) => sameAccount(value.account_id, account.account_id));
     const running = Boolean(current?.running && connected);
-    return { library, account, connected, ready, current, currentRecruit, running };
+    return { library, account, connected, ready, current, currentRecruit, currentStation, running };
   }
 
   function closeMenu() {
@@ -50,7 +51,7 @@ export function createHeaderControls({ read, connect, refreshAll }) {
   }
 
   async function startMode(modeId, running) {
-    const { account, currentRecruit } = view();
+    const { account, currentRecruit, currentStation } = view();
     if (!account || busy) return;
     busy = true;
     closeMenu();
@@ -58,7 +59,7 @@ export function createHeaderControls({ read, connect, refreshAll }) {
       await api("/plans/start", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ account_id: account.account_id, mode_id: modeId, recruit_bot_id: currentRecruit?.recruit_bot_id ?? null, running }),
+        body: JSON.stringify({ account_id: account.account_id, mode_id: modeId, recruit_bot_id: currentRecruit?.recruit_bot_id ?? null, station_bot_id: currentStation?.station_bot_id ?? null, running }),
       });
     } catch (error) {
       botButton.title = error.message;
@@ -116,7 +117,7 @@ export function createHeaderControls({ read, connect, refreshAll }) {
   }
 
   sessionButton.addEventListener("click", async () => {
-    const { connected } = view();
+    const { connected, account } = view();
     if (!connected) {
       loginForm.hidden = !loginForm.hidden;
       loginResult.textContent = "";
@@ -127,7 +128,7 @@ export function createHeaderControls({ read, connect, refreshAll }) {
     render();
     try {
       // The service stops the bot as part of closing the connection.
-      await api("/direct", { method: "DELETE" });
+      await api(`/direct?account_id=${encodeURIComponent(account.account_id)}`, { method: "DELETE" });
     } finally {
       busy = false;
       await refreshAll();

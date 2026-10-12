@@ -39,8 +39,12 @@ pub struct ModeRecord {
     pub mode_id: i64,
     pub name: String,
     pub task_ids: Vec<String>,
+    /// The bot's slots in board order: tasks, and the ranges reserved for support.
     pub allocations: Vec<ModeTaskDraft>,
+    /// How many commanders the bot needs: the highest number any slot reaches.
     pub commander_count: i64,
+    /// The support object the bot carries, if any.
+    pub support_bot_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,7 +76,7 @@ pub struct ActiveModeTask {
     pub target_kind: String,
     /// The only commanders this task may send. The allocation is strict: each
     /// commander belongs to one task (human numbers 1..N in mode order, mapped
-    /// to server LIDs through `USABLE_COMMANDER_LIDS`), and no other task may
+    /// to the account's own roster), and no other task may
     /// borrow it.
     pub commander_lids: Vec<i64>,
 }
@@ -89,6 +93,13 @@ impl Store {
         if bundle.tasks.is_empty() {
             return Err(PlanError::EmptyMode.into());
         }
+        crate::planning::resolve_commander_ranges(
+            &bundle
+                .tasks
+                .iter()
+                .map(|task| (task.commander_count, task.commander_start))
+                .collect::<Vec<_>>(),
+        )?;
         let mut compiled = Vec::with_capacity(bundle.tasks.len());
         for task in &bundle.tasks {
             let payload = task.attack.payload()?;
@@ -261,13 +272,14 @@ impl Store {
             .execute(&mut *tx)
             .await?;
             sqlx::query(
-                "INSERT INTO automation_mode_task (mode_id, task_id, position, commander_count)
-                 VALUES (?, ?, ?, ?)",
+                "INSERT INTO automation_mode_task (mode_id, task_id, position, commander_count, commander_start)
+                 VALUES (?, ?, ?, ?, ?)",
             )
             .bind(mode_id)
             .bind(&task_id)
             .bind(position as i64)
             .bind(task.commander_count)
+            .bind(task.commander_start)
             .execute(&mut *tx)
             .await?;
         }
@@ -344,71 +356,108 @@ impl Store {
         allocations: &[ModeTaskDraft],
         now_ms: i64,
     ) -> Result<i64, sqlx::Error> {
+        self.create_mode_with_support(name, allocations, None, now_ms).await
+    }
+
+    /// Create an attack bot. `allocations` are its slots in board order: tasks, and
+    /// ranges reserved for the support object (`support`), which belong to no task.
+    pub async fn create_mode_with_support(
+        &self,
+        name: &str,
+        allocations: &[ModeTaskDraft],
+        support_bot_id: Option<i64>,
+        now_ms: i64,
+    ) -> Result<i64, sqlx::Error> {
         let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
-            "INSERT INTO automation_mode (name, created_at_ms, updated_at_ms)
-             VALUES (?, ?, ?)",
+            "INSERT INTO automation_mode (name, created_at_ms, updated_at_ms, support_bot_id)
+             VALUES (?, ?, ?, ?)",
         )
         .bind(name)
         .bind(now_ms)
         .bind(now_ms)
+        .bind(support_bot_id)
         .execute(&mut *tx)
         .await?;
         let mode_id = result.last_insert_rowid();
         for (position, allocation) in allocations.iter().enumerate() {
-            sqlx::query(
-                "INSERT INTO automation_mode_task (mode_id, task_id, position, commander_count)
-                 VALUES (?, ?, ?, ?)",
-            )
-            .bind(mode_id)
-            .bind(&allocation.task_id)
-            .bind(position as i64)
-            .bind(allocation.commander_count)
-            .execute(&mut *tx)
-            .await?;
+            let table = if allocation.support {
+                "INSERT INTO automation_mode_reserve (mode_id, position, commander_count, commander_start)
+                 VALUES (?, ?, ?, ?)"
+            } else {
+                "INSERT INTO automation_mode_task (mode_id, position, commander_count, commander_start, task_id)
+                 VALUES (?, ?, ?, ?, ?)"
+            };
+            let mut query = sqlx::query(table)
+                .bind(mode_id)
+                .bind(position as i64)
+                .bind(allocation.commander_count)
+                .bind(allocation.commander_start);
+            if !allocation.support {
+                query = query.bind(&allocation.task_id);
+            }
+            query.execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(mode_id)
     }
 
+    /// One bot's slots in board order: tasks and reserved support ranges interleaved by
+    /// the position they were laid out at.
+    pub(crate) async fn mode_slots(&self, mode_id: i64) -> Result<Vec<ModeTaskDraft>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT position, task_id, commander_count, commander_start, 0 AS support
+               FROM automation_mode_task WHERE mode_id = ?1
+             UNION ALL
+             SELECT position, '' AS task_id, commander_count, commander_start, 1 AS support
+               FROM automation_mode_reserve WHERE mode_id = ?1
+             ORDER BY position",
+        )
+        .bind(mode_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| ModeTaskDraft {
+                task_id: row.get("task_id"),
+                commander_count: row.get("commander_count"),
+                support: row.get::<i64, _>("support") != 0,
+                commander_start: row.get("commander_start"),
+            })
+            .collect())
+    }
+
+    /// Names of the attack bots that carry this support object.
+    pub async fn modes_using_support(&self, support_bot_id: i64) -> Result<Vec<String>, sqlx::Error> {
+        sqlx::query_scalar("SELECT name FROM automation_mode WHERE support_bot_id = ? ORDER BY name")
+            .bind(support_bot_id)
+            .fetch_all(&self.pool)
+            .await
+    }
+
     pub async fn modes(&self) -> Result<Vec<ModeRecord>, sqlx::Error> {
         let modes = sqlx::query(
-            "SELECT m.mode_id, m.name,
-                    COALESCE(SUM(mt.commander_count), 0) AS commander_count
-             FROM automation_mode m
-             LEFT JOIN automation_mode_task mt ON mt.mode_id = m.mode_id
-             LEFT JOIN task_definition t ON t.task_id = mt.task_id
-             GROUP BY m.mode_id, m.name ORDER BY m.name COLLATE NOCASE",
+            "SELECT m.mode_id, m.name, m.support_bot_id FROM automation_mode m
+             ORDER BY m.name COLLATE NOCASE",
         )
         .fetch_all(&self.pool)
         .await?;
         let mut result = Vec::with_capacity(modes.len());
         for mode in modes {
             let mode_id: i64 = mode.get("mode_id");
-            let allocation_rows = sqlx::query(
-                "SELECT task_id, commander_count FROM automation_mode_task
-                 WHERE mode_id = ? ORDER BY position",
-            )
-            .bind(mode_id)
-            .fetch_all(&self.pool)
-            .await?;
-            let allocations = allocation_rows
-                .into_iter()
-                .map(|row| ModeTaskDraft {
-                    task_id: row.get("task_id"),
-                    commander_count: row.get("commander_count"),
-                })
-                .collect::<Vec<_>>();
+            let allocations = self.mode_slots(mode_id).await?;
             let task_ids = allocations
                 .iter()
+                .filter(|value| !value.support)
                 .map(|value| value.task_id.clone())
                 .collect();
             result.push(ModeRecord {
                 mode_id,
                 name: mode.get("name"),
                 task_ids,
+                commander_count: commanders_needed(&allocations),
+                support_bot_id: mode.get("support_bot_id"),
                 allocations,
-                commander_count: mode.get("commander_count"),
             });
         }
         Ok(result)
@@ -439,14 +488,7 @@ impl Store {
         .bind(&account_id)
         .fetch_one(&self.pool)
         .await?;
-        let requested: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(mt.commander_count), 0)
-             FROM automation_mode_task mt
-             WHERE mt.mode_id = ?",
-        )
-        .bind(mode_id)
-        .fetch_one(&self.pool)
-        .await?;
+        let requested = commanders_needed(&self.mode_slots(mode_id).await?);
         if requested > available {
             return Err(sqlx::Error::Protocol(format!(
                 "mode needs {requested} commanders but account has {available}"
@@ -531,7 +573,7 @@ impl Store {
                         ELSE r.source_y END AS resolved_source_y,
                     r.source_kind, r.source_kingdom_id, r.travel_mode,
                     s.target_kind, s.filter_json,
-                    mt.commander_count
+                    mt.commander_count, mt.commander_start
              FROM account_mode am
              JOIN automation_mode_task mt ON mt.mode_id = am.mode_id
              JOIN task_definition t ON t.task_id = mt.task_id
@@ -550,19 +592,35 @@ impl Store {
             return Ok(Vec::new());
         }
 
-        let roster = self.commander_lids(&account_id).await?;
-        let usable = roster
-            .into_iter()
-            .filter(|lid| crate::hunt::USABLE_COMMANDER_LIDS.contains(lid))
-            .collect::<Vec<_>>();
-        let mut cursor = 0usize;
+        // Human number n is the n-th commander of the account's own roster (`gli.C`, in
+        // the order the game lists them). The roster is per account: the same LID is a
+        // commander on one account and a baron on another, so no fixed list of "usable"
+        // LIDs can stand in for it.
+        let usable = self.commander_lids(&account_id).await?;
+        // Each slot owns the commanders its range names (see `resolve_commander_ranges`):
+        // by default it follows the one before, with an explicit start it sits there.
+        // The ranges are worked out over every slot of the bot, disabled tasks and the
+        // ranges reserved for support included, so a disabled task never shifts the
+        // others. A bot saved with ranges that cannot be resolved falls back to the plain
+        // sequence rather than refusing to run.
+        let mode_id: i64 = rows[0].get("mode_id");
+        let slots = self.mode_slots(mode_id).await?;
+        let ranges = ranges_or_sequence(&slots);
+        let range_of = |task_id: &str| {
+            slots
+                .iter()
+                .zip(&ranges)
+                .find(|(slot, _)| !slot.support && slot.task_id == task_id)
+                .map(|(_, range)| *range)
+        };
         let mut tasks = Vec::with_capacity(rows.len());
         for row in rows {
-            let count =
-                usize::try_from(row.get::<i64, _>("commander_count").max(0)).unwrap_or_default();
-            let end = cursor.saturating_add(count).min(usable.len());
-            let commanders = usable[cursor..end].to_vec();
-            cursor = end;
+            let Some((first, last)) = range_of(row.get::<&str, _>("task_id")) else {
+                continue;
+            };
+            let from = usize::try_from(first - 1).unwrap_or_default().min(usable.len());
+            let end = usize::try_from(last).unwrap_or_default().min(usable.len());
+            let commanders = usable[from..end.max(from)].to_vec();
             if commanders.is_empty() {
                 continue;
             }
@@ -628,6 +686,48 @@ impl Store {
         Ok(running.is_some_and(|value| value != 0))
     }
 
+    /// The support object carried by the attack bot the account is running, and the
+    /// commanders reserved for it, as server LIDs in number order.
+    pub async fn running_support(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<(i64, Vec<i64>)>, sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        let row = sqlx::query(
+            "SELECT m.mode_id, m.support_bot_id FROM account_mode am
+             JOIN automation_mode m ON m.mode_id = am.mode_id
+             WHERE lower(am.account_id) = lower(?) AND am.running = 1
+               AND m.support_bot_id IS NOT NULL",
+        )
+        .bind(&account_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else { return Ok(None) };
+        let mode_id: i64 = row.get("mode_id");
+        let slots = self.mode_slots(mode_id).await?;
+        let ranges = ranges_or_sequence(&slots);
+        let roster = self.commander_lids(&account_id).await?;
+        let mut reserved = Vec::new();
+        for (slot, (first, last)) in slots.iter().zip(ranges) {
+            if !slot.support {
+                continue;
+            }
+            let from = usize::try_from(first - 1).unwrap_or_default().min(roster.len());
+            let end = usize::try_from(last).unwrap_or_default().min(roster.len());
+            reserved.extend_from_slice(&roster[from..end.max(from)]);
+        }
+        Ok(Some((row.get("support_bot_id"), reserved)))
+    }
+
+    /// Forget the account's attack bot altogether (the operator chose "none").
+    pub async fn clear_account_mode(&self, account_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM account_mode WHERE lower(account_id) = lower(?)")
+            .bind(canonical_account_id(account_id))
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn stop_account_mode(
         &self,
         account_id: &str,
@@ -644,6 +744,38 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+}
+
+/// The slots' inclusive ranges, or the plain sequence when they cannot be resolved.
+fn ranges_or_sequence(slots: &[ModeTaskDraft]) -> Vec<(i64, i64)> {
+    let wanted = slots
+        .iter()
+        .map(|slot| (slot.commander_count, slot.commander_start))
+        .collect::<Vec<_>>();
+    crate::planning::resolve_commander_ranges(&wanted).unwrap_or_else(|_| {
+        let mut next = 1;
+        wanted
+            .iter()
+            .map(|(count, _)| {
+                let range = (next, next + count.max(&1) - 1);
+                next = range.1 + 1;
+                range
+            })
+            .collect()
+    })
+}
+
+/// How many commanders a bot needs: the highest number any of its tasks reaches.
+fn commanders_needed(allocations: &[ModeTaskDraft]) -> i64 {
+    let wanted = allocations
+        .iter()
+        .map(|allocation| (allocation.commander_count, allocation.commander_start))
+        .collect::<Vec<_>>();
+    match crate::planning::resolve_commander_ranges(&wanted) {
+        Ok(ranges) => ranges.iter().map(|(_, last)| *last).max().unwrap_or(0),
+        // Unresolvable ranges: count the commanders asked for.
+        Err(_) => allocations.iter().map(|allocation| allocation.commander_count.max(0)).sum(),
     }
 }
 

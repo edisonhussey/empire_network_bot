@@ -1,9 +1,12 @@
+mod dev_shared;
 mod direct;
 mod licence;
 mod plans;
 mod pvp;
 mod relay;
+mod sessions;
 mod station;
+mod troops;
 
 use std::{
     env,
@@ -27,10 +30,7 @@ use empire_core::{
     store::{Store, StoredMessage},
 };
 use serde::{Deserialize, Serialize};
-use tokio::{
-    sync::{Mutex, RwLock, mpsc},
-    task::JoinHandle,
-};
+use tokio::sync::{RwLock, mpsc};
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -39,12 +39,12 @@ use uuid::Uuid;
 struct AppState {
     store: Store,
     licence: licence::LicenceGate,
-    active_transport: Arc<RwLock<Option<mpsc::Sender<InjectionRequest>>>>,
-    direct_status: Arc<RwLock<direct::DirectStatus>>,
-    direct_task: Arc<Mutex<Option<JoinHandle<()>>>>,
-    /// Diagnostic snapshot for the Development tab, refreshed about once a second
-    /// by the running session. Read-only for everything else.
-    dev_snapshot: Arc<RwLock<direct::DevSnapshot>>,
+    /// The live game sessions, one per account. Each has its own socket, status,
+    /// injection queue and diagnostic snapshot, so accounts run side by side.
+    sessions: sessions::Sessions,
+    /// The queue of the browser-proxy relay (`/v1/relay`), which is not an account's
+    /// own session.
+    relay_transport: Arc<RwLock<Option<mpsc::Sender<InjectionRequest>>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -60,6 +60,8 @@ struct Health {
 #[derive(Debug, Deserialize)]
 struct MessageQuery {
     limit: Option<i64>,
+    /// Only this account's packets; without it, every account's.
+    account_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,6 +73,9 @@ struct AccountQuery {
 struct InjectBody {
     packet: String,
     ttl_ms: Option<i64>,
+    /// The account whose connection carries the packet. Without it, the only (or
+    /// latest) connected account, else the relay.
+    account_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -163,7 +168,18 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:47821";
 /// 49: auto-station. Support bots (`/v1/plans/station-bots`, chosen with `station_bot_id`
 /// on `/v1/plans/start`), the Overview (`/v1/overview`, `/v1/overview/refresh`), the job
 /// history (`/v1/station/jobs`), and `station` jobs plus a wait histogram in `/v1/dev`.
-pub const API_VERSION: u16 = 49;
+/// 50: several accounts at once. Every account has its own session (`/v1/direct?account_id=`,
+/// `/v1/direct/all`), snapshot, injection queue, packet window and run heartbeat; the
+/// Development views take `account_id`, and `/v1/dev/shared` lets accounts on one world see
+/// each other on colour-coded maps. A bot starts only for an account whose own licence
+/// permits automation.
+/// 51: `GET /v1/troops` (the Troop overview); `mode_id` on `/v1/plans/start` may be absent
+/// (no attack bot); attack-bot allocations may carry `commander_start` (a task placed at a
+/// commander number); a server-closed session is logged with its reason and not reconnected.
+/// 52: attack bots carry an optional support object (`support_bot_id` on `/v1/plans/modes`,
+/// `support: true` allocations are commanders kept free for it); the Troop overview marks
+/// them reserved and bounds a lost return by the outbound trip.
+pub const API_VERSION: u16 = 52;
 
 /// Is something already listening on the service port?
 ///
@@ -202,10 +218,8 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
     let state = AppState {
         licence: licence::LicenceGate::new(store.clone())?,
         store,
-        active_transport: Arc::new(RwLock::new(None)),
-        direct_status: Arc::new(RwLock::new(direct::DirectStatus::default())),
-        dev_snapshot: Arc::new(RwLock::new(direct::DevSnapshot::default())),
-        direct_task: Arc::new(Mutex::new(None)),
+        sessions: sessions::Sessions::default(),
+        relay_transport: Arc::new(RwLock::new(None)),
     };
 
     let allowed_origins = [
@@ -252,13 +266,16 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
                 .post(direct_connect)
                 .delete(direct_disconnect),
         )
+        .route("/v1/direct/all", get(direct_all))
         .route("/v1/dev", get(dev_snapshot))
+        .route("/v1/dev/shared", get(dev_shared))
         .route("/v1/dev/map", get(dev_map))
         .route("/v1/dev/movements", get(dev_movements))
         .route("/v1/pvp", get(pvp::pvp))
         .route("/v1/plans/station-bots", post(station::create_station_bot))
         .route("/v1/plans/station-bots/{id}", delete(station::delete_station_bot))
         .route("/v1/overview", get(station::overview))
+        .route("/v1/troops", get(troops::troops))
         .route("/v1/overview/refresh", post(station::refresh_overview))
         .route("/v1/station/jobs", get(station::jobs))
         .route("/v1/relay", get(relay_socket))
@@ -271,8 +288,29 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn direct_status(State(state): State<AppState>) -> Json<direct::DirectStatus> {
-    Json(state.direct_status.read().await.clone())
+/// One account's session. With no account named, the only (or latest) connected one.
+/// An account with no session reads as disconnected, still carrying its id.
+async fn direct_status(
+    State(state): State<AppState>,
+    Query(query): Query<AccountQuery>,
+) -> Json<direct::DirectStatus> {
+    let account = match query.account_id.filter(|account| !account.trim().is_empty()) {
+        Some(account) => Some(account),
+        None => state.sessions.default_account().await,
+    };
+    let status = match &account {
+        Some(account) => state.sessions.status(account).await,
+        None => None,
+    };
+    Json(status.unwrap_or_else(|| direct::DirectStatus {
+        account_id: account.map(|account| empire_core::store::canonical_account_id(&account)),
+        ..direct::DirectStatus::default()
+    }))
+}
+
+/// Every account's session, for the account switcher.
+async fn direct_all(State(state): State<AppState>) -> Json<Vec<direct::DirectStatus>> {
+    Json(state.sessions.statuses().await)
 }
 
 async fn direct_connect(
@@ -309,23 +347,25 @@ async fn direct_connect(
             "player, account ID, and either password or login token are required",
         ));
     }
-    if let Some(task) = state.direct_task.lock().await.take() {
-        task.abort();
-    }
-    *state.active_transport.write().await = None;
-    let task = tokio::spawn(direct::run(
-        request,
-        state.store.clone(),
-        state.active_transport.clone(),
-        state.direct_status.clone(),
-        state.licence.clone(),
-        state.dev_snapshot.clone(),
-    ));
-    *state.direct_task.lock().await = Some(task);
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(state.direct_status.read().await.clone()),
-    ))
+    // Only this account's own session is replaced; others keep running.
+    let account_id = empire_core::store::canonical_account_id(&request.credentials.player_name);
+    let store = state.store.clone();
+    let licence = state.licence.clone();
+    let cells = state
+        .sessions
+        .replace(&account_id, |cells| {
+            tokio::spawn(direct::run(
+                request,
+                store,
+                cells.transport,
+                cells.status,
+                licence,
+                cells.dev,
+            ))
+        })
+        .await;
+    let status = cells.status.read().await.clone();
+    Ok((StatusCode::ACCEPTED, Json(status)))
 }
 
 async fn initialize_account(
@@ -343,20 +383,37 @@ async fn initialize_account(
     direct_connect(State(state), Json(request.into_direct())).await
 }
 
-async fn direct_disconnect(State(state): State<AppState>) -> StatusCode {
-    if let Some(account_id) = state.direct_status.read().await.account_id.clone() {
-        let _ = state.store.stop_account_mode(&account_id, now_ms()).await;
-        let _ = state
-            .store
-            .stop_account_recruit_bot(&account_id, now_ms())
-            .await;
-    }
-    if let Some(task) = state.direct_task.lock().await.take() {
-        task.abort();
-    }
-    *state.active_transport.write().await = None;
-    *state.direct_status.write().await = direct::DirectStatus::default();
-    StatusCode::NO_CONTENT
+/// End one account's session. The account is named with `?account_id=`; without it the
+/// request is only unambiguous when exactly one session exists.
+async fn direct_disconnect(
+    State(state): State<AppState>,
+    Query(query): Query<AccountQuery>,
+) -> Result<StatusCode, ApiError> {
+    let account_id = match query.account_id.filter(|account| !account.trim().is_empty()) {
+        Some(account) => account,
+        None => {
+            let all = state.sessions.all().await;
+            match all.as_slice() {
+                [(only, _)] => only.clone(),
+                [] => return Ok(StatusCode::NO_CONTENT),
+                _ => return Err(ApiError::bad_request("several accounts are signed in; say which one")),
+            }
+        }
+    };
+    // Say in the event log that this was the operator's doing: a session ended here
+    // is never reconnected (its task is aborted, supervisor included), unlike a
+    // dropped link, which the supervisor retries.
+    let _ = state
+        .store
+        .record_event(&account_id, "connection.logout", "ended by the operator; not reconnecting", now_ms())
+        .await;
+    // Ending a session ends its automation too: nothing can run without the socket,
+    // and a restart should not silently resume what was running.
+    let _ = state.store.stop_account_mode(&account_id, now_ms()).await;
+    let _ = state.store.stop_account_recruit_bot(&account_id, now_ms()).await;
+    let _ = state.store.stop_account_station_bot(&account_id, now_ms()).await;
+    state.sessions.remove(&account_id).await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn health(State(state): State<AppState>) -> Json<Health> {
@@ -366,7 +423,8 @@ async fn health(State(state): State<AppState>) -> Json<Health> {
         api_version: API_VERSION,
         service_pid: std::process::id(),
         licence_active,
-        transport_connected: state.active_transport.read().await.is_some(),
+        transport_connected: !state.sessions.connected_accounts().await.is_empty()
+            || state.relay_transport.read().await.is_some(),
         recent_message_limit: empire_core::RECENT_MESSAGE_LIMIT,
     })
 }
@@ -383,23 +441,32 @@ async fn messages(
     Ok(Json(
         state
             .store
-            .recent_messages(query.limit.unwrap_or(50))
+            .recent_messages_for(
+                query.account_id.as_deref().filter(|account| !account.trim().is_empty()),
+                query.limit.unwrap_or(50),
+            )
             .await?,
     ))
 }
 
-/// Scheduler, timing, spatial and health state for the Development tab.
-async fn dev_snapshot(State(state): State<AppState>) -> Json<direct::DevSnapshot> {
-    Json(state.dev_snapshot.read().await.clone())
+/// Scheduler, timing, spatial and health state for one account's Development view.
+async fn dev_snapshot(
+    State(state): State<AppState>,
+    Query(query): Query<AccountQuery>,
+) -> Result<Json<direct::DevSnapshot>, ApiError> {
+    let account = focus_account(&state, query.account_id).await?;
+    Ok(Json(state.sessions.dev(&account).await.unwrap_or_default()))
 }
 
 #[derive(Debug, Deserialize)]
 struct DevMapQuery {
     kingdom: Option<i64>,
+    account_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct DevMap {
+    account_id: String,
     kingdom_id: i64,
     now_ms: i64,
     /// The main castle: where marches start and end.
@@ -414,25 +481,22 @@ struct DevMovements {
     movements: Vec<empire_core::store::Movement>,
 }
 
-/// The kingdom and account the Development tab is looking at: the connected
-/// account, and the kingdom of its active task unless one is asked for.
-async fn dev_focus(state: &AppState, requested: Option<i64>) -> Result<(String, i64), ApiError> {
-    let account = state
-        .direct_status
-        .read()
-        .await
-        .account_id
-        .clone()
-        .ok_or_else(|| ApiError::bad_request("no account is connected"))?;
+/// The account and kingdom a Development view is about: the account asked for (else
+/// the connected one), and the kingdom of its active task unless one is asked for.
+async fn dev_focus(
+    state: &AppState,
+    account: Option<String>,
+    requested: Option<i64>,
+) -> Result<(String, i64), ApiError> {
+    let account = focus_account(state, account).await?;
     let kingdom = match requested {
         Some(kingdom) => kingdom,
         None => state
-            .dev_snapshot
-            .read()
+            .sessions
+            .dev(&account)
             .await
-            .spatial
-            .as_ref()
-            .map_or(1, |spatial| spatial.kingdom_id),
+            .and_then(|snapshot| snapshot.spatial.map(|spatial| spatial.kingdom_id))
+            .unwrap_or(1),
     };
     Ok((account, kingdom))
 }
@@ -443,7 +507,7 @@ async fn dev_map(
     State(state): State<AppState>,
     Query(query): Query<DevMapQuery>,
 ) -> Result<Json<DevMap>, ApiError> {
-    let (account, kingdom_id) = dev_focus(&state, query.kingdom).await?;
+    let (account, kingdom_id) = dev_focus(&state, query.account_id, query.kingdom).await?;
     Ok(Json(DevMap {
         kingdom_id,
         now_ms: now_ms(),
@@ -453,6 +517,7 @@ async fn dev_map(
             .await?
             .map(|(x, y)| [x, y]),
         towers: state.store.map_towers(&account, kingdom_id).await?,
+        account_id: account,
     }))
 }
 
@@ -461,7 +526,7 @@ async fn dev_movements(
     State(state): State<AppState>,
     Query(query): Query<DevMapQuery>,
 ) -> Result<Json<DevMovements>, ApiError> {
-    let (account, kingdom_id) = dev_focus(&state, query.kingdom).await?;
+    let (account, kingdom_id) = dev_focus(&state, query.account_id, query.kingdom).await?;
     let now = now_ms();
     Ok(Json(DevMovements {
         kingdom_id,
@@ -471,6 +536,16 @@ async fn dev_movements(
             .open_movements(&account, kingdom_id, now - 4 * 3_600_000, now, 200)
             .await?,
     }))
+}
+
+/// What every signed-in account on the viewed account's world is doing in one kingdom,
+/// for the colour-coded maps (see `dev_shared.rs`).
+async fn dev_shared(
+    State(state): State<AppState>,
+    Query(query): Query<DevMapQuery>,
+) -> Result<Json<dev_shared::SharedView>, ApiError> {
+    let (account, kingdom_id) = dev_focus(&state, query.account_id, query.kingdom).await?;
+    Ok(Json(dev_shared::build(&state, &account, kingdom_id).await?))
 }
 
 /// Aggregated view of the automation run, for the desktop overview.
@@ -536,12 +611,15 @@ async fn inject(
         body.ttl_ms.unwrap_or(15_000).clamp(1_000, 60_000),
     );
     let id = request.id;
-    let sender = state
-        .active_transport
-        .read()
-        .await
-        .clone()
-        .ok_or_else(|| ApiError::unavailable("no active relay transport"))?;
+    let account = match body.account_id.filter(|account| !account.trim().is_empty()) {
+        Some(account) => Some(account),
+        None => state.sessions.default_account().await,
+    };
+    let sender = match account {
+        Some(account) => state.sessions.transport(&account).await,
+        None => state.relay_transport.read().await.clone(),
+    }
+    .ok_or_else(|| ApiError::unavailable("no active transport for that account"))?;
     sender.try_send(request).map_err(|error| {
         warn!(%error, "injection rejected");
         ApiError::unavailable("injection queue is full or disconnected")
@@ -573,7 +651,7 @@ async fn relay_socket(
             socket,
             query.upstream,
             state.store,
-            state.active_transport,
+            state.relay_transport,
             state.licence,
         )
     }))
@@ -598,13 +676,14 @@ async fn activate_licence(
     Ok(Json(status))
 }
 
-/// The account a read-only view is about: the one asked for, else the connected
-/// one, else the one most recently seen, so history can be read while offline.
+/// The account a read-only view is about: the one asked for, else the connected one
+/// (the only one, or the latest), else the one most recently seen, so history can be
+/// read while offline.
 async fn focus_account(state: &AppState, requested: Option<String>) -> Result<String, ApiError> {
     if let Some(account) = requested.filter(|account| !account.trim().is_empty()) {
-        return Ok(account);
+        return Ok(empire_core::store::canonical_account_id(&account));
     }
-    if let Some(account) = state.direct_status.read().await.account_id.clone() {
+    if let Some(account) = state.sessions.default_account().await {
         return Ok(account);
     }
     state
@@ -621,6 +700,7 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
+#[derive(Debug)]
 struct ApiError {
     status: StatusCode,
     message: String,

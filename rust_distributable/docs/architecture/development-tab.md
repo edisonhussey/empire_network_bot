@@ -25,7 +25,7 @@ Closing it, or leaving the tab, changes nothing about execution.
 * **Diagnostics**: scheduler state and detail, the global restriction in force, the last
   completed attack, the current kingdom, eligible towers, how many are near the
   spotlight (and whether it will relocate), and the recent waits.
-* **Map**: a 100 x 100 logical window centred on the main castle. White circles are
+* **Maps**: one per signed-in account on the viewed account's world, each in its own colour, with the others' movements drawn over it (see [`accounts.md`](accounts.md)). Each map: a 100 x 100 logical window centred on the main castle. White circles are
   towers (hollow while cooling), the square is the main castle, the dashed ring is the
   spotlight with its local radius, and the arrow is its direction. Zoom buttons, wheel
   zoom, drag to pan, "Castle", "Spotlight" and "Reset 100 x 100". One scale serves both

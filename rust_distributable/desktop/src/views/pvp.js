@@ -1,4 +1,5 @@
 import { api } from "../api.js";
+import { accountContext } from "../account-context.js";
 import { element } from "../dom.js";
 import { shortDuration } from "./dev-math.js";
 import { countOf, kingdomLabel, liveState, mergeRows, partyLabel } from "./pvp-model.js";
@@ -36,6 +37,7 @@ export function createPvp() {
 
   function params(cursor) {
     const query = new URLSearchParams({ limit: String(PAGE) });
+    if (accountContext.viewed()) query.set("account_id", accountContext.viewed());
     for (const [key, value] of Object.entries(state.filters)) if (value) query.set(key, value);
     if (cursor) query.set("before", cursor);
     return query.toString();
@@ -179,6 +181,11 @@ export function createPvp() {
     });
   }
   $("#pvp-more")?.addEventListener("click", () => load({ more: true }));
+  // Another account in view: its own record, from the top.
+  accountContext.subscribe(() => {
+    state.rows = []; state.next = null; state.counts = []; state.player = null; state.alliance = null;
+    if (state.open) load({ reset: true }); else render();
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) stop(); else if (!$("#view-pvp").hidden) start();
   });

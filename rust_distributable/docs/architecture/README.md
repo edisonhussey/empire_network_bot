@@ -8,6 +8,8 @@ about the system that uses them.
 | --- | --- |
 | [`decisions.md`](decisions.md) | Why Tauri, and the bounds placed on data and packets |
 | [`security.md`](security.md) | The loopback security boundary and the licence trust chain |
+| [`troop-overview.md`](troop-overview.md) | The Troop overview, commander ranges in attack bots, and when a session reconnects |
+| [`accounts.md`](accounts.md) | Several accounts at once: sessions, per-account licences and tiers, the account switcher and colour-coded maps |
 | [`runtime-flow.md`](runtime-flow.md) | How the window, daemon and game server fit together |
 | [`target-selection.md`](target-selection.md) | Which tower is attacked next: the spotlight algorithm, momentum, tuning and measured trade-offs |
 | [`timing.md`](timing.md) | The stochastic wait generator and how global limits override it |

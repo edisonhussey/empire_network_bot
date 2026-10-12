@@ -1,4 +1,5 @@
 import { api } from "../api.js";
+import { accountContext } from "../account-context.js";
 import { element } from "../dom.js";
 import { compactNumber, humanize } from "../format.js";
 import { kingdomLabel } from "./pvp-model.js";
@@ -96,7 +97,7 @@ export function createOverview() {
 
   async function load() {
     try {
-      state.data = await api("/overview");
+      state.data = await api(`/overview${accountContext.query()}`);
       state.error = "";
       if (!state.asked && state.data.connected && needsRefresh(state.data.castles, Date.now())) {
         state.asked = true;
@@ -110,12 +111,17 @@ export function createOverview() {
 
   async function ask() {
     try {
-      await api("/overview/refresh", { method: "POST" });
+      await api(`/overview/refresh${accountContext.query()}`, { method: "POST" });
       state.error = "";
     } catch (error) { state.error = error.message; }
   }
 
   $("#overview-refresh")?.addEventListener("click", async () => { await ask(); await load(); });
+  // Another account in view: its own castles; a stale reading is asked for again.
+  accountContext.subscribe(() => {
+    state.data = null; state.asked = false; state.error = "";
+    if (state.open) load(); else render();
+  });
 
   return {
     show() {

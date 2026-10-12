@@ -129,6 +129,22 @@ Neither is cleared by "reset account". See [`pvp.md`](pvp.md).
 
 See [`station.md`](station.md).
 
+## V23: commander ranges
+
+`automation_mode_task.commander_start` (nullable): the commander number a task starts at in an
+attack bot. `NULL`, which every bot saved before has, means the task follows the one before, as
+the plain counts always did. See [`troop-overview.md`](troop-overview.md).
+
+## V24: support in an attack bot
+
+* `automation_mode.support_bot_id` (nullable): the one support object the bot carries.
+* `automation_mode_reserve(mode_id, position, commander_count, commander_start)`: ranges of
+  commanders kept for that support. `position` is the slot's place on the board among the
+  tasks (`automation_mode_task.position`), so `support 1-9 | task 10 | support 11-20` reads
+  back in order. A reserved commander belongs to no task, so no attack is ever given it.
+
+See [`troop-overview.md`](troop-overview.md) and [`station.md`](station.md).
+
 ## Size
 
 For one account running one troop type flat out:

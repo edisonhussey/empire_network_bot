@@ -303,8 +303,12 @@ pub struct LidState {
 ///
 /// `roster` is the account's commanders in order; `task_sets` the commanders of
 /// each running attack task (each task takes its first free commander, so the
-/// last ones are the least used). Preference, to cost ordinary attacks the least:
+/// last ones are the least used); `reserved` the commanders the attack bot set
+/// aside for support, which no task owns. Preference, to cost ordinary attacks the
+/// least:
 ///
+/// 0. a reserved commander, free now, else the reserved one back soonest (before
+///    `ready_by_ms`): that is what the reserve is for;
 /// 1. a free commander no task uses;
 /// 2. else the last free commander of the task with the most free ones;
 /// 3. else a busy one that is back by `ready_by_ms`, the earliest first.
@@ -314,6 +318,7 @@ pub struct LidState {
 pub fn choose_support_lid(
     roster: &[i64],
     task_sets: &[Vec<i64>],
+    reserved: &[i64],
     states: &[LidState],
     now_ms: i64,
     ready_by_ms: i64,
@@ -325,6 +330,17 @@ pub fn choose_support_lid(
             .map_or(now_ms, |state| state.available_after_ms.max(now_ms))
     };
     let is_free = |lid: i64| free_at(lid) <= now_ms;
+    if let Some(lid) = reserved.iter().copied().find(|lid| is_free(*lid)) {
+        return Some(lid);
+    }
+    if let Some(lid) = reserved
+        .iter()
+        .copied()
+        .filter(|lid| free_at(*lid) <= ready_by_ms)
+        .min_by_key(|lid| (free_at(*lid), *lid))
+    {
+        return Some(lid);
+    }
     let in_a_task = |lid: i64| task_sets.iter().any(|set| set.contains(&lid));
     if let Some(lid) = roster.iter().rev().copied().find(|lid| is_free(*lid) && !in_a_task(*lid)) {
         return Some(lid);
@@ -346,22 +362,24 @@ pub fn choose_support_lid(
 // Troops
 // ---------------------------------------------------------------------------
 
-/// The support army: at most [`MAX_SUPPORT_UNITS`] distinct troop types, largest
-/// stock first (ties by lower id), each at its full verified home count.
+/// The support army: at most [`MAX_SUPPORT_UNITS`] distinct unit types, largest
+/// stock first (ties by lower id), each at its full verified home count, so the most
+/// troops are saved.
 ///
 /// `home` is the `sdi` reply's `gui.I` (fresh, taken at the time of sending);
 /// `cross_check` the matching castle's `dcl` `AC`, when there was one. With both,
-/// the smaller positive count wins; with `home` alone it stands. Tools and anything
-/// else outside the troop catalogue are left out, as are zero counts. The captures
-/// show no total capacity rule, so none is applied: a refusal is recorded, not
-/// retried unchanged.
+/// the smaller positive count wins; with `home` alone it stands. Known tools and zero
+/// counts are left out. An id the game tables do not know is kept: the tables lag the
+/// game (units 215 and 227 were missing, and 35,031 + 7,281 troops stayed behind in a
+/// castle for it), and every id in a castle is a troop or a tool. The captures show no
+/// total capacity rule, so none is applied beyond the ten types.
 pub fn select_support_troops(
     home: &BTreeMap<i64, i64>,
     cross_check: Option<&BTreeMap<i64, i64>>,
 ) -> Vec<(i64, i64)> {
     let mut chosen = home
         .iter()
-        .filter(|(id, _)| empire_game::troop_by_id(**id).is_some())
+        .filter(|(id, _)| unit_kind(**id).0 != UnitKind::Tool)
         .filter_map(|(id, count)| {
             let verified = match cross_check {
                 Some(check) => (*count).min(check.get(id).copied().unwrap_or(0)),
@@ -507,6 +525,15 @@ pub fn unit_kind(id: i64) -> (UnitKind, String) {
     } else {
         (UnitKind::Unknown, format!("unit {id}"))
     }
+}
+
+/// The same army without the ids the game tables do not know: the fallback if the
+/// server refuses an army that included one.
+pub fn known_troops_only(army: &[(i64, i64)]) -> Vec<(i64, i64)> {
+    army.iter()
+        .copied()
+        .filter(|(id, _)| unit_kind(*id).0 == UnitKind::Troop)
+        .collect()
 }
 
 /// `sdi` reply: the source castle and what is at home there right now.
@@ -775,7 +802,7 @@ mod tests {
         let roster = [1, 2, 3, 4, 5];
         let tasks = vec![vec![1, 2], vec![3, 4]];
         let states: Vec<_> = roster.iter().map(|lid| free(*lid)).collect();
-        assert_eq!(choose_support_lid(&roster, &tasks, &states, 100, 1_000), Some(5));
+        assert_eq!(choose_support_lid(&roster, &tasks, &[], &states, 100, 1_000), Some(5));
     }
 
     #[test]
@@ -788,7 +815,24 @@ mod tests {
             LidState { lid: 3, available_after_ms: 99_999 },
             free(4),
         ];
-        assert_eq!(choose_support_lid(&roster, &tasks, &states, 100, 1_000), Some(2), "task 1 has two free");
+        assert_eq!(choose_support_lid(&roster, &tasks, &[], &states, 100, 1_000), Some(2), "task 1 has two free");
+    }
+
+    #[test]
+    fn a_reserved_commander_is_lent_before_anyone_else_and_never_one_a_task_owns_if_it_can_be_helped() {
+        let roster = [1, 2, 3, 4, 5];
+        let tasks = vec![vec![1, 2, 3]];
+        let states: Vec<_> = roster.iter().map(|lid| free(*lid)).collect();
+        // Commanders 4 and 5 belong to no task; 4 is the reserve.
+        assert_eq!(choose_support_lid(&roster, &tasks, &[4], &states, 100, 1_000), Some(4));
+        // The reserve is out, but back before it is needed: wait for it rather than take a task's.
+        let busy = vec![free(1), free(2), free(3), LidState { lid: 4, available_after_ms: 600 }, free(5)];
+        assert_eq!(choose_support_lid(&roster, &tasks, &[4], &busy, 100, 1_000), Some(4));
+        // Back too late: the old order applies (a free commander no task uses).
+        assert_eq!(choose_support_lid(&roster, &tasks, &[4], &busy, 100, 300), Some(5));
+        // Two reserved: the free one first.
+        let two = vec![LidState { lid: 4, available_after_ms: 900 }, free(5), free(1), free(2), free(3)];
+        assert_eq!(choose_support_lid(&roster, &tasks, &[4, 5], &two, 100, 1_000), Some(5));
     }
 
     #[test]
@@ -799,8 +843,8 @@ mod tests {
             LidState { lid: 1, available_after_ms: 900 },
             LidState { lid: 2, available_after_ms: 500 },
         ];
-        assert_eq!(choose_support_lid(&roster, &tasks, &states, 100, 1_000), Some(2));
-        assert_eq!(choose_support_lid(&roster, &tasks, &states, 100, 400), None, "nobody is back in time");
+        assert_eq!(choose_support_lid(&roster, &tasks, &[], &states, 100, 1_000), Some(2));
+        assert_eq!(choose_support_lid(&roster, &tasks, &[], &states, 100, 400), None, "nobody is back in time");
     }
 
     // ---- troops ----
@@ -816,6 +860,18 @@ mod tests {
         assert_eq!(select_support_troops(&home, None), vec![(602, 9)]);
         let many = map(&[(602, 5), (10, 5), (11, 7)]);
         assert_eq!(select_support_troops(&many, None), vec![(11, 7), (10, 5), (602, 5)]);
+    }
+
+    #[test]
+    fn a_unit_the_tables_do_not_know_is_sent_when_it_is_among_the_largest_stacks() {
+        // The pingpoko castle: 215 and 227 are not in the tables, 614/660/476 are tools.
+        let home = map(&[(216, 44_129), (215, 35_031), (476, 9_571), (227, 7_281), (238, 7_258), (9, 4_000), (12, 1_762), (217, 528), (34, 176), (35, 130), (754, 10), (760, 10), (614, 2_929)]);
+        let picked = select_support_troops(&home, None);
+        let ids: Vec<i64> = picked.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, vec![216, 215, 227, 238, 9, 12, 217, 34, 35, 754], "ten types, largest first, the smallest (760) dropped");
+        assert!(!ids.contains(&476) && !ids.contains(&614), "tools stay home");
+        assert_eq!(picked[1], (215, 35_031));
+        assert_eq!(known_troops_only(&picked).len(), 8, "the fallback leaves out 215 and 227");
     }
 
     #[test]

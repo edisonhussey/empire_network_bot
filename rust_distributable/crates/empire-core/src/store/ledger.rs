@@ -18,6 +18,22 @@ pub const COMMANDER_RETURNING: &str = "returning";
 /// troops have not landed; `returning` means they are on the way back.
 pub const MARCH_SENT: &str = "sent";
 pub const MARCH_RETURNING: &str = "returning";
+/// A march whose landing report never reached us: the session was interrupted and the
+/// return time is only bounded, not known (see [`return_bound_ms`]). Closed so nothing
+/// waits on it forever; a late report for it is still applied.
+pub const MARCH_LAPSED: &str = "lapsed";
+
+/// Slack added to the bound, for the whole-second travel times and the rest the game
+/// adds before a commander can be sent again.
+pub const RETURN_BOUND_MARGIN_MS: i64 = 15_000;
+
+/// The latest a march can be home, when only its outgoing travel time is known: a
+/// return takes no longer than the trip out, so it is home by `sent + 2 x duration`
+/// (plus a small margin). `None` when the duration is not known.
+pub fn return_bound_ms(sent_at_ms: i64, duration_s: Option<i64>) -> Option<i64> {
+    let seconds = duration_s.filter(|seconds| *seconds > 0)?;
+    Some(sent_at_ms + 2 * seconds * 1_000 + RETURN_BOUND_MARGIN_MS)
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MarchRecord {
@@ -181,7 +197,7 @@ impl Store {
              WHERE account_id = ? AND march_id = (
                  SELECT march_id FROM attack_ledger
                  WHERE account_id = ? AND kingdom_id = ? AND x = ? AND y = ?
-                   AND status = ? AND (lord_id = ? OR lord_id IS NULL)
+                   AND status IN (?, 'lapsed') AND (lord_id = ? OR lord_id IS NULL)
                    AND sent_at_ms <= ?
                  ORDER BY sent_at_ms DESC
                  LIMIT 1
@@ -246,6 +262,57 @@ impl Store {
         Ok(rows.into_iter().map(row_to_march).collect())
     }
 
+    /// Close marches that must be home by now though no return was ever reported
+    /// (the session was interrupted for minutes), and free their commanders.
+    ///
+    /// Only the outgoing duration is needed: the trip back cannot be longer, so a march
+    /// still `sent` after `sent + 2 x duration` has returned. This is best effort to keep
+    /// state honest; a report that turns up later is still applied. Returns how many
+    /// marches were closed.
+    pub async fn lapse_stale_marches(&self, account_id: &str, now_ms: i64) -> Result<u64, sqlx::Error> {
+        let account_id = canonical_account_id(account_id);
+        let rows = sqlx::query(
+            "SELECT march_id, lord_id, sent_at_ms, duration_s FROM attack_ledger
+             WHERE account_id = ? AND status = ? AND duration_s > 0",
+        )
+        .bind(&account_id)
+        .bind(MARCH_SENT)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut closed = 0;
+        for row in rows {
+            let march_id: i64 = row.get("march_id");
+            let Some(bound) = return_bound_ms(row.get("sent_at_ms"), row.get("duration_s")) else {
+                continue;
+            };
+            if bound > now_ms {
+                continue;
+            }
+            sqlx::query("UPDATE attack_ledger SET status = ?, result_at_ms = ? WHERE account_id = ? AND march_id = ?")
+                .bind(MARCH_LAPSED)
+                .bind(bound)
+                .bind(&account_id)
+                .bind(march_id)
+                .execute(&self.pool)
+                .await?;
+            // Free the commander only if it is still held for this very march.
+            sqlx::query(
+                "UPDATE commander_state SET status = ?, available_after_ms = MIN(available_after_ms, ?),
+                        updated_at_ms = ?
+                 WHERE account_id = ? AND march_id = ?",
+            )
+            .bind(COMMANDER_AVAILABLE)
+            .bind(bound)
+            .bind(now_ms)
+            .bind(&account_id)
+            .bind(march_id)
+            .execute(&self.pool)
+            .await?;
+            closed += 1;
+        }
+        Ok(closed)
+    }
+
     pub async fn set_commander_state(
         &self,
         state: &CommanderState,
@@ -293,7 +360,7 @@ impl Store {
         let account_id = canonical_account_id(account_id);
         let matched: Option<i64> = sqlx::query_scalar(
             "SELECT march_id FROM attack_ledger WHERE account_id = ? AND kingdom_id = ?
-             AND x = ? AND y = ? AND lord_id = ? AND status = 'sent' AND sent_at_ms <= ?
+             AND x = ? AND y = ? AND lord_id = ? AND status IN ('sent', 'lapsed') AND sent_at_ms <= ?
              ORDER BY sent_at_ms DESC LIMIT 1",
         )
         .bind(&account_id)
@@ -436,6 +503,12 @@ pub const HEARTBEAT_FRESH_MILLIS: i64 = 90_000;
 
 /// Key the hunter writes to show it is still running.
 pub const HUNT_HEARTBEAT_KEY: &str = "hunt.heartbeat_ms";
+
+/// The heartbeat of one account's run. Sessions run side by side, so each account
+/// writes its own; the plain key above is the standalone hunter's.
+pub fn hunt_heartbeat_key(account_id: &str) -> String {
+    format!("{HUNT_HEARTBEAT_KEY}.{}", canonical_account_id(account_id))
+}
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -879,11 +952,15 @@ impl Store {
 
         // Only a run that has checked in recently can have marches in the air.
         let now = now_ms();
-        let active = self
-            .app_state(HUNT_HEARTBEAT_KEY)
-            .await?
-            .and_then(|value| value.as_i64())
-            .is_some_and(|beat| beat > now - HEARTBEAT_FRESH_MILLIS);
+        let fresh = |value: Option<serde_json::Value>| {
+            value
+                .and_then(|value| value.as_i64())
+                .is_some_and(|beat| beat > now - HEARTBEAT_FRESH_MILLIS)
+        };
+        let active = match account_id.as_deref() {
+            Some(account) => fresh(self.app_state(&hunt_heartbeat_key(account)).await?),
+            None => fresh(self.app_state(HUNT_HEARTBEAT_KEY).await?),
+        };
 
         let account_row = if account_id.is_none() {
             sqlx::query("SELECT account_id FROM attack_ledger ORDER BY sent_at_ms DESC LIMIT 1")

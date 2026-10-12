@@ -19,7 +19,8 @@ mod tests;
 use automation::*;
 use base_scan::*;
 use dev::CompletedView;
-pub use dev::DevSnapshot;
+pub use dev::{DevSnapshot, SpatialView};
+pub use station_view::JobView;
 use fortress_discovery::*;
 use health::*;
 use inventory::InventoryPoll;
@@ -28,7 +29,7 @@ use packets::*;
 use recruitment::*;
 use scheduler::*;
 use station::{Gate, StationAutomation};
-pub use inventory::REFRESH_KEY as OVERVIEW_REFRESH_KEY;
+pub use inventory::overview_refresh_key;
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -55,7 +56,7 @@ use empire_core::{
     session::{KingdomScan, LoginCredentials, SessionMachine, SessionPhase, SessionSettings},
     store::{
         ActiveModeTask, ActiveRecruitment, COMMANDER_AVAILABLE, COMMANDER_OUTBOUND, CommanderState,
-        HUNT_HEARTBEAT_KEY, MARCH_SENT, MarchRecord, NavigationState, RecruitCastleState,
+        MARCH_SENT, MarchRecord, NavigationState, RecruitCastleState,
         ReservedTarget, StockForecast, Store,
     },
 };
@@ -181,6 +182,11 @@ pub struct DirectStatus {
     /// been up from this, and it survives closing the window because the
     /// service owns the session, not the window.
     pub connected_at_ms: Option<i64>,
+    /// The tier and features of the licence this session runs under, known once
+    /// the account has authenticated. Each account has its own licence, so two
+    /// accounts in one window can be on different tiers.
+    pub tier: Option<String>,
+    pub features: Vec<String>,
 }
 
 impl Default for DirectStatus {
@@ -202,6 +208,8 @@ impl Default for DirectStatus {
             bot_state: "stopped".to_owned(),
             bot_detail: None,
             connected_at_ms: None,
+            tier: None,
+            features: Vec::new(),
         }
     }
 }
@@ -291,7 +299,13 @@ pub async fn run(
 ) {
     let endpoint = request.endpoint.clone();
     let account_id = request.credentials.player_name.trim().to_ascii_lowercase();
-    status.write().await.endpoint = Some(endpoint.clone());
+    {
+        // Known from the first moment, so a window watching this account can tell
+        // its session from another's before the socket is even open.
+        let mut current = status.write().await;
+        current.endpoint = Some(endpoint.clone());
+        current.account_id = Some(account_id.clone());
+    }
     let mut attempt_request = request;
     let mut rng = Rng::from_entropy();
     let mut attempt = 0_u32;
@@ -442,6 +456,8 @@ async fn run_inner(
         bot_state: "stopped".to_owned(),
         bot_detail: None,
         connected_at_ms: Some(now_ms()),
+        tier: None,
+        features: Vec::new(),
     };
     info!(endpoint = %request.endpoint, "direct game session connected");
 
@@ -460,7 +476,16 @@ async fn run_inner(
     // a job is in its window (see station.rs for the gate).
     let mut station = StationAutomation::new();
     station.restore(store, &account_id, now_ms()).await;
-    let mut inventory = InventoryPoll::new();
+    // Marches that landed and came home while no session was listening: close them from
+    // their outgoing duration (a return is never longer) so no commander waits on them.
+    // Repeated below while connected, for the same reason after a shorter silence.
+    let mut last_lapse_ms = 0_i64;
+    if let Ok(closed) = store.lapse_stale_marches(&account_id, now_ms()).await
+        && closed > 0
+    {
+        log_event(store, &account_id, "march.lapsed", &format!("{closed} marches closed as home: their return was never reported")).await;
+    }
+    let mut inventory = InventoryPoll::new(&account_id);
     let mut station_tick = tokio::time::interval(Duration::from_millis(50));
     let mut fortress_rng = Rng::from_entropy();
     let mut scan_rng = Rng::from_entropy();
@@ -494,6 +519,19 @@ async fn run_inner(
                 let Some(message) = maybe else { break; };
                 let message = message?;
                 last_frame_at = tokio::time::Instant::now();
+                if let Message::Close(frame) = &message {
+                    // The server ended the session on purpose (a clean close, not a
+                    // dropped link). That is not something a retry fixes, and when
+                    // the cause is the account being signed in somewhere else a
+                    // retry would sign the player out again, so it is recorded
+                    // with its reason and the session ends here.
+                    let detail = frame.as_ref().map_or_else(
+                        || "no reason given".to_owned(),
+                        |frame| format!("code {}, reason {:?}", u16::from(frame.code), frame.reason.to_string()),
+                    );
+                    log_event(store, &account_id, "connection.server_closed", &format!("the server closed the session ({detail}); not reconnecting")).await;
+                    break;
+                }
                 let text = match message {
                     Message::Text(text) => Some(text.to_string()),
                     Message::Binary(bytes) => String::from_utf8(bytes.to_vec()).ok(),
@@ -535,6 +573,11 @@ async fn run_inner(
                             }
                         };
                         session_licence = Some(claims.license_id.clone());
+                        {
+                            let mut current = status.write().await;
+                            current.tier = Some(claims.tier.clone());
+                            current.features = claims.features.clone();
+                        }
                         log_event(store, &account_id, "connection.login_ok", "authenticated").await;
                         let _ = store
                             .set_app_state(&login_lock_key(&account_id), &json!(0), now_ms())
@@ -1065,6 +1108,10 @@ async fn run_inner(
             _ = station_tick.tick() => {
                 if machine.phase() == SessionPhase::SandsReady {
                     let now = now_ms();
+                    if now - last_lapse_ms >= 30_000 {
+                        last_lapse_ms = now;
+                        let _ = store.lapse_stale_marches(&account_id, now).await;
+                    }
                     automation.station_holds = station.holds(now);
                     if let Some(packet) = station
                         .next_packet(

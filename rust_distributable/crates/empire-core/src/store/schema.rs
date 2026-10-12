@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 22;
+pub const SCHEMA_VERSION: i64 = 24;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -765,13 +765,41 @@ pub const V22: Migration = &[
     "CREATE INDEX IF NOT EXISTS station_job_open_idx ON station_job (account_id, phase)",
 ];
 
+/// Where a task's commanders start in an attack bot. `NULL` (every bot saved before this)
+/// means the task follows the one before, which is what the sequential counts always
+/// meant; a number places it there and leaves the numbers in between unused.
+pub const V23: Migration = &[
+    "ALTER TABLE automation_mode_task ADD COLUMN commander_start INTEGER",
+];
+
+/// A support object inside an attack bot, and the commanders reserved for it.
+///
+/// `automation_mode.support_bot_id` names the one support object a bot may carry (it
+/// defines the destination for every castle). `automation_mode_reserve` holds the commander
+/// ranges set aside for support: they belong to no task, so attacks never use them and a
+/// station march always finds one free. `position` is shared with `automation_mode_task`,
+/// so tasks and reserved ranges interleave in the order they were laid out, for example
+/// support 1-9, one task at 10, support 11-20.
+pub const V24: Migration = &[
+    "ALTER TABLE automation_mode ADD COLUMN support_bot_id INTEGER",
+    "CREATE TABLE IF NOT EXISTS automation_mode_reserve (
+        mode_id INTEGER NOT NULL,
+        position INTEGER NOT NULL,
+        commander_count INTEGER NOT NULL,
+        commander_start INTEGER,
+        PRIMARY KEY (mode_id, position),
+        FOREIGN KEY (mode_id) REFERENCES automation_mode(mode_id) ON DELETE CASCADE
+    )",
+];
+
 pub const MIGRATIONS: &[Migration] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24,
 ];
 
 /// Every table that holds user data, for the storage report and full wipe.
 /// Order matters for deletion: children before parents.
 pub const DATA_TABLES: &[&str] = &[
+    "automation_mode_reserve",
     "station_job",
     "castle_inventory",
     "account_station_bot",

@@ -795,3 +795,32 @@ fn the_command_is_read_from_the_frame_without_parsing_it() {
     assert_eq!(peek("<msg t='sys'>"), None);
     assert_eq!(peek("%xt%"), None);
 }
+
+#[tokio::test]
+async fn units_the_tables_do_not_know_are_sent_and_dropped_once_if_the_server_refuses_them() {
+    let mut sim = Sim::new(standard_world().await).await;
+    // The castle also holds 35,031 of an id missing from the game tables.
+    let sdi = line(SDI, "%xt%sdi%1%0%").replace("\"I\":[[602,9],", "\"I\":[[215,35031],[602,9],");
+    let gam = sim.attack();
+    sim.feed(&gam).await;
+    // No dcl reading, so the sdi stock stands alone (the real one listed 215 too).
+    sim.answer("dcl", Answer::Silent);
+    sim.answer("sdi", Answer::Silent);
+    sim.answer("cds", Answer::Silent);
+    sim.run_until_sent("sdi").await;
+    sim.feed(&sdi).await;
+    sim.run_until_sent("cds").await;
+    let sent: serde_json::Value = serde_json::from_str(&sim.store.recent_station_jobs(ACCOUNT, 1).await.unwrap()[0].state_json).unwrap();
+    assert_eq!(sent["troops"], serde_json::json!([[215, 35031], [602, 9]]), "the big unknown stack goes first");
+    // The server refuses: the known troops are sent once more, and only once.
+    sim.feed("%xt%cds%1%104%{}%").await;
+    assert!(sim.station.jobs[0].army_narrowed);
+    sim.run_until(sim.now + 600).await;
+    assert_eq!(sim.commands().iter().filter(|c| **c == "cds").count(), 2);
+    let again: serde_json::Value = serde_json::from_str(&sim.store.recent_station_jobs(ACCOUNT, 1).await.unwrap()[0].state_json).unwrap();
+    assert_eq!(again["troops"], serde_json::json!([[602, 9]]));
+    // A second refusal ends it: no loop.
+    sim.feed("%xt%cds%1%104%{}%").await;
+    assert!(sim.station.jobs.is_empty());
+    assert_eq!(sim.last_job().await.outcome.as_deref(), Some("refused:cds:104"));
+}

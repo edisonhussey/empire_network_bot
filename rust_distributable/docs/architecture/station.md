@@ -10,6 +10,13 @@ Packet facts: [`../network_packets/station_sequence.md`](../network_packets/stat
 Rules (pure): `empire-core/src/station.rs`. Persistence: `store/station.rs` (migration
 V22). The session part: `empire-daemon/src/direct/station.rs`. HTTP: `daemon/src/station.rs`.
 
+## Reserved commanders
+
+An attack bot's support (see [`troop-overview.md`](troop-overview.md)) names commanders kept
+for it. `choose_support_lid` prefers a reserved commander that is free, then a reserved one
+back before the support has to leave, and only then the usual order; a reserved commander is
+never given to an attack, so one is always there.
+
 ## What triggers it
 
 A `gam` on the direct connection whose target `(kingdom, x, y)` is one of the account's

@@ -94,7 +94,10 @@ pub struct RecruitBotDraft {
 #[derive(Deserialize)]
 pub struct StartBotsRequest {
     account_id: String,
-    mode_id: i64,
+    /// The attack bot, or `None` to run without attacks (a recruit bot or the
+    /// station on its own).
+    #[serde(default)]
+    mode_id: Option<i64>,
     recruit_bot_id: Option<i64>,
     /// The support bot, or `None` for no auto-station. Chosen together with the
     /// attack and recruit bots and started and stopped with them.
@@ -262,29 +265,36 @@ pub async fn start_bots(
 ) -> Result<StatusCode, ApiError> {
     require_plans(&state).await?;
     if request.running {
-        let direct = state.direct_status.read().await;
-        if !direct.connected
-            || direct.phase != empire_core::session::SessionPhase::SandsReady
-            || !direct
-                .account_id
-                .as_deref()
-                .is_some_and(|value| value.eq_ignore_ascii_case(request.account_id.trim()))
-        {
-            return Err(ApiError::bad_request(
-                "start the connection and wait until the account is ready",
-            ));
-        }
-    }
-    state
-        .store
-        .subscribe_account_mode(
-            request.account_id.trim(),
-            request.mode_id,
-            request.running,
-            now_ms(),
+        require_ready_account(
+            &state,
+            &request.account_id,
+            "start the connection and wait until the account is ready",
         )
-        .await
-        .map_err(ApiError::bad_request)?;
+        .await?;
+    }
+    if request.running
+        && request.mode_id.is_none()
+        && request.recruit_bot_id.is_none()
+        && request.station_bot_id.is_none()
+    {
+        return Err(ApiError::bad_request(
+            "choose an attack bot, a recruit bot or an auto-station bot to run",
+        ));
+    }
+    match request.mode_id {
+        Some(mode_id) => state
+            .store
+            .subscribe_account_mode(request.account_id.trim(), mode_id, request.running, now_ms())
+            .await
+            .map_err(ApiError::bad_request)?,
+        // No attack bot: nothing attacks, and the earlier choice is forgotten so the
+        // window shows "none" next time rather than the bot it replaced.
+        None => state
+            .store
+            .clear_account_mode(request.account_id.trim())
+            .await
+            .map_err(ApiError::bad_request)?,
+    }
     state
         .store
         .subscribe_account_recruit_bot(
@@ -526,9 +536,14 @@ pub async fn create_mode(
     require_plans(&state).await?;
     draft.validate().map_err(ApiError::bad_request)?;
     let allocations = draft.normalized_allocations();
+    if let Some(support_id) = draft.support_bot_id
+        && !state.store.station_bots().await.map_err(ApiError::internal)?.iter().any(|bot| bot.station_bot_id == support_id)
+    {
+        return Err(ApiError::bad_request("that support does not exist"));
+    }
     let mode_id = state
         .store
-        .create_mode(draft.name.trim(), &allocations, now_ms())
+        .create_mode_with_support(draft.name.trim(), &allocations, draft.support_bot_id, now_ms())
         .await
         .map_err(ApiError::bad_request)?;
     Ok((StatusCode::CREATED, Json(CreatedMode { mode_id })))
@@ -556,18 +571,12 @@ pub async fn subscribe_mode(
 ) -> Result<StatusCode, ApiError> {
     require_plans(&state).await?;
     if request.running {
-        let direct = state.direct_status.read().await;
-        if !direct.connected
-            || direct.phase != empire_core::session::SessionPhase::SandsReady
-            || !direct
-                .account_id
-                .as_deref()
-                .is_some_and(|value| value.eq_ignore_ascii_case(request.account_id.trim()))
-        {
-            return Err(ApiError::bad_request(
-                "log in to this account and wait for Sands readiness before running a bot",
-            ));
-        }
+        require_ready_account(
+            &state,
+            &request.account_id,
+            "log in to this account and wait for Sands readiness before running a bot",
+        )
+        .await?;
     }
     state
         .store
@@ -619,6 +628,29 @@ pub async fn delete_mode(
         .await
         .map_err(ApiError::bad_request)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// A bot may run only for an account whose own session is connected and ready, and
+/// whose own licence includes automation: each account has its own tier, so a free
+/// account never borrows a pro account's licence.
+async fn require_ready_account(
+    state: &AppState,
+    account_id: &str,
+    not_ready: &str,
+) -> Result<(), ApiError> {
+    let status = state.sessions.status(account_id.trim()).await;
+    let Some(status) = status.filter(|status| {
+        status.connected && status.phase == empire_core::session::SessionPhase::SandsReady
+    }) else {
+        return Err(ApiError::bad_request(not_ready));
+    };
+    if !status.features.iter().any(|feature| feature == "*" || feature == "automation") {
+        return Err(ApiError::forbidden(format!(
+            "this account's licence ({} tier) does not include automation",
+            status.tier.as_deref().unwrap_or("unknown")
+        )));
+    }
+    Ok(())
 }
 
 async fn require_plans(state: &AppState) -> Result<(), ApiError> {

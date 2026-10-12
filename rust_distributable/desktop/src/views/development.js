@@ -1,36 +1,27 @@
 import { api } from "../api.js";
+import { accountContext } from "../account-context.js";
 import { element } from "../dom.js";
-import {
-  DEFAULT_VIEW, clampSize, endpoints, logPosition, makeViewport, movementState, panBy,
-  pointOnPath, shareInBand, shortDuration, visible, zoomAbout,
-} from "./dev-math.js";
-import { KINGDOMS, arrowFor } from "./pvp-model.js";
-import { drawHistogram, drawStationOnMap, renderStationPanel } from "./dev-station.js";
+import { logPosition, shareInBand, shortDuration } from "./dev-math.js";
+import { drawHistogram, renderStationPanel } from "./dev-station.js";
+import { canvasSize, createKingdomMap } from "./kingdom-map.js";
 
-/// The Development tab: a read-only window onto the scheduler.
+/// The Development tab: a read-only window onto the scheduler of the account in view.
 ///
-/// It observes. Nothing here starts, stops or changes the bot, and it asks the
-/// service only for snapshots it already keeps. While the tab is hidden every timer
-/// and animation frame is stopped; the backend is unaffected either way.
+/// It observes. Nothing here starts, stops or changes a bot, and it asks the service
+/// only for snapshots it already keeps. While the tab is hidden every timer and
+/// animation frame is stopped; the backend is unaffected either way.
 ///
-/// Polling is deliberately slow (one snapshot a second, movements every two, the
-/// map when it opens, the kingdom changes, or every half minute for cooldowns).
-/// Smoothness comes from interpolating against the clock on every animation frame:
-/// each march is placed from its start and end timestamps, so no backend timer
-/// exists per movement and no frames are pushed. The timing chart is not a clock
-/// trace: the generator is stepped once per action (`t = t + 1`), so it shows the
-/// last waits actually used and the next ones the generator would give.
-///
-/// The kingdom shown follows the bot unless one is chosen in the map's own
-/// chooser. Other players' active movements in that kingdom (from the PVP record)
-/// are drawn as bold arrows: green when the sender is in our alliance, red when
-/// it is anyone else, attacks on the account included. Each has dots for its
-/// sender and target and exists on the map only while it is travelling.
+/// The charts and panels are about the account chosen in the header. The maps are one
+/// per signed-in account on that account's world (`kingdom-map.js`), each in its own
+/// colour, so what one account is doing can be watched from another's tab: an attack on
+/// one, the support it sends, the retreat that follows. Accounts on other worlds are
+/// never shown. The timing chart is not a clock trace: the generator is stepped once
+/// per action (`t = t + 1`), so it shows the last waits actually used and the next ones
+/// the generator would give.
 
 const HISTORY_STEPS = 40;
 const AXIS_LOW_S = 0.5;
 const AXIS_HIGH_S = 120;
-const MAP_REFRESH_MS = 30_000;
 const INK = "#fff";
 const DIM = "rgba(255,255,255,.40)";
 const FAINT = "rgba(255,255,255,.16)";
@@ -38,26 +29,16 @@ const OK = "#5ed08a";
 
 export function createDevelopment() {
   const waveCanvas = document.querySelector("#dev-wave");
-  const mapCanvas = document.querySelector("#dev-map");
   const histCanvas = document.querySelector("#dev-hist");
+  const mapsHost = document.querySelector("#dev-maps");
   const state = {
     open: false,
     snapshot: null,
-    map: null,
-    movements: [],
-    pvp: [],
-    chosenKingdom: null,
-    movementsAt: 0,
-    mapAt: 0,
-    mapKingdom: null,
-    viewport: null,
-    viewSize: DEFAULT_VIEW,
-    follow: "castle",
     frame: 0,
     timers: [],
     lastText: 0,
-    drag: null,
     error: "",
+    maps: new Map(),
   };
 
   const text = (id, value) => {
@@ -67,87 +48,42 @@ export function createDevelopment() {
 
   // ---- data ---------------------------------------------------------------
 
-  /// The kingdom on screen: the one chosen, else the one the bot is working in.
-  function shownKingdom() {
-    return state.chosenKingdom ?? state.snapshot?.spatial?.kingdom_id ?? null;
-  }
-
   async function pollSnapshot() {
     try {
-      state.snapshot = await api("/dev");
+      state.snapshot = await api(`/dev${accountContext.query()}`);
       state.error = "";
-      const kingdom = shownKingdom();
-      if (kingdom !== null && kingdom !== state.mapKingdom) await pollMap(true);
+      syncMaps();
       renderLists();
     } catch (error) {
       state.error = error.message;
     }
   }
 
-  async function pollMap(force = false) {
-    if (!force && Date.now() - state.mapAt < MAP_REFRESH_MS) return;
-    const kingdom = shownKingdom();
-    try {
-      state.map = await api(kingdom == null ? "/dev/map" : `/dev/map?kingdom=${kingdom}`);
-      state.mapKingdom = state.map.kingdom_id;
-      state.mapAt = Date.now();
-      if (!state.viewport) recentre();
-    } catch (_) { /* no account connected yet */ }
+  // ---- maps: one per signed-in account on the viewed account's world ---------------
+
+  /// The accounts that get a map: the one in view, then every other signed-in account
+  /// on its world. Maps appear as accounts sign in and go as they sign out.
+  function wantedAccounts() {
+    const viewed = accountContext.viewed();
+    if (!viewed) return [];
+    const mates = accountContext.mates(viewed).map((account) => account.account_id.toLowerCase());
+    return [viewed, ...mates.filter((id) => id !== viewed)];
   }
 
-  async function pollMovements() {
-    try {
-      const kingdom = state.mapKingdom ?? shownKingdom();
-      const data = await api(kingdom == null ? "/dev/movements" : `/dev/movements?kingdom=${kingdom}`);
-      state.movements = data.movements;
-      state.movementsAt = Date.now();
-    } catch (_) { state.movements = []; }
-  }
-
-  /// Active movements of other players in the shown kingdom. Only what is still
-  /// travelling is asked for, so the answer stays small however long the record is.
-  async function pollPvp() {
-    const kingdom = state.mapKingdom ?? shownKingdom();
-    if (kingdom == null) { state.pvp = []; return; }
-    try {
-      state.pvp = (await api(`/pvp?state=active&kingdom=${kingdom}&limit=200`)).rows;
-    } catch (_) { state.pvp = []; }
-  }
-
-  // ---- viewport -------------------------------------------------------------
-
-  function canvasSize(canvas) {
-    const ratio = window.devicePixelRatio || 1;
-    const width = Math.max(1, Math.round(canvas.clientWidth));
-    const height = Math.max(1, Math.round(canvas.clientHeight));
-    if (canvas.width !== width * ratio || canvas.height !== height * ratio) {
-      canvas.width = width * ratio;
-      canvas.height = height * ratio;
+  function syncMaps() {
+    if (!mapsHost) return;
+    const wanted = wantedAccounts();
+    for (const [id, map] of state.maps) {
+      if (!wanted.includes(id)) { map.destroy(); state.maps.delete(id); }
     }
-    const context = canvas.getContext("2d");
-    context.setTransform(ratio, 0, 0, ratio, 0, 0);
-    return { context, width, height };
-  }
-
-  function focusPoint() {
-    const spatial = state.snapshot?.spatial;
-    if (state.follow === "spotlight" && spatial) return { x: spatial.spotlight[0], y: spatial.spotlight[1] };
-    const castle = state.map?.castle || spatial?.castle;
-    return castle ? { x: castle[0], y: castle[1] } : { x: 500, y: 500 };
-  }
-
-  function recentre(follow = state.follow) {
-    state.follow = follow;
-    const { width, height } = canvasSize(mapCanvas);
-    const point = focusPoint();
-    state.viewport = makeViewport(point.x, point.y, state.viewSize, width, height);
-  }
-
-  function setSize(size) {
-    state.viewSize = clampSize(size);
-    const { width, height } = canvasSize(mapCanvas);
-    const v = state.viewport || makeViewport(500, 500, state.viewSize, width, height);
-    state.viewport = makeViewport(v.cx, v.cy, state.viewSize, width, height);
+    for (const id of wanted) {
+      if (state.maps.has(id)) { state.maps.get(id).refreshTitle(); continue; }
+      const map = createKingdomMap({ host: mapsHost, accountId: id });
+      state.maps.set(id, map);
+      if (state.open) map.start();
+    }
+    // The account in view comes first.
+    wanted.forEach((id, index) => { const card = state.maps.get(id)?.element; if (card && mapsHost.children[index] !== card) mapsHost.insertBefore(card, mapsHost.children[index] || null); });
   }
 
   // ---- waveform -------------------------------------------------------------
@@ -218,159 +154,6 @@ export function createDevelopment() {
     context.fillText("projection of the next waits, not a promise", x(1), height - 6);
   }
 
-  // ---- map ------------------------------------------------------------------
-
-  function arrowHead(context, from, to, size) {
-    const angle = Math.atan2(to.y - from.y, to.x - from.x);
-    context.beginPath();
-    context.moveTo(to.x, to.y);
-    context.lineTo(to.x - size * Math.cos(angle - 0.45), to.y - size * Math.sin(angle - 0.45));
-    context.moveTo(to.x, to.y);
-    context.lineTo(to.x - size * Math.cos(angle + 0.45), to.y - size * Math.sin(angle + 0.45));
-    context.stroke();
-  }
-
-  const IN_RED = "#ff5a5a";
-
-  /// Other players' travelling movements: a bold arrow from sender to target with
-  /// the head at the army's current position, a dot at each end, and the people
-  /// named. Placed from the landing time on every frame; nothing is asked per frame.
-  function drawPvp(context, view, now) {
-    context.font = "10px ui-monospace, Menlo, monospace";
-    for (const row of state.pvp) {
-      const arrow = arrowFor(row, now);
-      if (!arrow) continue;
-      if (!visible(view, arrow.from.x, arrow.from.y, 400) && !visible(view, arrow.to.x, arrow.to.y, 400)) continue;
-      const colour = arrow.colour === "out" ? OK : IN_RED;
-      const a = view.toScreen(arrow.from.x, arrow.from.y);
-      const b = view.toScreen(arrow.to.x, arrow.to.y);
-      const here = view.toScreen(...Object.values(pointOnPath(arrow.from, arrow.to, arrow.progress)));
-      context.lineCap = "round";
-      context.strokeStyle = colour; context.globalAlpha = 0.3; context.lineWidth = 2;
-      context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(b.x, b.y); context.stroke();
-      context.globalAlpha = 1; context.lineWidth = 3.5;
-      context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(here.x, here.y); context.stroke();
-      if (Math.hypot(here.x - a.x, here.y - a.y) > 4) arrowHead(context, a, here, 11);
-      context.lineWidth = 1; context.lineCap = "butt";
-      // Sender: a filled dot. Target: a ring. Both exist only while travelling.
-      context.fillStyle = colour;
-      context.beginPath(); context.arc(a.x, a.y, 4, 0, Math.PI * 2); context.fill();
-      context.beginPath(); context.arc(b.x, b.y, 6, 0, Math.PI * 2); context.stroke();
-      context.fillText(arrow.senderLabel, a.x + 8, a.y - 7);
-      context.fillText(`${arrow.targetLabel} · ${shortDuration(arrow.remainingMs)}`, b.x + 9, b.y + 14);
-    }
-  }
-
-  function drawMap() {
-    const { context, width, height } = canvasSize(mapCanvas);
-    context.clearRect(0, 0, width, height);
-    if (!state.viewport) recentre();
-    // Keep the window on what it is following (the castle or the moving
-    // spotlight) unless the user has dragged away.
-    if (state.follow !== "free") {
-      const point = focusPoint();
-      state.viewport = makeViewport(point.x, point.y, state.viewSize, width, height);
-    } else {
-      state.viewport = makeViewport(state.viewport.cx, state.viewport.cy, state.viewSize, width, height);
-    }
-    const view = state.viewport;
-    const map = state.map;
-    const now = Date.now();
-
-    // Coordinate ticks every 10, thin and quiet.
-    context.lineWidth = 1; context.strokeStyle = "rgba(255,255,255,.06)"; context.fillStyle = DIM; context.font = "10px ui-monospace, Menlo, monospace";
-    const step = view.size > 300 ? 50 : view.size > 120 ? 20 : 10;
-    for (let gx = Math.ceil(view.bounds.left / step) * step; gx <= view.bounds.right; gx += step) {
-      const px = view.toScreen(gx, 0).x;
-      context.beginPath(); context.moveTo(px, 0); context.lineTo(px, height); context.stroke();
-      context.fillText(String(gx), px + 3, 11);
-    }
-    for (let gy = Math.ceil(view.bounds.top / step) * step; gy <= view.bounds.bottom; gy += step) {
-      const py = view.toScreen(0, gy).y;
-      context.beginPath(); context.moveTo(0, py); context.lineTo(width, py); context.stroke();
-      context.fillText(String(gy), 3, py - 3);
-    }
-
-    if (!map) {
-      context.fillStyle = DIM; context.fillText("Connect an account to see its kingdom.", 12, height / 2);
-      return;
-    }
-    const castle = map.castle ? { x: map.castle[0], y: map.castle[1] } : null;
-    const radius = Math.max(1.6, Math.min(4, view.scale * 0.5));
-
-    // Towers: white circles, solid when ready, hollow while cooling.
-    context.lineWidth = 1;
-    for (const tower of map.towers) {
-      if (!visible(view, tower.x, tower.y, 2)) continue;
-      const p = view.toScreen(tower.x, tower.y);
-      context.beginPath(); context.arc(p.x, p.y, radius, 0, Math.PI * 2);
-      if (tower.ready_at_ms <= now) { context.fillStyle = INK; context.fill(); }
-      else { context.strokeStyle = "rgba(255,255,255,.45)"; context.stroke(); }
-    }
-
-    // Spotlight, its local radius, and the direction it is heading.
-    const spatial = state.snapshot?.spatial;
-    if (spatial && spatial.kingdom_id === map.kingdom_id) {
-      const spot = view.toScreen(spatial.spotlight[0], spatial.spotlight[1]);
-      context.strokeStyle = "rgba(94,208,138,.7)"; context.setLineDash([3, 4]);
-      context.beginPath(); context.arc(spot.x, spot.y, spatial.local_radius * view.scale, 0, Math.PI * 2); context.stroke();
-      context.setLineDash([]);
-      context.beginPath(); context.moveTo(spot.x - 5, spot.y); context.lineTo(spot.x + 5, spot.y); context.moveTo(spot.x, spot.y - 5); context.lineTo(spot.x, spot.y + 5); context.stroke();
-      const v = spatial.velocity;
-      if (Math.hypot(v[0], v[1]) > 0.05) {
-        const tip = view.toScreen(spatial.spotlight[0] + v[0] * 3, spatial.spotlight[1] + v[1] * 3);
-        context.beginPath(); context.moveTo(spot.x, spot.y); context.lineTo(tip.x, tip.y); context.stroke();
-        arrowHead(context, spot, tip, 6);
-      }
-      if (spatial.selected) {
-        const sel = view.toScreen(spatial.selected[0], spatial.selected[1]);
-        context.strokeStyle = INK; context.beginPath(); context.arc(sel.x, sel.y, radius + 3, 0, Math.PI * 2); context.stroke();
-      }
-    }
-
-    // Marches, placed from their timestamps on every frame.
-    if (castle) {
-      context.font = "10px ui-monospace, Menlo, monospace";
-      for (const movement of state.movements) {
-        const s = movementState(movement, now);
-        if (s.status === "completed") continue;
-        const { from, to } = endpoints(movement, castle);
-        if (!visible(view, from.x, from.y, 400) && !visible(view, to.x, to.y, 400)) continue;
-        const a = view.toScreen(from.x, from.y); const b = view.toScreen(to.x, to.y);
-        const outbound = movement.phase === "outbound";
-        if (s.status === "unknown" || s.status === "arrived") {
-          // Return time unknown: say so, with a dashed line and no marker.
-          context.strokeStyle = FAINT; context.setLineDash([2, 4]);
-          context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(b.x, b.y); context.stroke(); context.setLineDash([]);
-          context.fillStyle = DIM; context.fillText(s.status === "arrived" ? "landed, return unknown" : "return unknown", b.x + 6, b.y - 6);
-          continue;
-        }
-        const here = view.toScreen(...Object.values(pointOnPath(from, to, s.progress)));
-        // The path ahead of the marker stays; behind it the line has gone.
-        context.strokeStyle = outbound ? "rgba(255,255,255,.6)" : "rgba(94,208,138,.7)"; context.lineWidth = 1;
-        context.beginPath(); context.moveTo(here.x, here.y); context.lineTo(b.x, b.y); context.stroke();
-        arrowHead(context, here, { x: here.x + (b.x - here.x) * 0.15, y: here.y + (b.y - here.y) * 0.15 }, 5);
-        context.fillStyle = outbound ? INK : OK;
-        context.beginPath(); context.arc(here.x, here.y, 3, 0, Math.PI * 2); context.fill();
-        context.fillStyle = DIM;
-        context.fillText(`${outbound ? "out" : "back"} ${shortDuration(s.remainingMs)}`, here.x + 6, here.y - 6);
-      }
-    }
-
-    drawPvp(context, view, now);
-    drawStationOnMap(context, view, state.snapshot?.station, map.kingdom_id, now);
-
-    // The main castle: a white square.
-    if (castle && visible(view, castle.x, castle.y, 4)) {
-      const p = view.toScreen(castle.x, castle.y);
-      context.fillStyle = INK; context.fillRect(p.x - 5, p.y - 5, 10, 10);
-    }
-
-    context.fillStyle = DIM; context.textAlign = "right";
-    context.fillText(`${Math.round(view.size)} × ${Math.round(view.size)} · kingdom ${map.kingdom_id}`, width - 8, height - 8);
-    context.textAlign = "left";
-  }
-
   // ---- text panels ----------------------------------------------------------
 
   function updateText() {
@@ -429,7 +212,8 @@ export function createDevelopment() {
     if (!state.open) return;
     drawWave();
     drawHistogram(histCanvas, canvasSize, state.snapshot?.timing.histogram, state.snapshot?.timing.target_band_s ?? [1, 5]);
-    drawMap();
+    const now = Date.now();
+    for (const map of state.maps.values()) map.draw(now);
     if (timestamp - state.lastText > 250) { state.lastText = timestamp; updateText(); }
     state.frame = requestAnimationFrame(frame);
   }
@@ -437,67 +221,27 @@ export function createDevelopment() {
   function start() {
     if (state.open) return;
     state.open = true;
-    pollSnapshot().then(() => pollMap(true)).then(pollMovements).then(pollPvp);
+    syncMaps();
+    for (const map of state.maps.values()) map.start();
+    pollSnapshot();
     state.timers.push(setInterval(pollSnapshot, 1000));
-    state.timers.push(setInterval(pollMovements, 2000));
-    state.timers.push(setInterval(pollPvp, 3000));
-    state.timers.push(setInterval(() => pollMap(), 5000));
     state.frame = requestAnimationFrame(frame);
   }
 
   function stop() {
     state.open = false;
     state.timers.forEach(clearInterval); state.timers = [];
+    for (const map of state.maps.values()) map.stop();
     cancelAnimationFrame(state.frame);
   }
 
-  // ---- controls -------------------------------------------------------------
-
-  mapCanvas.addEventListener("pointerdown", (event) => {
-    mapCanvas.setPointerCapture(event.pointerId);
-    state.drag = { x: event.clientX, y: event.clientY };
+  // Another account in view: its own charts, and a map for each account on its world.
+  accountContext.subscribe(() => {
+    state.snapshot = null;
+    for (const map of state.maps.values()) map.destroy();
+    state.maps.clear();
+    if (state.open) { syncMaps(); for (const map of state.maps.values()) map.start(); pollSnapshot(); }
   });
-  mapCanvas.addEventListener("pointermove", (event) => {
-    if (!state.drag || !state.viewport) return;
-    const { width, height } = canvasSize(mapCanvas);
-    state.viewport = panBy(state.viewport, event.clientX - state.drag.x, event.clientY - state.drag.y, width, height);
-    state.drag = { x: event.clientX, y: event.clientY };
-    state.follow = "free";
-  });
-  const endDrag = () => { state.drag = null; };
-  mapCanvas.addEventListener("pointerup", endDrag);
-  mapCanvas.addEventListener("pointercancel", endDrag);
-  mapCanvas.addEventListener("wheel", (event) => {
-    event.preventDefault();
-    if (!state.viewport) return;
-    const { width, height } = canvasSize(mapCanvas);
-    const rect = mapCanvas.getBoundingClientRect();
-    const anchor = state.viewport.toMap(event.clientX - rect.left, event.clientY - rect.top);
-    state.viewport = zoomAbout(state.viewport, event.deltaY > 0 ? 1.15 : 1 / 1.15, anchor, width, height);
-    state.viewSize = state.viewport.size;
-    state.follow = "free";
-  }, { passive: false });
-  const chooser = document.querySelector("#dev-kingdom-select");
-  if (chooser) {
-    chooser.replaceChildren(
-      new Option("Follow the bot", ""),
-      ...KINGDOMS.map((kingdom) => new Option(kingdom.name, String(kingdom.id))),
-    );
-    chooser.addEventListener("change", async () => {
-      state.chosenKingdom = chooser.value === "" ? null : Number(chooser.value);
-      state.pvp = []; state.movements = [];
-      await pollMap(true);
-      recentre("castle");
-      pollMovements();
-      pollPvp();
-    });
-  }
-  const on = (selector, handler) => document.querySelector(selector)?.addEventListener("click", handler);
-  on("#dev-zoom-in", () => setSize(state.viewSize / 1.4));
-  on("#dev-zoom-out", () => setSize(state.viewSize * 1.4));
-  on("#dev-reset", () => { state.viewSize = DEFAULT_VIEW; recentre("castle"); });
-  on("#dev-centre-castle", () => recentre("castle"));
-  on("#dev-centre-spotlight", () => recentre("spotlight"));
   document.addEventListener("visibilitychange", () => { if (document.hidden) stop(); else if (!document.querySelector("#view-development").hidden) start(); });
 
   return { show: start, hide: stop };

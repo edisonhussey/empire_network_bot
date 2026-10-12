@@ -291,25 +291,24 @@ legend { padding: 0 16px 0 0; }
 .task-pool { display: flex; flex-wrap: wrap; gap: 12px; }
 .pool-task { display: flex; align-items: center; gap: 14px; padding: 12px 16px; border: 1px solid var(--line); }
 .pool-task span { display: grid; } .pool-task b { font-weight: 400; }
-.scheduler-board { display: grid; gap: 0; }
 .board-empty { color: var(--ink-3); padding: 20px 0; border-top: 1px dashed var(--line); border-bottom: 1px dashed var(--line); }
-/* One column per commander; blocks span the columns they own and the numbers sit
-   in row two, so the ruler reads straight across under every block. */
-.board-grid { display: grid; column-gap: 3px; row-gap: 6px; align-items: start; }
-.allocation-block { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); min-width: 0; transition: border-color .15s, opacity .15s; }
-.block-head { display: flex; align-items: baseline; gap: 8px; }
-.block-head b { font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.block-count { margin-left: auto; color: var(--ink-3); font-size: 12px; }
-.block-controls { display: flex; gap: 6px; flex-wrap: wrap; }
+.block-controls { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .block-controls .mini-action { padding: 3px 9px; }
-.block-controls input[type=number] { width: 52px; min-height: 30px; padding: 2px 6px; }
-.block-span { font-style: normal; color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
-.ruler-cell { min-width: 0; padding: 4px 0; border-left: 1px solid var(--line); text-align: center; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; overflow: hidden; }
-.ruler-cell:last-of-type { border-right: 1px solid var(--line); }
-/* Hovering a block marks the commanders it owns, directly underneath it. */
-.board-grid:hover .allocation-block { opacity: .5; }
-.board-grid .allocation-block:hover { opacity: 1; border-color: var(--ink); }
-.ruler-cell.covered { color: var(--ink); border-top: 1px solid var(--ink); padding-top: 3px; }
+/* The commander board: a ruler of commander numbers with a block per task or support range. */
+.range-board { display: grid; grid-auto-rows: minmax(52px, auto); gap: 4px; overflow-x: auto; padding-bottom: 4px; }
+.range-block { display: grid; align-content: center; gap: 2px; padding: 6px 10px; min-width: 0; text-align: left; border: 1px solid rgba(94,208,138,.5); background: rgba(94,208,138,.12); color: inherit; cursor: pointer; overflow: hidden; }
+.range-block.support { border-color: rgba(120,170,255,.55); background: rgba(120,170,255,.12); }
+.range-block.selected { outline: 1px solid var(--ink-1, #fff); }
+.range-block.range-conflict { border-color: #ff7a7a; background: rgba(255,122,122,.12); }
+.range-block b { font-weight: 400; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .range-block small { font-size: 11px; color: var(--ink-3); }
+.ruler-cell { text-align: center; font-size: 11px; color: var(--ink-2); border-top: 1px solid var(--line); padding-top: 4px; }
+.ruler-cell.free { color: var(--ink-3); background: repeating-linear-gradient(135deg, transparent 0 4px, rgba(255,255,255,.04) 4px 8px); }
+.range-edit { display: flex; gap: 10px 14px; align-items: center; flex-wrap: wrap; margin-top: 14px; padding: 12px 0; border-top: 1px solid var(--line); }
+.range-edit label { color: var(--ink-3); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+.range-edit input[type=number] { width: 64px; min-height: 32px; padding: 2px 8px; }
+.range-count { font-style: normal; color: var(--ink-3); font-size: 12px; }
+.support-pick { margin: 18px 0; } .support-pick select { min-width: 220px; }
+.capacity-note.range-conflict { color: #ff7a7a; }
 .capacity-note { color: var(--ink-2); }
 .import-card { display: grid; gap: 20px; }
 .import-card h2 { font-family: var(--serif); font-size: 22px; color: var(--ink); margin: 8px 0; }
@@ -486,10 +485,11 @@ dialog[open] { display: grid; gap: 12px; }
 /* ---- Development tab ---------------------------------------------------- */
 .dev-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 32px 40px; align-items: start; }
 .dev-panel { min-width: 0; }
-.dev-timing, .dev-spatial { grid-column: 1; }
+.dev-timing, .dev-maps { grid-column: 1; }
 .dev-sched, .dev-health, .dev-station { grid-column: 2; }
 .dev-sched { grid-row: 1; } .dev-station { grid-row: 2; } .dev-health { grid-row: 3; }
-.dev-spatial { grid-row: 2; }
+.dev-maps { grid-row: 2; display: grid; gap: 32px; align-content: start; }
+.dev-maps:empty { display: none; }
 .dev-canvas { display: block; width: 100%; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: #050505; }
 .dev-wave-canvas { height: 220px; }
 .dev-map-canvas { height: min(56vh, 520px); min-height: 320px; cursor: grab; touch-action: none; }
@@ -520,7 +520,7 @@ dialog[open] { display: grid; gap: 12px; }
 .dev-controls { gap: 6px; }
 @media (max-width: 1100px) {
   .dev-grid { grid-template-columns: 1fr; }
-  .dev-timing, .dev-spatial, .dev-sched, .dev-health, .dev-station { grid-column: 1; grid-row: auto; }
+  .dev-timing, .dev-maps, .dev-sched, .dev-health, .dev-station { grid-column: 1; grid-row: auto; }
 }
 
 /* ---- PVP tab ------------------------------------------------------------- */
@@ -553,3 +553,43 @@ dialog[open] { display: grid; gap: 12px; }
 .dev-job-head b { font-weight: 500; color: var(--ink); margin-left: auto; }
 .dev-job small { color: var(--ink-3); flex-basis: 100%; }
 .dev-tone-ok { color: var(--ok) !important; } .dev-tone-warn { color: #e6c35c !important; } .dev-tone-bad { color: #ff7a7a !important; } .dev-tone-quiet { color: var(--ink-3) !important; }
+
+/* ---- Account switcher ---------------------------------------------------- */
+#account-switch-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); flex: none; }
+#account-switch-button .nav-caret { margin-left: 6px; }
+.account-menu { min-width: 280px; }
+.account-item-row { display: grid !important; grid-template-columns: 10px 1fr 8px; gap: 12px; align-items: center; }
+.account-item-text { display: grid; } .account-item-text b { font-weight: 400; } .account-item-text small { color: var(--ink-3); }
+.account-swatch { width: 10px; height: 10px; border-radius: 2px; display: block; }
+.account-state-dot { width: 7px; height: 7px; border-radius: 50%; display: block; }
+.account-item-row.checked::after { content: none; }
+
+/* ---- Colour-coded kingdom maps ------------------------------------------ */
+.dev-map-title { display: inline-flex; align-items: center; gap: 4px; }
+.dev-map-card .dev-controls select { min-height: 32px; padding: 4px 28px 4px 10px; font-size: 13px; }
+.dev-legend-line { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; }
+.dev-legend-item { display: inline-flex; align-items: center; gap: 4px; color: var(--ink-2); }
+.account-menu { left: 0; right: auto; }
+
+/* ---- Troop overview ------------------------------------------------------ */
+.troops-scroll { overflow-x: auto; border-top: 1px solid var(--line); margin-top: 14px; }
+.troop-row { display: grid; grid-template-columns: 40px minmax(120px, 1.1fr) 90px minmax(150px, 1.2fr) minmax(190px, 1.6fr) 80px 80px 70px 90px 90px; gap: 12px; align-items: baseline; min-width: 1000px; padding: 7px 0; border-bottom: 1px solid var(--line); font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; color: var(--ink-2); }
+.troop-head { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
+.troop-idle { color: var(--ink-3); }
+.troop-outbound .troop-state { color: var(--ink); }
+.troop-returning .troop-state { color: var(--ok); }
+.troop-station .troop-state { color: #6cc4ff; }
+.troop-sending .troop-state { color: #e6c35c; }
+.troop-number { color: var(--ink-3); }
+.troop-army { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- Opened presets ------------------------------------------------------ */
+.preset-entry { border-bottom: 1px solid var(--line); }
+.preset-entry > .library-row { border-bottom: 0; }
+.preset-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px 32px; padding: 4px 0 20px; }
+.preset-body[hidden] { display: none; }
+.preset-section .list-label { margin: 0 0 6px; }
+.preset-rows { margin: 0; display: grid; }
+.preset-rows > div { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(0, 1.4fr); gap: 12px; padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.preset-rows dt { color: var(--ink-3); }
+.preset-rows dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }

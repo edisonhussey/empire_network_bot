@@ -165,6 +165,10 @@ pub(super) struct Job {
     /// An early retreat arrived while the `cds` was still unanswered.
     pub(super) recall_asap: bool,
     pub(super) sdi_retried: bool,
+    /// The support was sent again without units the game tables do not know, after
+    /// the server refused the first army.
+    #[serde(default)]
+    pub(super) army_narrowed: bool,
     pub(super) marks: Marks,
     pub(super) outcome: Option<String>,
     pub(super) note: String,
@@ -572,6 +576,7 @@ impl StationAutomation {
             recall_due_ms: None,
             recall_asap: false,
             sdi_retried: false,
+            army_narrowed: false,
             marks: Marks::default(),
             outcome: None,
             note: String::new(),
@@ -657,13 +662,7 @@ impl StationAutomation {
     // ---- commander --------------------------------------------------------------
 
     async fn lease_commander(&self, store: &Store, account_id: &str, job: &Job, now: i64) -> Option<i64> {
-        let roster = store
-            .commander_lids(account_id)
-            .await
-            .ok()?
-            .into_iter()
-            .filter(|lid| empire_core::hunt::USABLE_COMMANDER_LIDS.contains(lid))
-            .collect::<Vec<_>>();
+        let roster = store.commander_lids(account_id).await.ok()?;
         let tasks = store.active_mode_tasks(account_id).await.unwrap_or_default();
         let task_sets = tasks.iter().map(|task| task.commander_lids.clone()).collect::<Vec<_>>();
         let states = store
@@ -675,7 +674,8 @@ impl StationAutomation {
             .collect::<Vec<_>>();
         // A commander busy now is acceptable only if it is back well before D.
         let ready_by = job.timeline.deadline_ms - 2_000;
-        let lid = station::choose_support_lid(&roster, &task_sets, &states, now, ready_by)?;
+        let reserved = self.config.as_ref().map(|config| config.reserved_lids.clone()).unwrap_or_default();
+        let lid = station::choose_support_lid(&roster, &task_sets, &reserved, &states, now, ready_by)?;
         let state = CommanderState {
             account_id: account_id.to_owned(),
             lord_id: lid,
@@ -818,6 +818,20 @@ impl StationAutomation {
         let Some(index) = self.in_flight(Step::Cds) else { return };
         if let Some(status) = refused {
             let mut job = self.jobs.remove(index);
+            // An id the game tables do not know may not be a troop. A changed army is
+            // not the same request repeated, so once, and only if the window allows,
+            // send the known troops alone rather than save nothing.
+            let known = station::known_troops_only(&job.troops);
+            let last_send = job.timeline.last_cds_send_ms(self.latency_ms * 2);
+            if !job.army_narrowed && known.len() < job.troops.len() && !known.is_empty() && now + 300 < last_send {
+                job.note = format!("refused (status {status}) with units the tables do not know; sending known troops only");
+                job.army_narrowed = true;
+                job.troops = known;
+                job.phase = Phase::Waiting { step: Step::Cds, due_ms: now };
+                self.save(store, account_id, &mut job, now).await;
+                self.jobs.push(job);
+                return;
+            }
             job.note = format!("the server refused the support march (status {status})");
             // Nothing left the castle, so nothing needs holding.
             job.hold_until_ms = 0;

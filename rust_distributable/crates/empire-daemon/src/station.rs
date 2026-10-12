@@ -80,6 +80,14 @@ pub async fn delete_station_bot(
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
     state.licence.require("automation").await.map_err(ApiError::forbidden)?;
+    // An attack bot that carries this support would be left pointing at nothing.
+    let users = state.store.modes_using_support(id).await?;
+    if !users.is_empty() {
+        return Err(ApiError::bad_request(format!(
+            "Still used by attack bot {}. Remove it from that bot first.",
+            users.join(", ")
+        )));
+    }
     state.store.delete_station_bot(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -166,12 +174,16 @@ pub async fn overview(
     Query(params): Query<AccountParam>,
 ) -> Result<Json<OverviewResponse>, ApiError> {
     let account_id = crate::focus_account(&state, params.account_id).await?;
-    let connected = state.direct_status.read().await.account_id.as_deref() == Some(account_id.as_str());
+    let connected = state
+        .sessions
+        .status(&account_id)
+        .await
+        .is_some_and(|status| status.connected);
     let castles = state.store.overview_castles(&account_id).await?;
     let newest = castles.iter().filter_map(|castle| castle.observed_at_ms).max().unwrap_or(0);
     let requested = state
         .store
-        .app_state(crate::direct::OVERVIEW_REFRESH_KEY)
+        .app_state(&crate::direct::overview_refresh_key(&account_id))
         .await?
         .and_then(|value| value.as_i64())
         .filter(|requested| *requested > newest);
@@ -185,15 +197,20 @@ pub async fn overview(
 }
 
 /// Ask the session loop for a fresh reading. It sends a `dcl` when the connection
-/// is free, never more often than every fifteen seconds.
-pub async fn refresh_overview(State(state): State<AppState>) -> Result<StatusCode, ApiError> {
-    if state.direct_status.read().await.account_id.is_none() {
-        return Err(ApiError::bad_request("connect an account to read its castles"));
+/// is free, never more often than every fifteen seconds. The request is per account:
+/// each session looks only at its own key.
+pub async fn refresh_overview(
+    State(state): State<AppState>,
+    Query(params): Query<AccountParam>,
+) -> Result<StatusCode, ApiError> {
+    let account_id = crate::focus_account(&state, params.account_id).await?;
+    if !state.sessions.status(&account_id).await.is_some_and(|status| status.connected) {
+        return Err(ApiError::bad_request("connect this account to read its castles"));
     }
     let now = now_ms();
     state
         .store
-        .set_app_state(crate::direct::OVERVIEW_REFRESH_KEY, &serde_json::json!(now), now)
+        .set_app_state(&crate::direct::overview_refresh_key(&account_id), &serde_json::json!(now), now)
         .await?;
     Ok(StatusCode::ACCEPTED)
 }

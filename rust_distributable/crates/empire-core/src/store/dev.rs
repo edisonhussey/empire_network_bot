@@ -33,6 +33,10 @@ pub struct Movement {
     /// duration is not known; it is never guessed.
     pub start_ms: i64,
     pub end_ms: Option<i64>,
+    /// The end is a bound, not a report: the army landed while the session was away
+    /// and the return was never seen, so it is taken to be home within the time the
+    /// trip out took.
+    pub estimated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -40,7 +44,8 @@ pub struct Movement {
 pub enum MovementPhase {
     /// Castle to tower, from the acknowledged travel time.
     Outbound,
-    /// Landed; waiting for the server's report, which carries the return time.
+    /// Landed with no return time and no travel time to bound it by. Only a march whose
+    /// duration was never recorded stays here.
     Arrived,
     /// Tower to castle, from the reported return time.
     Returning,
@@ -59,7 +64,9 @@ pub fn progress(start_ms: i64, end_ms: Option<i64>, now_ms: i64) -> Option<f64> 
 /// Work out what a ledger row means as a movement.
 ///
 /// * `sent`: outbound from `sent_at` for the travel time the acknowledgement gave.
-///   Past that without a report it is `Arrived` with no return time yet.
+///   Past that without a report it is on its way back, bounded: a return takes no longer
+///   than the trip out, so it is drawn home by landing + that time and shown as an
+///   estimate. Without a recorded travel time it is `Arrived`, return unknown.
 /// * `returning`: the report has arrived; the return runs from the landing for the
 ///   duration it reported. Without a duration the end stays unknown.
 fn classify(
@@ -68,20 +75,39 @@ fn classify(
     duration_s: Option<i64>,
     landed_at_ms: Option<i64>,
     now_ms: i64,
-) -> (MovementPhase, i64, Option<i64>) {
+) -> (MovementPhase, i64, Option<i64>, bool) {
     let seconds = duration_s.filter(|value| *value > 0).map(|value| value * 1_000);
     if status == "returning" {
         let start = landed_at_ms.unwrap_or(sent_at_ms);
-        return (MovementPhase::Returning, start, seconds.map(|value| start + value));
+        return (MovementPhase::Returning, start, seconds.map(|value| start + value), false);
     }
     let end = seconds.map(|value| sent_at_ms + value);
-    match end {
-        Some(end) if now_ms >= end => (MovementPhase::Arrived, end, None),
-        _ => (MovementPhase::Outbound, sent_at_ms, end),
+    match (end, seconds) {
+        (Some(end), Some(trip)) if now_ms >= end => {
+            (MovementPhase::Returning, end, Some(end + trip), true)
+        }
+        _ => (MovementPhase::Outbound, sent_at_ms, end, false),
     }
 }
 
+/// An account's name and the world it plays on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AccountWorld {
+    pub player_name: String,
+    /// The game endpoint: two accounts on the same endpoint share a world.
+    pub endpoint: String,
+}
+
 impl Store {
+    /// The name and world of one account, from its profile.
+    pub async fn account_world(&self, account_id: &str) -> Result<Option<AccountWorld>, sqlx::Error> {
+        let row = sqlx::query("SELECT player_name, endpoint FROM account_profile WHERE lower(account_id) = lower(?)")
+            .bind(canonical_account_id(account_id))
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|row| AccountWorld { player_name: row.get("player_name"), endpoint: row.get("endpoint") }))
+    }
+
     /// Every learned tower of one kingdom with the time it is next ready.
     pub async fn map_towers(
         &self,
@@ -165,7 +191,7 @@ impl Store {
         Ok(rows
             .into_iter()
             .map(|row| {
-                let (phase, start_ms, end_ms) = classify(
+                let (phase, start_ms, end_ms, estimated) = classify(
                     row.get::<&str, _>("status"),
                     row.get("sent_at_ms"),
                     row.get("duration_s"),
@@ -181,6 +207,7 @@ impl Store {
                     phase,
                     start_ms,
                     end_ms,
+                    estimated,
                 }
             })
             .collect())
@@ -190,6 +217,18 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_accounts_world_comes_from_its_profile_whatever_the_casing() {
+        let store = Store::open("sqlite::memory:").await.unwrap();
+        assert_eq!(store.account_world("ventrilo").await.unwrap(), None);
+        store
+            .upsert_account_profile("ventrilo", "Ventrilo", "wss://us1/", "EmpireEx_21", 1)
+            .await
+            .unwrap();
+        let world = store.account_world("VENTRILO").await.unwrap().unwrap();
+        assert_eq!((world.player_name.as_str(), world.endpoint.as_str()), ("Ventrilo", "wss://us1/"));
+    }
 
     #[test]
     fn progress_is_the_clamped_fraction_of_the_journey() {
@@ -209,32 +248,41 @@ mod tests {
 
     #[test]
     fn an_outbound_march_runs_for_the_acknowledged_travel_time() {
-        let (phase, start, end) = classify("sent", 10_000, Some(300), None, 100_000);
-        assert_eq!((phase, start, end), (MovementPhase::Outbound, 10_000, Some(310_000)));
+        let (phase, start, end, estimated) = classify("sent", 10_000, Some(300), None, 100_000);
+        assert_eq!((phase, start, end, estimated), (MovementPhase::Outbound, 10_000, Some(310_000), false));
         assert_eq!(progress(start, end, 160_000), Some(0.5));
     }
 
     #[test]
-    fn past_its_travel_time_without_a_report_it_has_arrived_with_no_return_time() {
-        let (phase, start, end) = classify("sent", 10_000, Some(300), None, 400_000);
-        assert_eq!(phase, MovementPhase::Arrived);
-        assert_eq!((start, end), (310_000, None));
+    fn past_its_travel_time_without_a_report_it_is_bounded_by_the_trip_out() {
+        let (phase, start, end, estimated) = classify("sent", 10_000, Some(300), None, 400_000);
+        assert_eq!(phase, MovementPhase::Returning);
+        assert_eq!((start, end, estimated), (310_000, Some(610_000), true), "home within as long as the trip out took");
+        assert_eq!(progress(start, end, 460_000), Some(0.5));
+        // Past the bound it is simply finished: the window drops it instead of drawing it forever.
+        assert_eq!(progress(start, end, 700_000), Some(1.0));
+    }
+
+    #[test]
+    fn a_march_with_no_recorded_travel_time_stays_unknown_rather_than_guessed() {
+        let (phase, _, end, estimated) = classify("sent", 10_000, None, None, 400_000);
+        assert_eq!((phase, end, estimated), (MovementPhase::Outbound, None, false));
     }
 
     #[test]
     fn a_returning_march_uses_the_reported_return_time_from_the_landing() {
-        let (phase, start, end) = classify("returning", 10_000, Some(280), Some(320_000), 400_000);
-        assert_eq!((phase, start, end), (MovementPhase::Returning, 320_000, Some(600_000)));
+        let (phase, start, end, estimated) = classify("returning", 10_000, Some(280), Some(320_000), 400_000);
+        assert_eq!((phase, start, end, estimated), (MovementPhase::Returning, 320_000, Some(600_000), false));
         assert_eq!(progress(start, end, 460_000), Some(0.5));
     }
 
     #[test]
     fn missing_timestamps_never_invent_a_duration() {
-        let (_, _, end) = classify("sent", 10_000, None, None, 50_000);
+        let (_, _, end, _) = classify("sent", 10_000, None, None, 50_000);
         assert_eq!(end, None);
-        let (phase, start, end) = classify("returning", 10_000, None, Some(40_000), 50_000);
+        let (phase, start, end, _) = classify("returning", 10_000, None, Some(40_000), 50_000);
         assert_eq!((phase, start, end), (MovementPhase::Returning, 40_000, None));
-        let (_, _, end) = classify("sent", 10_000, Some(0), None, 50_000);
+        let (_, _, end, _) = classify("sent", 10_000, Some(0), None, 50_000);
         assert_eq!(end, None, "a zero duration is not a duration");
     }
 }

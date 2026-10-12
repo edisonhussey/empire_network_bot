@@ -1112,6 +1112,8 @@ async fn only_the_running_bots_fortress_kingdoms_are_walked() {
             &[crate::planning::ModeTaskDraft {
                 task_id: "fire-rbc".into(),
                 commander_count: 1,
+                support: false,
+                commander_start: None,
             }],
             NOW,
         )
@@ -1137,6 +1139,8 @@ async fn only_the_running_bots_fortress_kingdoms_are_walked() {
             &[crate::planning::ModeTaskDraft {
                 task_id: "sand-fort".into(),
                 commander_count: 1,
+                support: false,
+                commander_start: None,
             }],
             NOW,
         )
@@ -2146,6 +2150,8 @@ async fn complete_mode_import_generates_ids_and_is_capacity_checked() {
             &[crate::planning::ModeTaskDraft {
                 task_id: modes[0].task_ids[0].clone(),
                 commander_count: 2,
+                support: false,
+                commander_start: None,
             }],
             NOW,
         )
@@ -2172,7 +2178,7 @@ async fn a_tower_the_server_reports_cooling_is_not_selected_until_it_is_ready() 
         level: Some(61),
         cooldown_remaining_s: 600,
     };
-    store.upsert_rbc_targets("ventrilo", &[cooling.clone()], NOW).await.unwrap();
+    store.upsert_rbc_targets("ventrilo", std::slice::from_ref(&cooling), NOW).await.unwrap();
     let pick = |at: i64| {
         let store = store.clone();
         async move {
@@ -2421,6 +2427,8 @@ async fn a_running_mode_compiles_tasks_and_reserves_each_target_once() {
             &[crate::planning::ModeTaskDraft {
                 task_id: portable_task_id,
                 commander_count: 2,
+                support: false,
+                commander_start: None,
             }],
             NOW,
         )
@@ -2799,10 +2807,14 @@ async fn deleting_a_task_takes_it_out_of_the_modes_that_use_it() {
                 crate::planning::ModeTaskDraft {
                     task_id: "task-1".to_owned(),
                     commander_count: 2,
+                    support: false,
+                    commander_start: None,
                 },
                 crate::planning::ModeTaskDraft {
                     task_id: "task-2".to_owned(),
                     commander_count: 1,
+                    support: false,
+                    commander_start: None,
                 },
             ],
             NOW,
@@ -3178,4 +3190,203 @@ async fn kingdom_health_counts_fortresses_per_kingdom() {
     assert!(!row(1).fortress_task);
     assert!(row(1).fortress_probes_pending > 0);
     assert_eq!(row(0).fortress_probes_pending, 0);
+}
+
+
+#[tokio::test]
+async fn the_recent_packet_window_is_kept_per_account() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    let payload = json!({"x": 1});
+    for _ in 0..(crate::RECENT_MESSAGE_LIMIT + 50) {
+        store
+            .record_message_for(Some("busy"), 1, crate::event::Direction::ServerToClient, Some("gaa"), &payload)
+            .await
+            .unwrap();
+    }
+    for _ in 0..3 {
+        store
+            .record_message_for(Some("Quiet"), 2, crate::event::Direction::ServerToClient, Some("gam"), &payload)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        store.recent_messages_for(Some("busy"), 500).await.unwrap().len() as i64,
+        crate::RECENT_MESSAGE_LIMIT,
+        "each account keeps its own window"
+    );
+    assert_eq!(store.recent_messages_for(Some("quiet"), 500).await.unwrap().len(), 3, "a busy account does not push it out");
+    assert_eq!(store.recent_messages_for(None, 500).await.unwrap().len() as i64, crate::RECENT_MESSAGE_LIMIT, "capped by the page limit");
+}
+
+#[tokio::test]
+async fn each_accounts_run_has_its_own_heartbeat() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+    store
+        .set_app_state(&hunt_heartbeat_key("Ventrilo"), &json!(now), now)
+        .await
+        .unwrap();
+    assert!(store.hunt_summary_for(Some("ventrilo"), 5).await.unwrap().active);
+    assert!(
+        !store.hunt_summary_for(Some("pingpoko"), 5).await.unwrap().active,
+        "another account's run does not make this one look alive"
+    );
+}
+
+
+#[tokio::test]
+async fn a_task_placed_at_a_commander_number_owns_that_range_and_leaves_the_gap_unused() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    store
+        .replace_account_bootstrap(
+            "ventrilo",
+            &[OwnedCastle { kingdom_id: 1, castle_id: 100, area_type: 12, x: 593, y: 613, name: "Sands".to_owned() }],
+            // Usable roster, in order: numbers 1..=8.
+            &[0, 2, 3, 6, 7, 8, 9, 10],
+            NOW,
+        )
+        .await
+        .unwrap();
+    let imported = store.import_mode_bundle(&crate::planning::ventrilo_sands_bundle(), NOW).await.unwrap();
+    let ids = store.modes().await.unwrap().into_iter().find(|mode| mode.mode_id == imported).unwrap().task_ids;
+    let draft = |task_id: &str, count: i64, start: Option<i64>| crate::planning::ModeTaskDraft {
+        task_id: task_id.to_owned(),
+        commander_count: count,
+        support: false,
+        commander_start: start,
+    };
+    // Task 1 takes commanders 1-2, task 2 is placed at 6 (commanders 6-7): 3-5 stay unused.
+    let mode_id = store
+        .create_mode("Gap", &[draft(&ids[0], 2, None), draft(&ids[1], 2, Some(6))], NOW)
+        .await
+        .unwrap();
+    let record = store.modes().await.unwrap().into_iter().find(|mode| mode.mode_id == mode_id).unwrap();
+    assert_eq!(record.commander_count, 7, "a bot needs as many commanders as its highest number");
+    assert_eq!(record.allocations[1].commander_start, Some(6));
+    store.subscribe_account_mode("ventrilo", mode_id, true, NOW).await.unwrap();
+    let tasks = store.active_mode_tasks("ventrilo").await.unwrap();
+    assert_eq!(tasks.len(), 2);
+    assert_eq!(tasks[0].commander_lids, vec![0, 2]);
+    assert_eq!(tasks[1].commander_lids, vec![8, 9], "numbers 6 and 7, not the next two after task 1");
+    let owned: Vec<i64> = tasks.iter().flat_map(|task| task.commander_lids.clone()).collect();
+    assert!(!owned.contains(&3) && !owned.contains(&6) && !owned.contains(&7), "the gap is lent to no one");
+
+    // A bot saved the old way (no starts) is unchanged: counts follow each other.
+    let old = store
+        .create_mode("Sequential", &[draft(&ids[0], 2, None), draft(&ids[1], 2, None)], NOW)
+        .await
+        .unwrap();
+    store.subscribe_account_mode("ventrilo", old, true, NOW).await.unwrap();
+    let tasks = store.active_mode_tasks("ventrilo").await.unwrap();
+    assert_eq!((tasks[0].commander_lids.clone(), tasks[1].commander_lids.clone()), (vec![0, 2], vec![3, 6]));
+    // A bot that needs more commanders than the account has is still refused, gap included.
+    let too_far = store.create_mode("Too far", &[draft(&ids[0], 1, Some(40))], NOW).await.unwrap();
+    assert!(store.subscribe_account_mode("ventrilo", too_far, true, NOW).await.is_err());
+}
+
+
+#[tokio::test]
+async fn every_commander_of_the_accounts_own_roster_is_usable_whatever_its_id() {
+    // Pingpoko's roster: ids 5, 12 and 19 are commanders here (on another account they are
+    // barons), so a fixed list of "usable" ids would have dropped three of its eighteen.
+    let roster = [0, 2, 3, 5, 6, 7, 10, 11, 12, 17, 18, 19, 21, 22, 23, 24, 25, 26];
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "pingpoko").await;
+    store
+        .replace_account_bootstrap(
+            "pingpoko",
+            &[OwnedCastle { kingdom_id: 1, castle_id: 200, area_type: 12, x: 722, y: 533, name: "Sands".to_owned() }],
+            &roster,
+            NOW,
+        )
+        .await
+        .unwrap();
+    let imported = store.import_mode_bundle(&crate::planning::ventrilo_sands_bundle(), NOW).await.unwrap();
+    let ids = store.modes().await.unwrap().into_iter().find(|mode| mode.mode_id == imported).unwrap().task_ids;
+    // One task of 17 commanders: the 18th must be left over, not lost.
+    let mode_id = store
+        .create_mode(
+            "Seventeen",
+            &[crate::planning::ModeTaskDraft { task_id: ids[0].clone(), commander_count: 17, support: false, commander_start: None }],
+            NOW,
+        )
+        .await
+        .unwrap();
+    store.subscribe_account_mode("pingpoko", mode_id, true, NOW).await.unwrap();
+    let tasks = store.active_mode_tasks("pingpoko").await.unwrap();
+    assert_eq!(tasks[0].commander_lids, roster[..17].to_vec(), "all seventeen, including 5, 12 and 19");
+    let overview = store.troop_overview("pingpoko", NOW, 5).await.unwrap();
+    assert_eq!(overview.rows.len(), 18);
+    let last = overview.rows.last().unwrap();
+    assert_eq!((last.number, last.lord_id, last.task_name.clone()), (18, 26, None), "number 18 is free");
+}
+
+
+#[tokio::test]
+async fn an_attack_bot_reserves_commanders_for_its_support_and_attacks_never_get_them() {
+    use crate::planning::{ModeDraft, ModeTaskDraft};
+    use crate::store::StationBotKingdom;
+    let roster: Vec<i64> = (100..120).collect();
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    store
+        .replace_account_bootstrap(
+            "ventrilo",
+            &[OwnedCastle { kingdom_id: 1, castle_id: 100, area_type: 12, x: 593, y: 613, name: "Sands".to_owned() }],
+            &roster,
+            NOW,
+        )
+        .await
+        .unwrap();
+    let imported = store.import_mode_bundle(&crate::planning::ventrilo_sands_bundle(), NOW).await.unwrap();
+    let task = store.modes().await.unwrap().into_iter().find(|mode| mode.mode_id == imported).unwrap().task_ids[0].clone();
+    let support = store
+        .create_station_bot("Quiet", &[StationBotKingdom { kingdom_id: 0, x: 468, y: 507 }], NOW)
+        .await
+        .unwrap();
+    // Support 1-9, one attack task at 10, support 11-20: the layout from the request.
+    let slot = |task_id: &str, count: i64, support: bool| ModeTaskDraft { task_id: task_id.to_owned(), commander_count: count, support, commander_start: None };
+    let allocations = vec![slot("", 9, true), slot(&task, 1, false), slot("", 10, true)];
+    let draft = ModeDraft { name: "Mixed".into(), task_ids: vec![], allocations: allocations.clone(), support_bot_id: Some(support) };
+    draft.validate().unwrap();
+    let mode_id = store.create_mode_with_support("Mixed", &allocations, Some(support), NOW).await.unwrap();
+
+    let record = store.modes().await.unwrap().into_iter().find(|mode| mode.mode_id == mode_id).unwrap();
+    assert_eq!(record.support_bot_id, Some(support));
+    assert_eq!(record.commander_count, 20);
+    assert_eq!(record.task_ids, vec![task.clone()], "the reserved ranges are not tasks");
+    assert_eq!(record.allocations.iter().map(|slot| slot.support).collect::<Vec<_>>(), vec![true, false, true], "board order kept");
+    assert_eq!(store.modes_using_support(support).await.unwrap(), vec!["Mixed".to_owned()]);
+
+    // Not running: no support is in force.
+    assert!(store.running_support("ventrilo").await.unwrap().is_none());
+    store.subscribe_account_mode("ventrilo", mode_id, true, NOW).await.unwrap();
+    let tasks = store.active_mode_tasks("ventrilo").await.unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].commander_lids, vec![109], "the task owns number 10 only");
+    let (bot, reserved) = store.running_support("ventrilo").await.unwrap().unwrap();
+    assert_eq!(bot, support);
+    let expected: Vec<i64> = (100..109).chain(110..120).collect();
+    assert_eq!(reserved, expected, "numbers 1-9 and 11-20");
+    assert!(!reserved.contains(&109), "no commander is both a task's and the reserve's");
+    let station = store.active_station("ventrilo").await.unwrap().unwrap();
+    assert_eq!((station.name.as_str(), station.reserved_lids.len()), ("Quiet", 19));
+    assert_eq!(station.destinations.get(&0), Some(&(468, 507)));
+
+    // The Troop overview marks the reserved commanders.
+    let overview = store.troop_overview("ventrilo", NOW, 5).await.unwrap();
+    assert_eq!(overview.rows.iter().filter(|row| row.reserved).count(), 19);
+    assert!(!overview.rows[9].reserved && overview.rows[9].task_name.is_some());
+}
+
+#[test]
+fn reserved_commanders_need_a_support_and_a_slot_needs_a_task_or_support() {
+    use crate::planning::{ModeDraft, ModeTaskDraft};
+    let slot = |task_id: &str, support: bool| ModeTaskDraft { task_id: task_id.to_owned(), commander_count: 1, support, commander_start: None };
+    let draft = |slots: Vec<ModeTaskDraft>, support_bot_id| ModeDraft { name: "m".into(), task_ids: vec![], allocations: slots, support_bot_id };
+    assert!(draft(vec![slot("", true)], None).validate().is_err(), "reserved with no support chosen");
+    assert!(draft(vec![slot("", true), slot("t", false)], Some(1)).validate().is_ok());
+    assert!(draft(vec![slot("", false)], Some(1)).validate().is_err(), "a slot of nothing");
+    assert!(draft(vec![slot("t", false)], None).validate().is_ok(), "a bot without support is as before");
 }

@@ -98,13 +98,13 @@ export function renderStationPanel(station, nowMs) {
   if (!rows.length) list.append(element("li", "dev-none", "No attacks on your castles seen this session."));
 }
 
-/// Support marches on the map of `kingdomId`: the castle ringed, a dashed line to
-/// its destination moving while troops are out, the countdown to the next step.
-export function drawStationOnMap(context, view, station, kingdomId, nowMs) {
-  if (!station) return;
+/// One account's support marches on the map (the jobs given are already for the
+/// kingdom shown): the attacked castle ringed, a dashed line to its destination moving
+/// while troops are out, the countdown to the next step. Drawn in the account's colour.
+export function drawStationJobs(context, view, jobs, nowMs, colour = SUPPORT) {
   context.font = "10px ui-monospace, Menlo, monospace";
-  for (const job of station.jobs) {
-    if (job.kingdom_id !== kingdomId || !onMap(job, nowMs)) continue;
+  for (const job of jobs) {
+    if (!onMap(job, nowMs)) continue;
     const [cx, cy] = job.castle;
     const dest = job.dest;
     if (!visible(view, cx, cy, 400) && !(dest && visible(view, dest[0], dest[1], 400))) continue;
@@ -112,26 +112,26 @@ export function drawStationOnMap(context, view, station, kingdomId, nowMs) {
     const marker = supportMarker(job, nowMs);
     const pulse = 8 + 3 * Math.sin(nowMs / 250);
     context.lineWidth = 2;
-    context.strokeStyle = marker.phase === "preparing" ? AMBER : SUPPORT;
+    context.strokeStyle = marker.phase === "preparing" ? AMBER : colour;
     context.beginPath(); context.arc(castle.x, castle.y, pulse, 0, Math.PI * 2); context.stroke();
     context.lineWidth = 1;
     let label;
     if (dest) {
       const target = view.toScreen(dest[0], dest[1]);
       // Out and back run the same line, so the dashes move the way the troops do.
-      context.strokeStyle = marker.phase === "home" ? FAINT : SUPPORT;
+      context.strokeStyle = marker.phase === "home" ? FAINT : colour;
       context.setLineDash([5, 5]);
       const direction = marker.phase === "back" ? -1 : 1;
       context.lineDashOffset = -direction * ((nowMs / 60) % 10);
       context.beginPath(); context.moveTo(castle.x, castle.y); context.lineTo(target.x, target.y); context.stroke();
       context.setLineDash([]); context.lineDashOffset = 0;
-      context.strokeStyle = SUPPORT;
+      context.strokeStyle = colour;
       context.beginPath(); context.moveTo(target.x, target.y - 5); context.lineTo(target.x + 5, target.y); context.lineTo(target.x, target.y + 5); context.lineTo(target.x - 5, target.y); context.closePath(); context.stroke();
-      context.fillStyle = SUPPORT;
+      context.fillStyle = colour;
       context.fillText(`station ${dest[0]}:${dest[1]}`, target.x + 8, target.y + 12);
       if (marker.phase === "out" || marker.phase === "back") {
         const here = view.toScreen(...Object.values(pointOnPath({ x: cx, y: cy }, { x: dest[0], y: dest[1] }, marker.fraction)));
-        context.fillStyle = SUPPORT;
+        context.fillStyle = colour;
         context.beginPath(); context.arc(here.x, here.y, 3.5, 0, Math.PI * 2); context.fill();
       }
     }

@@ -212,12 +212,55 @@ pub struct ModeDraft {
     pub task_ids: Vec<String>,
     #[serde(default)]
     pub allocations: Vec<ModeTaskDraft>,
+    /// The support object this bot carries, at most one. It defines where troops go for
+    /// every castle; the `support` slots of `allocations` are the commanders kept for it.
+    #[serde(default)]
+    pub support_bot_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModeTaskDraft {
+    /// The task, or empty for a reserved-for-support range (see `support`).
+    #[serde(default)]
     pub task_id: String,
     pub commander_count: i64,
+    /// This slot is commanders set aside for the bot's support object, not a task.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub support: bool,
+    /// The commander number (from 1) this task starts at. Without it the task
+    /// follows the one before; with it the task sits there, leaving any numbers in
+    /// between unused. See [`resolve_commander_ranges`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commander_start: Option<i64>,
+}
+
+/// The commanders each task of an attack bot owns, as inclusive 1-based ranges.
+///
+/// Tasks are taken in order. One with a `start` begins there; one without begins right
+/// after the previous task's last commander. Numbers left between ranges stay unused.
+/// Two tasks may never share a commander: sections are strict, and a commander on two
+/// tasks would be sent by whichever asked first.
+pub fn resolve_commander_ranges(
+    allocations: &[(i64, Option<i64>)],
+) -> Result<Vec<(i64, i64)>, PlanError> {
+    let mut ranges: Vec<(i64, i64)> = Vec::with_capacity(allocations.len());
+    let mut next = 1;
+    for (count, start) in allocations {
+        if *count < 1 {
+            return Err(PlanError::CommanderCount);
+        }
+        let first = start.unwrap_or(next);
+        if first < 1 {
+            return Err(PlanError::CommanderStart);
+        }
+        let last = first + count - 1;
+        if let Some(other) = ranges.iter().find(|(a, b)| first <= *b && *a <= last) {
+            return Err(PlanError::CommanderOverlap(*other, (first, last)));
+        }
+        ranges.push((first, last));
+        next = last + 1;
+    }
+    Ok(ranges)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,6 +276,8 @@ pub struct BundledTask {
     pub travel: TravelMode,
     pub priority: Priority,
     pub commander_count: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commander_start: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,6 +301,14 @@ pub enum PlanError {
     UnknownItem(i64, &'static str),
     #[error("commander count must be greater than zero")]
     CommanderCount,
+    #[error("commander numbers start at 1")]
+    CommanderStart,
+    #[error("commanders were reserved for support but no support is chosen")]
+    SupportMissing,
+    #[error("a slot with no task and no support")]
+    EmptySlot,
+    #[error("commanders {}–{} and {}–{} overlap: a commander can belong to one task only", .0.0, .0.1, .1.0, .1.1)]
+    CommanderOverlap((i64, i64), (i64, i64)),
     #[error("RBC level range is invalid")]
     LevelRange,
     #[error("source and target must be in the same kingdom")]
@@ -329,13 +382,21 @@ impl ModeDraft {
         if self.task_ids.is_empty() && self.allocations.is_empty() {
             return Err(PlanError::EmptyMode);
         }
-        if self
-            .allocations
-            .iter()
-            .any(|allocation| allocation.commander_count < 1)
-        {
-            return Err(PlanError::CommanderCount);
+        for allocation in &self.allocations {
+            if allocation.support && self.support_bot_id.is_none() {
+                return Err(PlanError::SupportMissing);
+            }
+            if !allocation.support && allocation.task_id.trim().is_empty() {
+                return Err(PlanError::EmptySlot);
+            }
         }
+        resolve_commander_ranges(
+            &self
+                .allocations
+                .iter()
+                .map(|allocation| (allocation.commander_count, allocation.commander_start))
+                .collect::<Vec<_>>(),
+        )?;
         Ok(())
     }
 
@@ -346,6 +407,8 @@ impl ModeDraft {
                 .map(|task_id| ModeTaskDraft {
                     task_id: task_id.clone(),
                     commander_count: 1,
+                    support: false,
+                    commander_start: None,
                 })
                 .collect()
         } else {
@@ -465,6 +528,7 @@ pub fn ventrilo_sands_bundle() -> ModeBundle {
                 travel: TravelMode::Coin,
                 priority: Priority::High,
                 commander_count: 17,
+                commander_start: None,
             },
             BundledTask {
                 name: "Sands level 35–60 kunai".to_owned(),
@@ -483,6 +547,7 @@ pub fn ventrilo_sands_bundle() -> ModeBundle {
                 travel: TravelMode::Coin,
                 priority: Priority::ExtraHigh,
                 commander_count: 18,
+                commander_start: None,
             },
         ],
     }
@@ -491,6 +556,38 @@ pub fn ventrilo_sands_bundle() -> ModeBundle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commander_ranges_follow_each_other_unless_a_task_is_placed() {
+        assert_eq!(resolve_commander_ranges(&[(10, None), (10, None), (10, None)]), Ok(vec![(1, 10), (11, 20), (21, 30)]));
+        assert_eq!(resolve_commander_ranges(&[(10, None), (10, Some(21)), (5, None)]), Ok(vec![(1, 10), (21, 30), (31, 35)]), "a gap, and the next task follows the placed one");
+        assert_eq!(resolve_commander_ranges(&[(3, Some(5)), (2, Some(1))]), Ok(vec![(5, 7), (1, 2)]), "order on the board need not be numeric order");
+        assert_eq!(resolve_commander_ranges(&[]), Ok(vec![]));
+    }
+
+    #[test]
+    fn a_commander_can_belong_to_one_task_only() {
+        assert_eq!(
+            resolve_commander_ranges(&[(10, None), (5, Some(8))]),
+            Err(PlanError::CommanderOverlap((1, 10), (8, 12)))
+        );
+        assert!(matches!(resolve_commander_ranges(&[(1, Some(3)), (1, Some(3))]), Err(PlanError::CommanderOverlap(..))));
+        assert_eq!(resolve_commander_ranges(&[(0, None)]), Err(PlanError::CommanderCount));
+        assert_eq!(resolve_commander_ranges(&[(1, Some(0))]), Err(PlanError::CommanderStart));
+        let message = PlanError::CommanderOverlap((1, 10), (8, 12)).to_string();
+        assert!(message.contains("1–10") && message.contains("8–12"), "{message}");
+    }
+
+    #[test]
+    fn a_mode_draft_with_overlapping_tasks_is_refused_before_it_is_saved() {
+        let draft = |allocations: Vec<ModeTaskDraft>| ModeDraft { name: "m".into(), task_ids: vec![], allocations, support_bot_id: None };
+        let task = |count, start| ModeTaskDraft { task_id: "t".into(), commander_count: count, support: false, commander_start: start };
+        assert!(draft(vec![task(10, None), task(10, Some(11))]).validate().is_ok());
+        assert!(draft(vec![task(10, None), task(10, Some(5))]).validate().is_err());
+        // Old JSON without the field still reads.
+        let old: ModeTaskDraft = serde_json::from_str(r#"{"task_id":"a","commander_count":3}"#).unwrap();
+        assert_eq!(old.commander_start, None);
+    }
 
     #[test]
     fn ventrilo_bundle_compiles_to_exact_wire_slot_shapes() {

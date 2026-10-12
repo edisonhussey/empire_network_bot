@@ -52,6 +52,10 @@ pub struct ActiveStation {
     pub name: String,
     /// Where support goes, per kingdom. A kingdom not in the map is not stationed.
     pub destinations: BTreeMap<i64, (i64, i64)>,
+    /// Commanders kept for support by the attack bot that carries this object, in
+    /// number order. Attacks never use them, so one is always free for a march. Empty
+    /// when the object runs on its own.
+    pub reserved_lids: Vec<i64>,
 }
 
 /// One castle as the Overview shows it.
@@ -227,34 +231,53 @@ impl Store {
             .collect())
     }
 
-    /// The account's support bot, when one is chosen and running.
+    /// The account's support object, when one is in force: the one carried by the attack
+    /// bot it is running (with the commanders reserved for it), else the one it chose
+    /// on its own and started.
     pub async fn active_station(
         &self,
         account_id: &str,
     ) -> Result<Option<ActiveStation>, sqlx::Error> {
-        let Some(bot) = sqlx::query(
-            "SELECT b.station_bot_id, b.name FROM account_station_bot a
+        if let Some((bot_id, reserved)) = self.running_support(account_id).await?
+            && let Some(mut station) = self.load_station(bot_id).await?
+        {
+            station.reserved_lids = reserved;
+            return Ok(Some(station));
+        }
+        let chosen: Option<i64> = sqlx::query_scalar(
+            "SELECT a.station_bot_id FROM account_station_bot a
              JOIN station_bot b ON b.station_bot_id = a.station_bot_id
              WHERE a.account_id = ? AND a.running = 1",
         )
         .bind(canonical_account_id(account_id))
         .fetch_optional(&self.pool)
-        .await?
+        .await?;
+        match chosen {
+            Some(bot_id) => self.load_station(bot_id).await,
+            None => Ok(None),
+        }
+    }
+
+    async fn load_station(&self, bot_id: i64) -> Result<Option<ActiveStation>, sqlx::Error> {
+        let Some(bot) = sqlx::query("SELECT station_bot_id, name FROM station_bot WHERE station_bot_id = ?")
+            .bind(bot_id)
+            .fetch_optional(&self.pool)
+            .await?
         else {
             return Ok(None);
         };
-        let id: i64 = bot.get("station_bot_id");
         let rows = sqlx::query("SELECT kingdom_id, x, y FROM station_bot_kingdom WHERE station_bot_id = ?")
-            .bind(id)
+            .bind(bot_id)
             .fetch_all(&self.pool)
             .await?;
         Ok(Some(ActiveStation {
-            station_bot_id: id,
+            station_bot_id: bot_id,
             name: bot.get("name"),
             destinations: rows
                 .into_iter()
                 .map(|row| (row.get("kingdom_id"), (row.get("x"), row.get("y"))))
                 .collect(),
+            reserved_lids: Vec::new(),
         }))
     }
 

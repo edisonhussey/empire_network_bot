@@ -22,16 +22,17 @@ mod state;
 mod station;
 mod storage;
 mod telemetry;
+mod troops;
 
 #[cfg(test)]
 mod tests;
 
 pub use config::{AttackProfile, SubscriptionRecord, TaskRecord};
-pub use dev::{MapTower, Movement, MovementPhase, progress as movement_progress};
+pub use dev::{AccountWorld, MapTower, Movement, MovementPhase, progress as movement_progress};
 pub use ledger::{
-    COMMANDER_AVAILABLE, COMMANDER_OUTBOUND, CommanderState, DashboardPoint, DashboardSummary,
+    COMMANDER_AVAILABLE, COMMANDER_OUTBOUND, COMMANDER_RETURNING, CommanderState, DashboardPoint, DashboardSummary,
     HEARTBEAT_FRESH_MILLIS, HUNT_HEARTBEAT_KEY, HuntSummary, HuntTaskSummary, MARCH_RETURNING,
-    MARCH_SENT, MarchRecord, ScanActivity,
+    MARCH_LAPSED, MARCH_SENT, MarchRecord, ScanActivity, hunt_heartbeat_key, return_bound_ms,
 };
 pub use modes::{AccountModeRecord, ActiveModeTask, ImportModeError, ModeRecord, TaskRuntime};
 pub use pvp::{PvpCount, PvpPage, PvpQuery, PvpRow, PvpState};
@@ -44,6 +45,7 @@ pub use station::{
     AccountStationBot, ActiveStation, JOB_DONE, OverviewCastle, STATION_KINGDOMS, StationBot,
     StationBotKingdom, StationJobRow,
 };
+pub use troops::{RecentMarch, TroopOverview, TroopRow, TroopState};
 pub use state::{CastleUnit, NavigationState, RecruitCastleState};
 pub use storage::{PruneOutcome, StorageReport, TableFootprint};
 pub use telemetry::{
@@ -1809,11 +1811,18 @@ impl Store {
         .bind(account_id.map(canonical_account_id))
         .execute(&self.pool)
         .await?;
+        // The window of recent packets is kept per account: with several sessions
+        // running, one busy account must not push another's history out.
+        let owner = account_id.map(canonical_account_id);
         sqlx::query(
-            "DELETE FROM network_message WHERE sequence <= (
-                SELECT COALESCE(MAX(sequence), 0) - ? FROM network_message
-            )",
+            "DELETE FROM network_message
+             WHERE account_id IS ?1
+               AND sequence NOT IN (
+                   SELECT sequence FROM network_message
+                   WHERE account_id IS ?1 ORDER BY sequence DESC LIMIT ?2
+               )",
         )
+        .bind(owner)
         .bind(RECENT_MESSAGE_LIMIT)
         .execute(&self.pool)
         .await?;
@@ -1821,11 +1830,23 @@ impl Store {
     }
 
     pub async fn recent_messages(&self, limit: i64) -> Result<Vec<StoredMessage>, sqlx::Error> {
+        self.recent_messages_for(None, limit).await
+    }
+
+    /// The newest packets, optionally only one account's, newest first.
+    pub async fn recent_messages_for(
+        &self,
+        account_id: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<StoredMessage>, sqlx::Error> {
         let requested = limit.clamp(1, RECENT_MESSAGE_LIMIT);
         let rows = sqlx::query(
             "SELECT sequence, observed_at_ms, direction, command, payload_json
-             FROM network_message ORDER BY sequence DESC LIMIT ?",
+             FROM network_message
+             WHERE (?1 IS NULL OR account_id = ?1)
+             ORDER BY sequence DESC LIMIT ?2",
         )
+        .bind(account_id.map(canonical_account_id))
         .bind(requested)
         .fetch_all(&self.pool)
         .await?;

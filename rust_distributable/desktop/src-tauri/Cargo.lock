@@ -943,7 +943,7 @@ dependencies = [
 
 [[package]]
 name = "empire-desktop"
-version = "0.1.57"
+version = "0.1.61"
 dependencies = [
  "empire-daemon",
  "tauri",

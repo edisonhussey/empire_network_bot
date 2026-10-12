@@ -132,14 +132,19 @@ pub fn owned_castles(payload: &Value) -> Vec<OwnedCastle> {
     result
 }
 
+/// The account's commanders (`gli.C`) in the order the game shows them: each carries
+/// its visible position (`VIS`, from 0), and human commander number n is the one at
+/// position n - 1. Without `VIS` the list order stands.
 pub fn commander_lids(payload: &Value) -> Vec<i64> {
-    payload
+    let mut rows = payload
         .pointer("/gli/C")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|row| row.get("ID").and_then(Value::as_i64))
-        .collect()
+        .filter_map(|row| Some((row.get("VIS").and_then(Value::as_i64), row.get("ID").and_then(Value::as_i64)?)))
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|(position, _)| position.unwrap_or(i64::MAX));
+    rows.into_iter().map(|(_, lid)| lid).collect()
 }
 
 pub fn castle_travel_options(payload: &Value) -> Vec<CastleTravelOptions> {
@@ -256,6 +261,16 @@ fn sands_level(value: i64) -> i64 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn commanders_are_ordered_by_their_visible_position_not_by_id() {
+        let bootstrap = json!({"gli": {"C": [
+            {"ID": 26, "VIS": 17}, {"ID": 0, "VIS": 0}, {"ID": 5, "VIS": 3}, {"ID": 2, "VIS": 1}, {"ID": 3, "VIS": 2}
+        ]}});
+        assert_eq!(commander_lids(&bootstrap), vec![0, 2, 3, 5, 26]);
+        let plain = json!({"gli": {"C": [{"ID": 9}, {"ID": 4}]}});
+        assert_eq!(commander_lids(&plain), vec![9, 4], "no VIS: the list order stands");
+    }
 
     #[test]
     fn learns_castles_commanders_and_only_rbc_rows() {
