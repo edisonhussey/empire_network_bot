@@ -26,7 +26,7 @@ commander is free again and the map drops it; before that it reads *Returning (e
 "up to" a time. The same bound serves the Development map. A late real return still matches.
 
 A hold that has run out reads as inactive even if the ledger still says outbound: the ledger
-can lag the game, and a commander the bot would send again is not "out". The window polls every
+can lag the game, and a commander the bot would send again is not "out". Times read as plain durations (`10m 50s`, `42s`, `3h 05m`), not "in ...". The window polls every
 three seconds and counts down from the timestamps every second. Recent marches are listed under
 the table. The existing Overview tab is now called **Castle Overview**.
 

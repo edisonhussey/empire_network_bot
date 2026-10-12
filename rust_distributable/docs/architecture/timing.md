@@ -80,6 +80,15 @@ checked in the tests.
   until the parameters drift a little; the Development tab draws it as hollow points,
   labelled a projection.
 
+## Test pace
+
+`WaveTimer::set_pace` multiplies the generated wait (`(m + exp(...)) x pace`, capped at
+`max_interval_s x pace`), so the projection and the histogram follow it. Bounds 0.5 to 4
+(`PACE_MIN`, `PACE_MAX`); anything else is clamped and NaN is 1. It is applied before the
+protocol minimum and the global `cra` spacing, which therefore hold at any pace. The service
+holds it per session (`direct/pace.rs`), set by `POST /v1/dev/pace`; see
+[`development-tab.md`](development-tab.md).
+
 ## Effect on throughput
 
 The waits are longer on average (mean about 5.8 s raw, against about 3.1 s and 1.6 s

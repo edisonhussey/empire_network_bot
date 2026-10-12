@@ -6,7 +6,7 @@ import {
   pointOnPath, shortDuration, visible, zoomAbout,
 } from "./dev-math.js";
 import { drawStationJobs } from "./dev-station.js";
-import { KINGDOMS, arrowFor } from "./pvp-model.js";
+import { KINDS, KINGDOMS, arrowFor } from "./pvp-model.js";
 import { accountsToDraw, mergedThreats } from "./shared-layers.js";
 
 /// One kingdom map, for one account.
@@ -221,7 +221,7 @@ export function createKingdomMap({ host, accountId }) {
       if (!arrow) continue;
       if (!visible(view, arrow.from.x, arrow.from.y, 400) && !visible(view, arrow.to.x, arrow.to.y, 400)) continue;
       const colour = accountContext.colour(owner);
-      const verdict = arrow.colour === "out" ? OK : HOSTILE;
+      const verdict = KINDS[arrow.kind]?.colour ?? (arrow.colour === "out" ? OK : HOSTILE);
       const a = view.toScreen(arrow.from.x, arrow.from.y);
       const b = view.toScreen(arrow.to.x, arrow.to.y);
       const here = view.toScreen(...Object.values(pointOnPath(arrow.from, arrow.to, arrow.progress)));

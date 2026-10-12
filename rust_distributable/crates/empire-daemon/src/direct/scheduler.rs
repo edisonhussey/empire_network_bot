@@ -165,6 +165,13 @@ impl ActionScheduler {
         &self.histogram
     }
 
+    /// Scale the waits from now on (see `PaceControl`); a no-op when unchanged.
+    pub(super) fn set_pace(&mut self, pace: f64) {
+        if (self.timer.pace() - pace).abs() > f64::EPSILON {
+            self.timer.set_pace(pace);
+        }
+    }
+
     pub(super) fn timer(&self) -> &WaveTimer {
         &self.timer
     }

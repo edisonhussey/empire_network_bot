@@ -1,9 +1,10 @@
 import { api } from "../api.js";
 import { accountContext } from "../account-context.js";
 import { element } from "../dom.js";
-import { logPosition, shareInBand, shortDuration } from "./dev-math.js";
+import { logPosition, shareInBand, shortDuration, stepProgress, waitAt } from "./dev-math.js";
 import { drawHistogram, renderStationPanel } from "./dev-station.js";
 import { canvasSize, createKingdomMap } from "./kingdom-map.js";
+import { createPaceSlider } from "./pace-slider.js";
 
 /// The Development tab: a read-only window onto the scheduler of the account in view.
 ///
@@ -31,6 +32,12 @@ export function createDevelopment() {
   const waveCanvas = document.querySelector("#dev-wave");
   const histCanvas = document.querySelector("#dev-hist");
   const mapsHost = document.querySelector("#dev-maps");
+  // The test pace is the operator's to set and the service's to keep; the slider shows
+  // what the service last reported unless it is being held.
+  const paceSlider = createPaceSlider({
+    host: document.querySelector("#dev-pace"),
+    onChange: (pace) => api("/dev/pace", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: accountContext.viewed() || null, pace }) }).catch(() => {}),
+  });
   const state = {
     open: false,
     snapshot: null,
@@ -51,6 +58,7 @@ export function createDevelopment() {
   async function pollSnapshot() {
     try {
       state.snapshot = await api(`/dev${accountContext.query()}`);
+      paceSlider.set(state.snapshot.timing.pace);
       state.error = "";
       syncMaps();
       renderLists();
@@ -88,7 +96,13 @@ export function createDevelopment() {
 
   // ---- waveform -------------------------------------------------------------
 
-  function drawWave() {
+  /// The generator's wave sum as one continuous curve, with the waits actually used
+  /// (filled) and the next ones (hollow) sitting on it at whole steps. The window slides
+  /// with time: "now" is a fixed line and the curve flows past it, moving through each
+  /// wait as it elapses, so nothing jumps when an action happens. The curve is the signal
+  /// without noise, so a used wait lies a little off it; one drawn before the last change
+  /// of pace keeps the pace it was waited at.
+  function drawWave(now) {
     const { context, width, height } = canvasSize(waveCanvas);
     context.clearRect(0, 0, width, height);
     const snap = state.snapshot;
@@ -98,60 +112,69 @@ export function createDevelopment() {
       return;
     }
     const timing = snap.timing;
+    const pace = paceSlider.get();
     const ahead = Math.max(1, timing.projection.length);
     const pad = { l: 44, r: 12, t: 14, b: 22 };
-    // Step offsets run from -HISTORY_STEPS (oldest shown) to ahead-1 (furthest projection);
-    // 0 is the next wait to be generated.
-    const x = (offset) => pad.l + ((offset + HISTORY_STEPS + 0.5) / (HISTORY_STEPS + ahead)) * (width - pad.l - pad.r);
-    const y = (seconds) => pad.t + (1 - logPosition(seconds, AXIS_LOW_S, AXIS_HIGH_S)) * (height - pad.t - pad.b);
+    const last = timing.last;
+    // "Now" is part-way through the wait in progress: that wait was generated at step -1.
+    const here = last ? -1 + stepProgress(last.at_ms, snap.scheduler.next_action_at_ms, now) : -1;
+    const span = HISTORY_STEPS + ahead;
+    const x = (offset) => pad.l + ((offset - here + HISTORY_STEPS) / span) * (width - pad.l - pad.r);
+    const high = AXIS_HIGH_S * Math.max(1, pace);
+    const y = (seconds) => pad.t + (1 - logPosition(seconds, AXIS_LOW_S, high)) * (height - pad.t - pad.b);
+    const inside = (px) => px >= pad.l - 3 && px <= width - pad.r + 3;
 
-    // The band the design aims about 60 % of waits into.
+    // The band the design aims about 60 % of waits into (at pace 1).
     const [bandLow, bandHigh] = timing.target_band_s;
     context.fillStyle = "rgba(94,208,138,.10)";
-    context.fillRect(pad.l, y(bandHigh), width - pad.l - pad.r, y(bandLow) - y(bandHigh));
+    context.fillRect(pad.l, y(bandHigh * pace), width - pad.l - pad.r, y(bandLow * pace) - y(bandHigh * pace));
     context.lineWidth = 1; context.strokeStyle = FAINT; context.fillStyle = DIM;
-    for (const seconds of [1, 2, 5, 10, 30, 60]) {
+    for (const seconds of [1, 2, 5, 10, 30, 60, 120, 240]) {
+      if (seconds > high) break;
       context.beginPath(); context.moveTo(pad.l, y(seconds)); context.lineTo(width - pad.r, y(seconds)); context.stroke();
       context.fillText(`${seconds}s`, 8, y(seconds) + 3);
     }
     context.setLineDash([2, 4]); context.strokeStyle = DIM;
-    context.beginPath(); context.moveTo(pad.l, y(timing.floor_s)); context.lineTo(width - pad.r, y(timing.floor_s)); context.stroke();
+    context.beginPath(); context.moveTo(pad.l, y(timing.floor_s * pace)); context.lineTo(width - pad.r, y(timing.floor_s * pace)); context.stroke();
     context.setLineDash([]);
-    context.fillText(`floor ${timing.floor_s.toFixed(2)}s`, width - 84, y(timing.floor_s) - 4);
+    context.fillText(`floor ${(timing.floor_s * pace).toFixed(2)}s`, width - 84, y(timing.floor_s * pace) - 4);
 
-    // Waits actually used, oldest to newest, ending just before "now".
-    const used = timing.recent.slice(0, HISTORY_STEPS).reverse();
-    context.strokeStyle = "rgba(94,208,138,.35)"; context.beginPath();
-    used.forEach((item, position) => {
-      const px = x(position - used.length); const py = y(item.waited_s);
-      if (position === 0) context.moveTo(px, py); else context.lineTo(px, py);
-    });
-    context.stroke();
-    used.forEach((item, position) => {
-      const px = x(position - used.length);
+    // The continuous curve, one sample every couple of pixels. Behind "now" it is the
+    // signal as it stands, ahead of it the projection.
+    const first = here - HISTORY_STEPS;
+    const samples = Math.max(2, Math.floor((width - pad.l - pad.r) / 2));
+    context.lineWidth = 1.5; context.strokeStyle = "rgba(94,208,138,.55)"; context.beginPath();
+    for (let i = 0; i <= samples; i += 1) {
+      const offset = first + (i / samples) * span;
+      const px = x(offset); const py = y(waitAt(timing, offset, pace));
+      if (i === 0) context.moveTo(px, py); else context.lineTo(px, py);
+    }
+    context.stroke(); context.lineWidth = 1;
+
+    // Waits actually used, placed by their own step number.
+    for (const item of timing.recent.slice(0, HISTORY_STEPS)) {
+      const px = x(item.index - timing.index);
+      if (!inside(px)) continue;
       context.fillStyle = OK; context.beginPath(); context.arc(px, y(item.waited_s), 2.4, 0, Math.PI * 2); context.fill();
       if (item.applied_s - item.waited_s > 0.05) {
         // A global limit made this one longer than the generator's own wait.
         context.strokeStyle = "rgba(255,255,255,.6)"; context.beginPath(); context.arc(px, y(item.applied_s), 3, 0, Math.PI * 2); context.stroke();
       }
-    });
-
-    // The next waits as the generator stands now. Dashed and hollow: a projection.
-    context.setLineDash([3, 4]); context.strokeStyle = DIM; context.beginPath();
-    timing.projection.forEach((item, position) => {
-      const px = x(position); const py = y(item.interval_s);
-      if (position === 0) context.moveTo(px, py); else context.lineTo(px, py);
-    });
-    context.stroke(); context.setLineDash([]);
+    }
+    // The next waits as the generator stands now, hollow: a projection.
     context.strokeStyle = INK;
-    timing.projection.forEach((item, position) => {
-      context.beginPath(); context.arc(x(position), y(item.interval_s), 2.4, 0, Math.PI * 2); context.stroke();
-    });
+    for (let step = 0; step < timing.projection.length; step += 1) {
+      const px = x(step);
+      if (!inside(px)) continue;
+      context.beginPath(); context.arc(px, y(waitAt(timing, step, pace)), 2.4, 0, Math.PI * 2); context.stroke();
+    }
 
-    context.strokeStyle = FAINT; context.beginPath(); context.moveTo(x(-0.5), pad.t); context.lineTo(x(-0.5), height - pad.b); context.stroke();
+    // "Now": a fixed line the curve flows through.
+    const nowX = x(here);
+    context.strokeStyle = "rgba(255,255,255,.5)"; context.beginPath(); context.moveTo(nowX, pad.t); context.lineTo(nowX, height - pad.b); context.stroke();
     context.fillStyle = DIM;
-    context.fillText("used", x(-HISTORY_STEPS / 2), height - 6);
-    context.fillText("projection of the next waits, not a promise", x(1), height - 6);
+    context.fillText("used", nowX - 44, height - 6);
+    context.fillText(pace === 1 ? "next waits: a projection" : `next waits at ×${pace.toFixed(2)}`, nowX + 8, height - 6);
   }
 
   // ---- text panels ----------------------------------------------------------
@@ -210,7 +233,7 @@ export function createDevelopment() {
 
   function frame(timestamp) {
     if (!state.open) return;
-    drawWave();
+    drawWave(Date.now());
     drawHistogram(histCanvas, canvasSize, state.snapshot?.timing.histogram, state.snapshot?.timing.target_band_s ?? [1, 5]);
     const now = Date.now();
     for (const map of state.maps.values()) map.draw(now);
@@ -238,6 +261,7 @@ export function createDevelopment() {
   // Another account in view: its own charts, and a map for each account on its world.
   accountContext.subscribe(() => {
     state.snapshot = null;
+    paceSlider.set(1);
     for (const map of state.maps.values()) map.destroy();
     state.maps.clear();
     if (state.open) { syncMaps(); for (const map of state.maps.values()) map.start(); pollSnapshot(); }

@@ -3,7 +3,8 @@ import test from "node:test";
 
 import {
   DEFAULT_VIEW, MAX_VIEW, MIN_VIEW, endpoints, logPosition, makeViewport, movementState,
-  panBy, pointOnPath, progressOf, shareInBand, shortDuration, visible, zoomAbout,
+  PACE_MAX, PACE_MIN, panBy, paceToPosition, pointOnPath, positionToPace, progressOf, shareInBand, shortDuration,
+  signalAt, stepProgress, visible, waitAt, waveValue, zoomAbout,
 } from "./dev-math.js";
 
 const close = (a, b, epsilon = 1e-9) => assert.ok(Math.abs(a - b) < epsilon, `${a} vs ${b}`);
@@ -107,4 +108,56 @@ test("durations read compactly", () => {
   assert.equal(shortDuration(3_780_000), "1h 03m");
   assert.equal(shortDuration(null), "?");
   assert.equal(shortDuration(-5), "0s");
+});
+
+const timing = (extra = {}) => ({
+  waves: [{ kind: "sin", amplitude: 1, omega: 1, phase: 0 }, { kind: "cos", amplitude: 0.5, omega: 2, phase: 0 }],
+  floor_s: 0.75, log_offset: 0.5, max_interval_s: 120, pace: 1, ...extra,
+});
+
+test("each wave kind is the generator's own function", () => {
+  close(waveValue({ kind: "sin", amplitude: 2, b: null }, Math.PI / 2), 2);
+  close(waveValue({ kind: "cos", amplitude: 2 }, 0), 2);
+  close(waveValue({ kind: "fold", amplitude: 3, b: 0.8 }, Math.PI / 2), 3, 1e-9);
+  assert.ok(Math.abs(waveValue({ kind: "fold", amplitude: 1, b: 0.8 }, Math.PI / 4)) < 1, "bounded by the amplitude");
+});
+
+test("the signal is continuous: whole steps are the generator's, between them it carries on smoothly", () => {
+  const { waves } = timing();
+  close(signalAt(waves, 0), 0.5);
+  close(signalAt(waves, Math.PI / 2), 1 + 0.5 * Math.cos(Math.PI));
+  const steps = Array.from({ length: 100 }, (_, i) => signalAt(waves, i / 10));
+  const largest = Math.max(...steps.slice(1).map((value, i) => Math.abs(value - steps[i])));
+  assert.ok(largest < 0.2, `no jumps between samples: ${largest}`);
+  assert.ok(signalAt(waves, -1) !== signalAt(waves, 1), "looking back is defined too");
+});
+
+test("a wait is the floor plus exp(offset + signal), times the pace, capped", () => {
+  const t = timing();
+  close(waitAt(t, 0), 0.75 + Math.exp(0.5 + 0.5));
+  close(waitAt(t, 0, 2), 2 * waitAt(t, 0, 1));
+  const huge = timing({ waves: [{ kind: "sin", amplitude: 50, omega: 1, phase: Math.PI / 2 }] });
+  close(waitAt(huge, 0), 0.75 + (120 - 0.75), 1e-6);
+  assert.ok(waitAt(timing({ waves: [{ kind: "sin", amplitude: 50, omega: 1, phase: -Math.PI / 2 }] }), 0) > 0.75, "never below the floor");
+});
+
+test("the chart's now slides through the wait in progress and sits still when nothing is scheduled", () => {
+  assert.equal(stepProgress(1_000, 5_000, 1_000), 0);
+  assert.equal(stepProgress(1_000, 5_000, 3_000), 0.5);
+  assert.equal(stepProgress(1_000, 5_000, 9_000), 1, "overdue stays at the end");
+  assert.equal(stepProgress(null, 5_000, 3_000), 0);
+  assert.equal(stepProgress(1_000, null, 3_000), 0);
+  assert.equal(stepProgress(5_000, 5_000, 6_000), 0);
+});
+
+test("the slider is log-scaled, bounded from below and lands exactly on 1", () => {
+  close(paceToPosition(PACE_MIN), 0);
+  close(paceToPosition(PACE_MAX), 1);
+  close(paceToPosition(1) - paceToPosition(PACE_MIN), paceToPosition(PACE_MAX) - paceToPosition(2) , 0.2);
+  assert.equal(positionToPace(-5), PACE_MIN);
+  assert.equal(positionToPace(5), PACE_MAX);
+  assert.equal(positionToPace(paceToPosition(1)), 1);
+  assert.equal(positionToPace(paceToPosition(1.02)), 1, "snaps to the design pace");
+  assert.equal(positionToPace(paceToPosition(2)), 2);
+  assert.equal(paceToPosition(0.01), 0, "below the bound reads as the bound");
 });

@@ -99,3 +99,56 @@ export function shortDuration(ms) {
   if (total < 3600) return `${Math.floor(total / 60)}m ${String(total % 60).padStart(2, "0")}s`;
   return `${Math.floor(total / 3600)}h ${String(Math.floor((total % 3600) / 60)).padStart(2, "0")}m`;
 }
+
+// ---- the wave chart: the generator's signal as a continuous curve ----------------
+
+/// The test pace's bounds, as the service keeps them. 1 is the design.
+export const PACE_MIN = 0.5;
+export const PACE_MAX = 4;
+
+/// One wave at phase `x`, as the generator computes it (`timing.rs`).
+export function waveValue(wave, x) {
+  if (wave.kind === "cos") return wave.amplitude * Math.cos(x);
+  if (wave.kind === "fold") return wave.amplitude * Math.asin(wave.b * Math.sin(x)) / Math.asin(wave.b);
+  return wave.amplitude * Math.sin(x);
+}
+
+/// The wave sum `offset` steps from the next wait to be generated, for any real
+/// `offset`: whole numbers are the generator's own steps, between them the same waves
+/// carried on smoothly. Negative offsets look back with the frequencies as they stand now.
+export function signalAt(waves, offset) {
+  let total = 0;
+  for (const wave of waves) total += waveValue(wave, wave.phase + wave.omega * offset);
+  return total;
+}
+
+/// The wait the generator would give at `offset`, seconds, without noise: the floor plus
+/// `exp(offset + signal)`, capped, times the pace. The same arithmetic as `WaveTimer`.
+export function waitAt(timing, offset, pace = timing.pace ?? 1) {
+  const ceiling = Math.log(Math.max(1, (timing.max_interval_s ?? 120) - timing.floor_s));
+  const exponent = Math.min(ceiling, Math.max(-6, timing.log_offset + signalAt(timing.waves, offset)));
+  return (timing.floor_s + Math.exp(exponent)) * pace;
+}
+
+/// How far through the wait in progress it is, 0 to 1: the chart's "now" sits that far
+/// past the last step, so it slides continuously between actions instead of jumping at
+/// each one. 0 when nothing is scheduled.
+export function stepProgress(startedAtMs, dueAtMs, nowMs) {
+  if (startedAtMs == null || dueAtMs == null || dueAtMs <= startedAtMs) return 0;
+  return Math.min(1, Math.max(0, (nowMs - startedAtMs) / (dueAtMs - startedAtMs)));
+}
+
+/// The slider, on a log scale so 0.5 and 2 are equally far from 1. `position` is 0 at the
+/// bottom (shortest waits) and 1 at the top.
+export function paceToPosition(pace) {
+  const clamped = Math.min(PACE_MAX, Math.max(PACE_MIN, pace));
+  return (Math.log(clamped) - Math.log(PACE_MIN)) / (Math.log(PACE_MAX) - Math.log(PACE_MIN));
+}
+
+/// The pace at a slider position, kept within the bounds, and snapped to exactly 1 when
+/// close to it so the design pace is easy to land on again.
+export function positionToPace(position) {
+  const clamped = Math.min(1, Math.max(0, position));
+  const pace = Math.exp(Math.log(PACE_MIN) + clamped * (Math.log(PACE_MAX) - Math.log(PACE_MIN)));
+  return Math.abs(pace - 1) < 0.04 ? 1 : Math.round(pace * 100) / 100;
+}

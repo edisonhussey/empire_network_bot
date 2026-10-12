@@ -38,6 +38,35 @@ The same pass does two more jobs:
 While any tower is left near the spotlight, it stays. When none is, the spotlight
 relocates to the second reservoir's pick (home-weighted, spotlight-independent).
 
+### Drift: why the spotlight no longer jumps
+
+The first version moved the spotlight onto each accepted pick (plus a look-ahead), and picks
+are random draws, so on the 100 x 100 map it jumped about as the picks did. Three changes, with
+defaults in `SpotlightParams`:
+
+* **The pull is stronger.** The weight is `1 / ((d_home + c) * (d_spotlight + c)^q)` with
+  `spotlight_exponent` q = 4 (it was 1). With q = 1 the weight of far towers summed to more than
+  the near ones, so most picks landed far from the spotlight whatever it did; q = 4 groups them.
+* **The spotlight walks.** After an accepted pick it moves `follow` = 0.12 of the way to the
+  pick plus look-ahead, at most `max_shift` = 2 tiles, so it is a slow average of recent picks.
+  Momentum is stickier (`mu` = 0.9) and the velocity limit is 4 tiles per pick.
+* **Relocation is a walk too.** When nothing is left within `local_radius` (15 tiles) the
+  spotlight heads for the tower the same weighting picks, which favours the nearest ground, at
+  most `relocation_shift` = 6 tiles per pick, instead of appearing across the map.
+
+Simulated on 360 towers over a disc of radius 70, 150 picks, 12 seeds (`run_stats` in the
+tests; each tower used once):
+
+| | Earlier | Now |
+| --- | ---: | ---: |
+| Tiles between consecutive picks | 45 | 28 |
+| Tiles the spotlight moves per pick | 61 | 1.8 |
+| Moves that turn back on the last one | 61 % | 37 % |
+| Largest single relocation step | 73 tiles | 6 tiles |
+
+The geography is still forgotten when the kingdom changes (below): one kingdom's coordinates
+never influence another's, and the spotlight starts again at the new kingdom's main castle.
+
 ### Momentum
 
 After a tower is **accepted** (its attack acknowledged, not merely chosen), the

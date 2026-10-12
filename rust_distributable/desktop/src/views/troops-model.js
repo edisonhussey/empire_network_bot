@@ -38,19 +38,19 @@ export function summarise(rows, nowMs) {
   return totals;
 }
 
-/// "in 4m 12s" / "now" / "–" for a time that is not known; `estimated` marks a bound.
+/// "4m 12s" / "now" / "–" for a time that is not known; `estimated` marks a bound.
 export function until(targetMs, nowMs, estimated = false) {
   const text = untilExact(targetMs, nowMs);
-  return estimated && text !== "–" && text !== "now" ? `≤ ${text.replace(/^in /, "")}` : text;
+  return estimated && text !== "–" && text !== "now" ? `≤ ${text}` : text;
 }
 
 function untilExact(targetMs, nowMs) {
   if (targetMs == null) return "–";
   const total = Math.round((targetMs - nowMs) / 1000);
   if (total <= 0) return "now";
-  if (total < 60) return `in ${total}s`;
-  if (total < 3600) return `in ${Math.floor(total / 60)}m ${String(total % 60).padStart(2, "0")}s`;
-  return `in ${Math.floor(total / 3600)}h ${String(Math.floor((total % 3600) / 60)).padStart(2, "0")}m`;
+  if (total < 60) return `${total}s`;
+  if (total < 3600) return `${Math.floor(total / 60)}m ${String(total % 60).padStart(2, "0")}s`;
+  return `${Math.floor(total / 3600)}h ${String(Math.floor((total % 3600) / 60)).padStart(2, "0")}m`;
 }
 
 /// The army as one line, largest first: "50 × crossbowman, 20 × ...".

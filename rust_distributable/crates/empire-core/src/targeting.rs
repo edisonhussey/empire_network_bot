@@ -73,6 +73,10 @@ pub struct SpotlightParams {
     /// `docs/architecture/target-selection.md` for what each value does to march
     /// lengths before changing it.
     pub home_exponent: f64,
+    /// Strength of the pull towards the spotlight: the weight's spotlight term is
+    /// `(d_spotlight + c)^spotlight_exponent`. A larger value groups picks tighter around
+    /// it, which is what makes a run read as a crawl across ground instead of a scatter.
+    pub spotlight_exponent: f64,
     /// Radius around the spotlight that counts as "local", tiles.
     pub local_radius: f64,
     /// Velocity persistence `mu`, 0 to 1.
@@ -81,6 +85,16 @@ pub struct SpotlightParams {
     pub lookahead: f64,
     /// Largest velocity component, tiles per pick.
     pub max_velocity: f64,
+    /// How much of the way to its new target the spotlight goes after an accepted pick,
+    /// 0 to 1. 1 lands on it at once (the old behaviour: it followed every pick, so it
+    /// bounced about as the picks did); small values average many picks, so it drifts.
+    pub follow: f64,
+    /// The farthest the spotlight may move after one accepted pick, tiles.
+    pub max_shift: f64,
+    /// The farthest it may move in one step when the neighbourhood is used up and it is
+    /// heading for fresh ground, tiles. It walks there over several picks rather than
+    /// appearing at the new place.
+    pub relocation_shift: f64,
     /// Speed of the random velocity given at (re)initialisation, tiles per pick.
     pub initial_speed: (f64, f64),
 }
@@ -90,10 +104,14 @@ impl Default for SpotlightParams {
         Self {
             offset: 5.0,
             home_exponent: 1.0,
-            local_radius: 12.0,
-            momentum: 0.7,
+            spotlight_exponent: 4.0,
+            local_radius: 15.0,
+            momentum: 0.9,
             lookahead: 2.0,
-            max_velocity: 8.0,
+            max_velocity: 4.0,
+            follow: 0.12,
+            max_shift: 2.0,
+            relocation_shift: 6.0,
             initial_speed: (1.0, 3.0),
         }
     }
@@ -168,11 +186,20 @@ impl SelectionState {
         }
     }
 
-    /// Relocate to `to` after the local region ran out: the spotlight moves there
-    /// and the old direction is forgotten.
+    /// Head for `to` after the local region ran out. The spotlight walks towards it, at
+    /// most `relocation_shift` tiles at a time, and takes the heading it travelled in; the
+    /// old direction is forgotten.
     pub fn reset_spotlight(&mut self, to: (i64, i64), params: &SpotlightParams, rng: &mut Rng) {
-        self.spotlight = (to.0 as f64, to.1 as f64);
-        self.velocity = random_velocity(params, rng);
+        let delta = (to.0 as f64 - self.spotlight.0, to.1 as f64 - self.spotlight.1);
+        let length = delta.0.hypot(delta.1);
+        if length > 0.0 {
+            let step = length.min(params.relocation_shift.abs());
+            self.spotlight = (self.spotlight.0 + delta.0 * step / length, self.spotlight.1 + delta.1 * step / length);
+            let speed = params.initial_speed.0;
+            self.velocity = (delta.0 / length * speed, delta.1 / length * speed);
+        } else {
+            self.velocity = random_velocity(params, rng);
+        }
         self.last_selected = Some(to);
     }
 
@@ -188,10 +215,20 @@ impl SelectionState {
                 (mu * self.velocity.1 + (1.0 - mu) * step.1).clamp(-limit, limit),
             );
         }
-        self.spotlight = (
+        // Walk part of the way to where the pick and the heading point, never far in one
+        // step, so the spotlight is a slow average of the picks rather than the last one.
+        let target = (
             selected.0 as f64 + params.lookahead * self.velocity.0,
             selected.1 as f64 + params.lookahead * self.velocity.1,
         );
+        let follow = params.follow.clamp(0.0, 1.0);
+        let mut shift = ((target.0 - self.spotlight.0) * follow, (target.1 - self.spotlight.1) * follow);
+        let length = shift.0.hypot(shift.1);
+        let limit = params.max_shift.abs();
+        if length > limit && length > 0.0 {
+            shift = (shift.0 * limit / length, shift.1 * limit / length);
+        }
+        self.spotlight = (self.spotlight.0 + shift.0, self.spotlight.1 + shift.1);
         self.last_selected = Some(selected);
     }
 }
@@ -214,8 +251,6 @@ pub struct Scanner<'a> {
     // advanced
     total_weight: f64,
     chosen: Option<Candidate>,
-    relocation_weight: f64,
-    relocation: Option<Candidate>,
     local_count: u64,
     // closest
     nearest: Option<((i64, i64, i64), Candidate)>,
@@ -251,15 +286,10 @@ impl Scanner<'_> {
                     return;
                 }
                 let home_term = (home + c).powf(self.params.home_exponent.max(0.0));
-                let weight = 1.0 / (home_term * (spot + c));
+                let weight = 1.0 / (home_term * (spot + c).powf(self.params.spotlight_exponent.max(0.0)));
                 self.total_weight += weight;
                 if self.rng.unit() * self.total_weight < weight {
                     self.chosen = Some(tower);
-                }
-                let weight = 1.0 / home_term;
-                self.relocation_weight += weight;
-                if self.rng.unit() * self.relocation_weight < weight {
-                    self.relocation = Some(tower);
                 }
                 if spot <= self.params.local_radius {
                     self.local_count += 1;
@@ -278,10 +308,11 @@ impl Scanner<'_> {
         match self.algorithm {
             TargetAlgorithm::Random => self.chosen.map(|tower| Choice { tower, relocate: false }),
             TargetAlgorithm::Closest => self.nearest.map(|(_, tower)| Choice { tower, relocate: false }),
-            TargetAlgorithm::Advanced if self.local_count == 0 => self
-                .relocation
-                .or(self.chosen)
-                .map(|tower| Choice { tower, relocate: true }),
+            // Nothing is left near the spotlight: it moves to the tower the same weighting
+            // picks, which favours the nearest ground, so it crawls on from where it was.
+            TargetAlgorithm::Advanced if self.local_count == 0 => {
+                self.chosen.map(|tower| Choice { tower, relocate: true })
+            }
             TargetAlgorithm::Advanced => self.chosen.map(|tower| Choice { tower, relocate: false }),
         }
     }
@@ -323,8 +354,6 @@ impl Selector {
             seen: 0,
             total_weight: 0.0,
             chosen: None,
-            relocation_weight: 0.0,
-            relocation: None,
             local_count: 0,
             nearest: None,
         }
@@ -404,8 +433,9 @@ mod tests {
             })
             .count();
         assert!(distinct > 20, "many different towers get chosen, not one: {distinct}");
-        // The far edge is still reachable, just rare.
-        assert!(distances.iter().any(|d| *d > 35.0));
+        // Ground beyond the spotlight's neighbourhood is still possible, just rare; the
+        // spotlight walks out to the far edge as the near ground is used up.
+        assert!(distances.iter().any(|d| *d > 20.0));
     }
 
     /// The reported failure, in the stochastic setting: an untouched far tower
@@ -460,21 +490,22 @@ mod tests {
     }
 
     #[test]
-    fn a_used_up_neighbourhood_relocates_towards_home_weighted_towers() {
-        // Spotlight far away from every eligible tower: nothing local.
-        let towers = vec![tower(735, 540), tower(780, 600), tower(700, 520)];
+    fn a_used_up_neighbourhood_relocates_to_the_nearest_ground() {
+        // Nothing within the local radius of the spotlight: the move is to ground close to
+        // where it was, not across the map.
+        let towers = vec![tower(HOME.0 + 10, HOME.1 + 7), tower(HOME.0 + 80, HOME.1 + 85)];
         let mut selector = Selector::new(4);
         selector.state.initialize_spotlight(1, HOME, &selector.params.clone(), &mut Rng::seeded(1));
-        selector.state.spotlight = (HOME.0 as f64 + 300.0, HOME.1 as f64 + 300.0);
-        let mut nearest_home = 0;
+        selector.state.spotlight = (HOME.0 as f64 + 100.0, HOME.1 as f64 + 100.0);
+        let mut nearest = 0;
         for _ in 0..1_000 {
             let choice = selector.pick(TargetAlgorithm::Advanced, 1, HOME, &towers).unwrap();
             assert!(choice.relocate, "nothing is local, so this is a relocation");
-            if choice.tower == towers[2] || choice.tower == towers[0] {
-                nearest_home += 1;
+            if choice.tower == towers[1] {
+                nearest += 1;
             }
         }
-        assert!(nearest_home > 800, "relocation prefers towers near home: {nearest_home}");
+        assert!(nearest > 650, "relocation prefers the tower nearest the spotlight: {nearest}");
     }
 
     #[test]
@@ -495,19 +526,116 @@ mod tests {
         state.initialize_spotlight(1, HOME, &params, &mut rng);
         let initial = state.velocity;
         // First accepted pick: no previous one, so the initial velocity is kept.
+        let start = state.spotlight;
         state.update_spotlight((730, 533), &params);
         assert_eq!(state.velocity, initial);
-        assert_eq!(state.spotlight, (730.0 + 2.0 * initial.0, 533.0 + 2.0 * initial.1));
-        // Marching east: x velocity trends positive, y towards zero.
-        for step in 1..=12 {
+        let moved = (state.spotlight.0 - start.0).hypot(state.spotlight.1 - start.1);
+        assert!(moved <= params.max_shift + 1e-9, "one pick moves it at most {} tiles: {moved}", params.max_shift);
+        // Marching east: x velocity trends positive, y towards zero, and the spotlight
+        // follows, a few tiles at a time and always behind the pick.
+        let mut last = state.spotlight;
+        for step in 1..=40 {
             state.update_spotlight((730 + step * 6, 533), &params);
+            let stride = (state.spotlight.0 - last.0).hypot(state.spotlight.1 - last.1);
+            assert!(stride <= params.max_shift + 1e-9, "step {step}: {stride}");
+            last = state.spotlight;
         }
-        assert!(state.velocity.0 > 3.0, "{:?}", state.velocity);
-        assert!(state.velocity.1.abs() < 0.5, "{:?}", state.velocity);
-        assert!(state.spotlight.0 > 730.0 + 12.0 * 6.0, "looks ahead of the last pick");
+        assert!(state.velocity.0 > 2.5, "{:?}", state.velocity);
+        assert!(state.velocity.1.abs() < 0.8, "{:?}", state.velocity);
+        assert!(state.spotlight.0 > 730.0 + 30.0, "it has been carried east: {:?}", state.spotlight);
         // A huge jump cannot fling the spotlight: velocity is clamped.
         state.update_spotlight((5_000, 5_000), &params);
         assert!(state.velocity.0.abs() <= params.max_velocity && state.velocity.1.abs() <= params.max_velocity);
+    }
+
+    /// What a run of picks looks like on a field of towers, each used once (its cooldown
+    /// outlasts the run), averaged over several seeds.
+    #[derive(Debug, Default)]
+    struct RunStats {
+        /// Tiles between consecutive picks.
+        pick_gap: f64,
+        /// Tiles the spotlight moves per ordinary pick (relocations left out).
+        drift: f64,
+        /// Share of ordinary moves that turn back on the previous one: 0.5 is a random
+        /// walk, small is a steady heading.
+        reversals: f64,
+        /// Relocations per run.
+        relocations: f64,
+        /// Mean tiles of one relocation.
+        jump: f64,
+    }
+
+    fn run_stats(params: SpotlightParams, seeds: u64) -> RunStats {
+        let mut total = RunStats::default();
+        let (mut gap_n, mut drift_n, mut turn_n, mut turns, mut jumps) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
+        for seed in 0..seeds {
+            let mut rng = Rng::seeded(1_000 + seed);
+            let mut field: Vec<Candidate> = Vec::new();
+            while field.len() < 360 {
+                let (dx, dy) = (rng.uniform(-70.0, 70.0), rng.uniform(-70.0, 70.0));
+                if dx.hypot(dy) <= 70.0 {
+                    field.push(tower(HOME.0 + dx as i64, HOME.1 + dy as i64));
+                }
+            }
+            let mut selector = Selector::new(seed);
+            selector.params = params;
+            let (mut last_pick, mut last_spot, mut last_step) = (None::<(i64, i64)>, None::<(f64, f64)>, None::<(f64, f64)>);
+            for _ in 0..150 {
+                let Some(choice) = selector.pick(TargetAlgorithm::Advanced, 1, HOME, &field) else { break };
+                let at = (choice.tower.x, choice.tower.y);
+                selector.accept(at, choice.relocate);
+                field.retain(|candidate| *candidate != choice.tower);
+                if let Some(previous) = last_pick {
+                    total.pick_gap += ((at.0 - previous.0) as f64).hypot((at.1 - previous.1) as f64);
+                    gap_n += 1.0;
+                }
+                let spot = selector.state.spotlight;
+                if let Some(previous) = last_spot {
+                    let step = (spot.0 - previous.0, spot.1 - previous.1);
+                    let length = step.0.hypot(step.1);
+                    if choice.relocate {
+                        total.jump += length;
+                        jumps += 1.0;
+                        last_step = None;
+                    } else {
+                        total.drift += length;
+                        drift_n += 1.0;
+                        if let Some(before) = last_step {
+                            turn_n += 1.0;
+                            if before.0 * step.0 + before.1 * step.1 < 0.0 {
+                                turns += 1.0;
+                            }
+                        }
+                        last_step = Some(step);
+                    }
+                }
+                last_pick = Some(at);
+                last_spot = Some(spot);
+            }
+        }
+        total.pick_gap /= gap_n;
+        total.drift /= drift_n.max(1.0);
+        total.reversals = turns / turn_n.max(1.0);
+        total.jump /= jumps.max(1.0);
+        total.relocations = jumps / seeds as f64;
+        total
+    }
+
+    fn earlier_behaviour() -> SpotlightParams {
+        SpotlightParams { spotlight_exponent: 1.0, momentum: 0.7, max_velocity: 8.0, follow: 1.0, max_shift: f64::INFINITY, relocation_shift: f64::INFINITY, local_radius: 12.0, ..SpotlightParams::default() }
+    }
+
+    #[test]
+    fn the_spotlight_drifts_where_it_used_to_jump_and_picks_stay_grouped() {
+        let now = run_stats(SpotlightParams::default(), 12);
+        let before = run_stats(earlier_behaviour(), 12);
+        println!("now {now:?}\nbefore {before:?}");
+        let params = SpotlightParams::default();
+        assert!(now.drift <= params.max_shift, "an ordinary pick moves it at most {} tiles: {:.1}", params.max_shift, now.drift);
+        assert!(now.drift * 10.0 < before.drift, "it moved {:.1} tiles per pick, was {:.1}", now.drift, before.drift);
+        assert!(now.jump <= params.relocation_shift + 1e-9, "a relocation is a walk, not a jump: {:.1}", now.jump);
+        assert!(now.reversals < 0.45 && now.reversals < before.reversals, "a steadier heading: {:.2} vs {:.2}", now.reversals, before.reversals);
+        assert!(now.pick_gap < before.pick_gap * 0.7, "consecutive picks lie closer: {:.1} vs {:.1}", now.pick_gap, before.pick_gap);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { arrowFor, countOf, liveState, mergeRows, partyLabel } from "./pvp-model.js";
+import { KINDS, arrowFor, countOf, liveState, mergeRows, movementKind, partyLabel } from "./pvp-model.js";
 
 const row = (overrides = {}) => ({
   mid: 1, direction: "incoming", state: "active", detected_at_ms: 1_000_000, land_at_ms: 1_057_000,
@@ -60,6 +60,17 @@ test("an alliance attack going out is green", () => {
 test("the colour follows whose attack it is: an ally's is green, anyone else's red", () => {
   assert.equal(arrowFor(row({ direction: "internal" }), 1_010_000).colour, "out", "ally to ally");
   assert.equal(arrowFor(row({ direction: "other" }), 1_010_000).colour, "in", "neither end is ours");
+});
+
+test("every movement has one kind, and so one colour", () => {
+  assert.equal(movementKind(row({ direction: "internal" })), "support");
+  assert.equal(movementKind(row({ direction: "incoming", owner: "mine" })), "incoming");
+  assert.equal(movementKind(row({ direction: "incoming", owner: "alliance" })), "ally_incoming");
+  assert.equal(movementKind(row({ direction: "outgoing" })), "ally_outgoing");
+  assert.equal(movementKind(row({ direction: "other" })), "other");
+  const colours = Object.values(KINDS).map((kind) => kind.colour);
+  assert.equal(new Set(colours).size, colours.length, "no two kinds share a colour");
+  assert.equal(arrowFor(row({ direction: "incoming", owner: "mine" }), 1_010_000).kind, "incoming");
 });
 
 test("nothing is drawn once a movement has landed or was retreated", () => {

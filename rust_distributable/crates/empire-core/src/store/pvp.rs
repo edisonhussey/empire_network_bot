@@ -279,7 +279,7 @@ impl Store {
         let limit = query.limit.clamp(1, MAX_PAGE);
         let mut sql = QueryBuilder::<Sqlite>::new("SELECT *, ");
         push_state(&mut sql, now_ms);
-        sql.push(" AS state FROM pvp_movement WHERE account_id = ");
+        sql.push(" AS state FROM pvp_movement WHERE ").push(PLAYER_ONLY).push(" AND account_id = ");
         sql.push_bind(canonical_account_id(account_id));
         if let Some(direction) = &query.direction {
             sql.push(" AND direction = ").push_bind(direction.clone());
@@ -339,7 +339,9 @@ impl Store {
     ) -> Result<Vec<PvpCount>, sqlx::Error> {
         let mut sql = QueryBuilder::<Sqlite>::new("SELECT direction, ");
         push_state(&mut sql, now_ms);
-        sql.push(" AS state, COUNT(*) AS count FROM pvp_movement WHERE account_id = ")
+        sql.push(" AS state, COUNT(*) AS count FROM pvp_movement WHERE ")
+            .push(PLAYER_ONLY)
+            .push(" AND account_id = ")
             .push_bind(canonical_account_id(account_id))
             .push(" GROUP BY direction, state ORDER BY direction, state");
         Ok(sql
@@ -357,6 +359,10 @@ impl Store {
             .collect())
     }
 }
+
+/// Rows recorded before NPC traffic was left out: a movement needs a player at the sending
+/// end, and at the receiving end unless it is one of our castles (`is_player_movement`).
+const PLAYER_ONLY: &str = "sender_name IS NOT NULL AND (target_name IS NOT NULL OR owner = 'mine')";
 
 fn push_state(sql: &mut QueryBuilder<'_, Sqlite>, now_ms: i64) {
     sql.push("CASE WHEN retreated_at_ms IS NOT NULL THEN 'retreated' WHEN land_at_ms > ")
@@ -552,6 +558,25 @@ mod tests {
                 PvpCount { direction: "outgoing".into(), state: PvpState::Landed, count: 1 },
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn rows_with_no_player_at_the_sending_end_are_hidden_as_npc_traffic() {
+        // Recorded before NPC movements were left out: no sender record, so no player.
+        let store = store().await;
+        let mut npc = movement(2, Some(5));
+        npc.0.sender.name = None;
+        let mut on_us = movement(3, Some(5));
+        on_us.0.target.name = None; // a target without a record is fine when it is ours
+        on_us.1.owner = Owner::Mine;
+        let mut elsewhere = movement(4, Some(5));
+        elsewhere.0.target.name = None; // ...but not when it is not
+        store.record_pvp_movements("ventrilo", &[movement(1, Some(5)), npc, on_us, elsewhere], 1_000).await.unwrap();
+        let page = store.pvp_page("ventrilo", &PvpQuery { limit: 50, ..PvpQuery::default() }, 2_000).await.unwrap();
+        let mids = page.rows.iter().map(|row| row.mid).collect::<Vec<_>>();
+        assert_eq!(mids, vec![3, 1]);
+        let counted: i64 = store.pvp_counts("ventrilo", 2_000).await.unwrap().iter().map(|count| count.count).sum();
+        assert_eq!(counted, 2, "the summary leaves them out too");
     }
 
     #[tokio::test]

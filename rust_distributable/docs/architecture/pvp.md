@@ -42,6 +42,30 @@ account. A movement whose sender is the account is not recorded at all. Without 
 identity (no `gbd` yet) a `gam` is skipped rather than guessed, because a classification is
 kept for good.
 
+## Only players
+
+A movement is recorded only when both ends are players: the sender must have a record in `O[]`,
+and so must the target unless it is one of the account's own castles. Robber barons, fortresses
+and other NPC castles have no player record, so their attacks, and our own armies coming home
+from them (which arrive as a movement from the NPC castle to ours and used to read as an attack on
+us), are NPC traffic and are left out (`is_player_movement`). Rows saved before this are hidden at
+read time by the same rule, in the list and in the counts. Packet facts: `docs/problems/9.md`.
+
+## Colours
+
+One scheme, in the tab and on the map's arrows (`views/pvp-model.js`, `KINDS`):
+
+| Kind | Which movements | Colour |
+| --- | --- | --- |
+| Support | between allies (`internal`) | light blue |
+| Incoming on us | an attack on one of our own castles | red |
+| Incoming on an ally | an attack on an alliance member's castle | orange |
+| Ally outgoing | an ally attacking someone outside | light green |
+| Our outgoing | our own attacks (the ledger; not on this tab) | green |
+
+The Direction column takes the kind's colour. The State column is green while a movement is
+active and uncoloured once it landed or was retreated.
+
 ## Learned once
 
 The MID is the identity. A later packet for a known MID never changes its timestamps, direction

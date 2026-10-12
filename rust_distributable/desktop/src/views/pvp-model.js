@@ -45,6 +45,30 @@ export function partyLabel(name, alliance) {
   return [name, alliance].filter(Boolean).join(" | ") || "unknown";
 }
 
+/// The colour scheme of the PVP tab and the map's arrows. What a movement is:
+///   support         an ally sending troops to an ally            light blue
+///   incoming        an attack on one of our own castles          red
+///   ally_incoming   an attack on an ally                         orange
+///   ally_outgoing   an ally attacking someone outside            light green
+///   own_outgoing    our own attack (the ledger, not this tab)    green
+///   other           neither end is ours                          grey
+export const KINDS = {
+  support: { label: "Support", colour: "#7cc8ff" },
+  incoming: { label: "Incoming on us", colour: "#ff5c5c" },
+  ally_incoming: { label: "Incoming on an ally", colour: "#ff9f43" },
+  ally_outgoing: { label: "Ally outgoing", colour: "#a6e3a1" },
+  own_outgoing: { label: "Our outgoing", colour: "#5ed08a" },
+  other: { label: "Other", colour: "#9aa0a6" },
+};
+
+/// Which of those a recorded movement is. Between allies it can only be support.
+export function movementKind(row) {
+  if (row.direction === "internal") return "support";
+  if (row.direction === "incoming") return row.owner === "mine" ? "incoming" : "ally_incoming";
+  if (row.direction === "outgoing") return "ally_outgoing";
+  return "other";
+}
+
 /// Whether the sender is in our alliance. Directions are judged from both ends;
 /// the sender is an ally exactly when the movement is outgoing or internal.
 export function senderIsAlly(row) {
@@ -63,6 +87,7 @@ export function arrowFor(row, nowMs) {
   return {
     mid: row.mid,
     colour: senderIsAlly(row) ? "out" : "in",
+    kind: movementKind(row),
     from: { x: row.sender_x, y: row.sender_y },
     to: { x: row.target_x, y: row.target_y },
     progress: span > 0 ? Math.min(1, Math.max(0, (nowMs - startMs) / span)) : 1,

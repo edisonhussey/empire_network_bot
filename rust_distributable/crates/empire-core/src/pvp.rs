@@ -236,9 +236,20 @@ pub struct Classified {
     pub owner: Owner,
 }
 
+/// Whether a movement is between players. A player's end always has a record in `O[]`;
+/// a movement whose sender has none (a robber baron, a fortress or any other NPC), or
+/// whose target has none and is not ours, is NPC traffic. That includes the way back:
+/// our own army returning from an NPC arrives as a movement from the NPC's castle to ours
+/// and would otherwise read as an attack on us. Neither is PVP, so neither is recorded.
+pub fn is_player_movement(movement: &SeenMovement, me: &AllianceIdentity, target_is_mine: bool) -> bool {
+    let known = |party: &Party| party.name.is_some();
+    known(&movement.sender) && (known(&movement.target) || target_is_mine || movement.target.player_id == Some(me.player_id))
+}
+
 /// Decide whether a movement is recorded and how it relates to the account.
 ///
-/// `None` for the account's own outward movements: the ledger already holds those.
+/// `None` for the account's own outward movements (the ledger already holds those) and
+/// for NPC movements ([`is_player_movement`]).
 /// `own_castles` are the `(kingdom, x, y)` tuples found when the account was
 /// initialised; a target matching one is `Owner::Mine`, everything else
 /// `Owner::Alliance`.
@@ -255,6 +266,9 @@ pub fn classify(
         movement.target.x,
         movement.target.y,
     )) || movement.target.player_id == Some(me.player_id);
+    if !is_player_movement(movement, me, target_is_mine) {
+        return None;
+    }
     let in_alliance = |party: &Party| {
         me.alliance_id
             .is_some_and(|alliance| party.alliance_id == Some(alliance))
@@ -419,6 +433,37 @@ mod tests {
         movement.target.alliance_id = Some(3026);
         let found = classify(&movement, &me(Some((3026, "top secret"))), &[]).unwrap();
         assert_eq!(found.direction, Direction::Internal);
+    }
+
+    fn without_record(mut movement: SeenMovement, sender: bool) -> SeenMovement {
+        let party = if sender { &mut movement.sender } else { &mut movement.target };
+        party.name = None;
+        party.alliance_id = None;
+        party.alliance_name = None;
+        party.alliance_raw = None;
+        movement
+    }
+
+    #[test]
+    fn a_movement_from_something_that_is_not_a_player_is_npc_traffic_and_ignored() {
+        // A robber baron's castle has no player record: an attack from it, or our own army
+        // coming home from it, is not PVP whoever the target is.
+        let npc = without_record(captured(), true);
+        assert!(classify(&npc, &me(Some((3652, "Electi"))), &[(0, 546, 520)]).is_none());
+        assert!(classify(&npc, &me(None), &[]).is_none());
+    }
+
+    #[test]
+    fn a_target_that_is_not_a_player_and_not_ours_is_npc_traffic() {
+        let npc = without_record(captured(), false);
+        assert!(classify(&npc, &me(Some((3026, "top secret"))), &[]).is_none(), "an ally attacking an NPC");
+    }
+
+    #[test]
+    fn our_own_castle_is_a_target_even_without_a_player_record() {
+        let ours = without_record(captured(), false);
+        let found = classify(&ours, &me(Some((3652, "Electi"))), &[(0, 546, 520)]).unwrap();
+        assert_eq!((found.direction, found.owner), (Direction::Incoming, Owner::Mine));
     }
 
     #[test]

@@ -6,13 +6,16 @@ Closing it, or leaving the tab, changes nothing about execution.
 
 ## What it shows
 
-* **Human-paced waits**: a log-scale chart (0.5 s to 120 s). Green points are the last 40
-  waits actually used, in order; a hollow ring marks one a global limit made longer. The
-  green band is 1 to 5 s, where about 60 % of waits are meant to fall, and a dashed line
-  marks the floor `m`. To the right, hollow points are the **projection** of the next 30
-  waits from the generator as it stands, labelled a projection. The line is not a clock
-  trace: the generator advances one step per action (`t = t + 1`), so the chart is in
-  actions. Beside it: the wave sum at the next step, the floor, how many waits have been
+* **Human-paced waits**: a log-scale chart (0.5 s to 120 s). The green curve is the wave sum
+  drawn continuously (the same waves as the generator, evaluated between whole steps as well
+  as at them, no noise). Green points are the last 40 waits actually used, placed by their own
+  step number; a hollow ring marks one a global limit made longer. Hollow points to the right of
+  the white "now" line are the **projection** of the next 30 waits. The window slides with time:
+  "now" stays put and the curve flows through it, moving through each wait as it elapses, so
+  nothing jumps when an action happens. The green band is 1 to 5 s, where about 60 % of waits
+  are meant to fall, and a dashed line marks the floor `m`. The generator advances one step per
+  action (`t = t + 1`), so the chart's unit is the action, not the second.
+  A slim **vertical slider** to its right is the test pace (below). Beside it: the wave sum at the next step, the floor, how many waits have been
   generated, the last generated wait and what it was made of (wave, noise, protocol
   minimum), the wait actually applied with any extra the limits added, the share of recent
   waits inside 1 to 5 s, and a live countdown to the next permitted action.
@@ -54,11 +57,22 @@ Closing it, or leaving the tab, changes nothing about execution.
   scheduling and health monitoring are not.
 * History is bounded: 300 signal points, 24 recent waits, 64 incidents.
 
+## The test pace
+
+The slider scales every human-paced wait the attack scheduler generates from now on, and the
+projection with it: 1 is the design (the default, and what a new session starts at), up is longer
+waits, down shorter. It is bounded, 0.5 to 4 (`PACE_MIN`, `PACE_MAX` in `empire-core/src/timing.rs`),
+on a log scale so 0.5 and 2 are equally far from 1; double-click or Home returns to 1. It is for
+testing: held in memory per session (it survives a reconnect, not a restart), never saved, and
+never applied to a wait already running, to the station's deadline-driven waits, or to the
+protocol minimums and the 4 s global `cra` spacing, which still hold at any pace.
+
 ## Endpoints
 
 | Endpoint | Returns |
 | --- | --- |
 | `GET /v1/dev` | the snapshot: timing (wave parameters, history, recent waits), scheduler, spatial (castle, spotlight, velocity, last selection) and health |
+| `POST /v1/dev/pace` | `{account_id, pace}`: the test pace of that account's waits; answers with what was kept |
 | `GET /v1/dev/map?kingdom=` | the kingdom's towers with the time each is next ready, and the main castle |
 | `GET /v1/dev/movements?kingdom=` | armies out or returning, with start and end timestamps |
 | `GET /v1/pvp?state=active&kingdom=` | other players' travelling movements, drawn as arrows (see [`pvp.md`](pvp.md)) |

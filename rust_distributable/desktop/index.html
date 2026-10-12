@@ -264,8 +264,9 @@
           <section class="card pvp-card">
             <div class="card-title"><div><p class="eyebrow">Movements seen</p><h2>PVP</h2></div><span id="pvp-who" class="dev-legend">–</span></div>
             <dl id="pvp-summary" class="dev-stats"></dl>
+            <p id="pvp-legend" class="dev-note dev-legend-line" aria-label="Colour key"></p>
             <div class="row-actions pvp-filters">
-              <label>Direction <select id="pvp-filter-direction"><option value="">All</option><option value="incoming">Incoming</option><option value="outgoing">Outgoing</option><option value="internal">Internal</option><option value="other">Other</option></select></label>
+              <label>Direction <select id="pvp-filter-direction"><option value="">All</option><option value="incoming">Incoming</option><option value="outgoing">Outgoing</option><option value="internal">Support (between allies)</option><option value="other">Other</option></select></label>
               <label>State <select id="pvp-filter-state"><option value="">All</option><option value="active">Active</option><option value="landed">Landed</option><option value="retreated">Retreated</option></select></label>
               <label>Target <select id="pvp-filter-owner"><option value="">All</option><option value="mine">Mine</option><option value="alliance">Alliance</option></select></label>
               <span id="pvp-loaded" class="dev-legend"></span>
@@ -283,8 +284,8 @@
         <section id="view-development" class="view" hidden>
           <div class="dev-grid">
             <section class="card dev-panel dev-timing">
-              <div class="card-title"><div><p class="eyebrow">Scheduler</p><h2>Human-paced waits</h2></div><span class="dev-legend"><i class="dev-key dots"></i>generated wait <i class="dev-key hollow"></i>projected next wait <i class="dev-key band"></i>1–5 s</span></div>
-              <canvas id="dev-wave" class="dev-canvas dev-wave-canvas" aria-label="Generated waits and the projection of the next ones"></canvas>
+              <div class="card-title"><div><p class="eyebrow">Scheduler</p><h2>Human-paced waits</h2></div><span class="dev-legend"><i class="dev-key dots"></i>used <i class="dev-key hollow"></i>next <i class="dev-key band"></i>1–5 s <i class="dev-key curve"></i>wave sum</span></div>
+              <div class="dev-wave-row"><canvas id="dev-wave" class="dev-canvas dev-wave-canvas" aria-label="Generated waits and the projection of the next ones"></canvas><div id="dev-pace" class="dev-pace"></div></div>
               <p class="dev-subhead">Frequency of the waits used <span id="dev-hist-summary" class="dev-legend"></span></p>
               <canvas id="dev-hist" class="dev-canvas dev-hist-canvas" aria-label="How often each human-paced wait length was used"></canvas>
               <dl class="dev-stats">

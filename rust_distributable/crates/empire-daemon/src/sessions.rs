@@ -15,7 +15,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::direct::{DevSnapshot, DirectStatus};
+use crate::direct::{DevSnapshot, DirectStatus, PaceControl};
 
 /// The shared cells one session writes and the service reads.
 #[derive(Clone)]
@@ -23,6 +23,8 @@ pub struct SessionCells {
     pub status: Arc<RwLock<DirectStatus>>,
     pub transport: Arc<RwLock<Option<mpsc::Sender<InjectionRequest>>>>,
     pub dev: Arc<RwLock<DevSnapshot>>,
+    /// Test pace of the attack scheduler's waits; 1 is the design.
+    pub pace: PaceControl,
 }
 
 impl SessionCells {
@@ -34,6 +36,7 @@ impl SessionCells {
             })),
             transport: Arc::new(RwLock::new(None)),
             dev: Arc::new(RwLock::new(DevSnapshot::default())),
+            pace: PaceControl::default(),
         }
     }
 }
@@ -253,6 +256,18 @@ mod tests {
         b.status.write().await.connected = true;
         b.status.write().await.connected_at_ms = Some(200);
         assert_eq!(sessions.default_account().await.as_deref(), Some("b"));
+    }
+
+    #[tokio::test]
+    async fn the_test_pace_belongs_to_one_session_and_starts_again_with_a_new_one() {
+        let sessions = Sessions::default();
+        let a = sessions.replace("a", |_| forever()).await;
+        let b = sessions.replace("b", |_| forever()).await;
+        a.pace.set(2.0);
+        assert_eq!(b.pace.get(), 1.0, "another account is not slowed");
+        assert_eq!(sessions.cells("A").await.unwrap().pace.get(), 2.0);
+        let fresh = sessions.replace("a", |_| forever()).await;
+        assert_eq!(fresh.pace.get(), 1.0, "a new session is back at the design pace");
     }
 
     #[tokio::test]

@@ -2,7 +2,7 @@ import { api } from "../api.js";
 import { accountContext } from "../account-context.js";
 import { element } from "../dom.js";
 import { shortDuration } from "./dev-math.js";
-import { countOf, kingdomLabel, liveState, mergeRows, partyLabel } from "./pvp-model.js";
+import { KINDS, countOf, kingdomLabel, liveState, mergeRows, movementKind, partyLabel } from "./pvp-model.js";
 
 /// The PVP tab: other players' movements the account has seen, from the service's
 /// own record. It reads, never writes.
@@ -18,7 +18,7 @@ const PAGE = 50;
 const REFRESH_MS = 5000;
 
 const STATE_LABEL = { active: "Active", landed: "Landed", retreated: "Retreated" };
-const DIRECTION_LABEL = { incoming: "Incoming", outgoing: "Outgoing", internal: "Internal", other: "Other" };
+const DIRECTION_LABEL = { incoming: "Incoming", outgoing: "Outgoing", internal: "Support", other: "Other" };
 
 export function createPvp() {
   const state = {
@@ -95,9 +95,16 @@ export function createPvp() {
     const lands = cell(landing(row, now), "pvp-lands");
     lands.dataset.land = String(row.land_at_ms);
     const status = cell(STATE_LABEL[current], "pvp-state");
+    // The direction is coloured by what the movement is; the state is green while it is
+    // live and uncoloured once it is over (see the colour key above the table).
+    const kind = movementKind(row);
+    const direction = cell(DIRECTION_LABEL[row.direction] ?? row.direction, "pvp-direction");
+    direction.style.color = KINDS[kind].colour;
+    direction.title = KINDS[kind].label;
+    line.dataset.kind = kind;
     line.append(
       cell(clock(row.detected_at_ms)),
-      cell(DIRECTION_LABEL[row.direction] ?? row.direction),
+      direction,
       status,
       party(row.sender_name, row.sender_alliance, row.sender_x, row.sender_y),
       party(row.target_name, row.target_alliance, row.target_x, row.target_y),
@@ -112,7 +119,25 @@ export function createPvp() {
     return line;
   }
 
+  /// The colour key, in the order the scheme was defined.
+  function renderLegend() {
+    const legend = $("#pvp-legend");
+    if (!legend || legend.childElementCount) return;
+    for (const kind of ["support", "incoming", "ally_incoming", "ally_outgoing", "own_outgoing"]) {
+      const item = element("span", "dev-legend-item", KINDS[kind].label);
+      const swatch = element("i", "pvp-swatch");
+      swatch.style.background = KINDS[kind].colour;
+      item.prepend(swatch);
+      legend.append(item);
+    }
+    const live = element("span", "dev-legend-item", "Active");
+    const dot = element("i", "pvp-swatch"); dot.style.background = "var(--ok)";
+    live.prepend(dot);
+    legend.append(live);
+  }
+
   function renderSummary() {
+    renderLegend();
     const box = $("#pvp-summary");
     const parts = ["incoming", "outgoing", "internal", "other"].map((direction) => {
       const block = element("div");

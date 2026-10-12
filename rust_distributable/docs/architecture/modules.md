@@ -40,4 +40,6 @@ One concern, one owner. If a rule exists in two places, one of them is a bug.
 | `dom.js` | `$` and `element` helpers |
 | `format.js` | Pure string formatting (no DOM, no state) |
 | `views/ruby-chart.js` | Dashboard chart renderer |
+| `views/pace-slider.js` | The vertical test-pace slider of the Development tab (control only) |
+| `views/pvp-model.js` | PVP rules and the movement colour scheme (pure) |
 | `main.js` | Remaining shared state and views, still to be split view by view |

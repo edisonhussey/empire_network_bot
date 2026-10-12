@@ -30,9 +30,9 @@ test("the totals count troops and loot only for commanders still out", () => {
 test("a countdown reads in the unit people think in, and never negative", () => {
   assert.equal(until(null, 0), "–");
   assert.equal(until(0, 5_000), "now");
-  assert.equal(until(42_000, 0), "in 42s");
-  assert.equal(until(252_000, 0), "in 4m 12s");
-  assert.equal(until(3 * 3_600_000 + 5 * 60_000, 0), "in 3h 05m");
+  assert.equal(until(42_000, 0), "42s");
+  assert.equal(until(252_000, 0), "4m 12s");
+  assert.equal(until(3 * 3_600_000 + 5 * 60_000, 0), "3h 05m");
   assert.equal(until(252_000, 0, true), "≤ 4m 12s", "an estimate is a bound");
   assert.equal(until(0, 5_000, true), "now");
   assert.equal(until(null, 0, true), "–");

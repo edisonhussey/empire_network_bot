@@ -177,7 +177,7 @@ mod tests {
     }
 
     fn threat(mid: i64) -> (SeenMovement, Classified) {
-        let party = |id: i64, x: i64| Party { player_id: Some(id), x, y: 500, ..Party::default() };
+        let party = |id: i64, x: i64| Party { player_id: Some(id), name: Some(format!("player {id}")), x, y: 500, ..Party::default() };
         (
             SeenMovement {
                 mid,

@@ -220,6 +220,11 @@ const LINK_SILENCE_MS: i64 = 25_000;
 pub(super) const UNEXPLAINED_REFUSAL_HOLD_MS: i64 = 30 * 60 * 1_000;
 
 impl Automation {
+    /// The test pace of the human-paced waits (1 is the design).
+    pub(super) fn set_pace(&mut self, pace: f64) {
+        self.scheduler.set_pace(pace);
+    }
+
     pub(super) fn new() -> Self {
         Self {
             phase: AutomationPhase::Idle { due_ms: 0 },

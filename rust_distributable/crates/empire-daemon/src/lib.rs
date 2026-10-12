@@ -179,7 +179,10 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:47821";
 /// 52: attack bots carry an optional support object (`support_bot_id` on `/v1/plans/modes`,
 /// `support: true` allocations are commanders kept free for it); the Troop overview marks
 /// them reserved and bounds a lost return by the outbound trip.
-pub const API_VERSION: u16 = 52;
+/// 53: `POST /v1/dev/pace` (test pace of the human-paced waits; `timing.pace` and
+/// `timing.max_interval_s` in `/v1/dev`); PVP leaves NPC movements out; the spotlight
+/// drifts instead of following each pick.
+pub const API_VERSION: u16 = 53;
 
 /// Is something already listening on the service port?
 ///
@@ -269,6 +272,7 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
         .route("/v1/direct/all", get(direct_all))
         .route("/v1/dev", get(dev_snapshot))
         .route("/v1/dev/shared", get(dev_shared))
+        .route("/v1/dev/pace", post(dev_pace))
         .route("/v1/dev/map", get(dev_map))
         .route("/v1/dev/movements", get(dev_movements))
         .route("/v1/pvp", get(pvp::pvp))
@@ -361,6 +365,7 @@ async fn direct_connect(
                 cells.status,
                 licence,
                 cells.dev,
+                cells.pace,
             ))
         })
         .await;
@@ -456,6 +461,29 @@ async fn dev_snapshot(
 ) -> Result<Json<direct::DevSnapshot>, ApiError> {
     let account = focus_account(&state, query.account_id).await?;
     Ok(Json(state.sessions.dev(&account).await.unwrap_or_default()))
+}
+
+#[derive(Debug, Deserialize)]
+struct PaceRequest {
+    account_id: Option<String>,
+    pace: f64,
+}
+
+/// Set the test pace of one account's human-paced waits (1 is the design; the service
+/// keeps it within `PACE_MIN..=PACE_MAX` and says what it kept). Affects the next waits and
+/// the projection, never a wait already running, the station's, or the protocol minimums.
+async fn dev_pace(
+    State(state): State<AppState>,
+    Json(request): Json<PaceRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let account = focus_account(&state, request.account_id).await?;
+    let cells = state
+        .sessions
+        .cells(&account)
+        .await
+        .ok_or_else(|| ApiError::bad_request("that account has no session"))?;
+    let kept = cells.pace.set(request.pace);
+    Ok(Json(serde_json::json!({ "account_id": account, "pace": kept })))
 }
 
 #[derive(Debug, Deserialize)]

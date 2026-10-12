@@ -172,6 +172,11 @@ pub struct Projected {
     pub interval_s: f64,
 }
 
+/// The pace multiplier's bounds. 1 is the design; below [`PACE_MIN`] the waits would be
+/// quicker than anything the design was checked at, so it is not offered.
+pub const PACE_MIN: f64 = 0.5;
+pub const PACE_MAX: f64 = 4.0;
+
 #[derive(Debug, Clone)]
 pub struct WaveTimer {
     config: TimingConfig,
@@ -179,6 +184,8 @@ pub struct WaveTimer {
     rng: Rng,
     floor_s: f64,
     index: u64,
+    /// Scales every generated wait; 1 unless a tester changed it.
+    pace: f64,
 }
 
 /// Frequencies near a simple fraction of a turn repeat after a few steps
@@ -314,7 +321,7 @@ impl WaveTimer {
         for wave in &mut waves {
             wave.amplitude *= scale;
         }
-        Self { config, waves, rng, floor_s, index: 0 }
+        Self { config, waves, rng, floor_s, index: 0, pace: 1.0 }
     }
 
     pub fn config(&self) -> &TimingConfig {
@@ -340,9 +347,23 @@ impl WaveTimer {
         self.waves.iter().map(Wave::value).sum()
     }
 
+    /// The pace multiplier in force.
+    pub fn pace(&self) -> f64 {
+        self.pace
+    }
+
+    /// Scale every wait from now on (the next ones and the projection). Clamped to
+    /// [`PACE_MIN`], [`PACE_MAX`]; a value that is not a number is 1. Returns what was set.
+    /// The protocol minimums and the global spacing are applied after this, so they hold
+    /// at any pace.
+    pub fn set_pace(&mut self, pace: f64) -> f64 {
+        self.pace = if pace.is_finite() { pace.clamp(PACE_MIN, PACE_MAX) } else { 1.0 };
+        self.pace
+    }
+
     fn to_seconds(&self, exponent: f64) -> f64 {
         let ceiling = (self.config.max_interval_s - self.floor_s).max(1.0).ln();
-        self.floor_s + exponent.clamp(-6.0, ceiling).exp()
+        (self.floor_s + exponent.clamp(-6.0, ceiling).exp()) * self.pace
     }
 
     /// The next `steps` values if parameters stayed as they are and there were no
@@ -584,6 +605,25 @@ mod tests {
         assert!(first < 1e-9, "step 0 is exact: {first}");
         let near = (projected[3].signal - actual[3].signal).abs();
         assert!(near < 0.5, "a few steps ahead is still close: {near}");
+    }
+
+    #[test]
+    fn the_pace_scales_waits_and_projection_and_is_bounded() {
+        let mut slow = timer(5);
+        let mut normal = timer(5);
+        assert_eq!(slow.pace(), 1.0, "1 unless changed");
+        assert_eq!(slow.set_pace(2.0), 2.0);
+        for (index, (a, b)) in slow.project(5).iter().zip(normal.project(5)).enumerate() {
+            assert!((a.interval_s - 2.0 * b.interval_s).abs() < 1e-9, "projection {index} is scaled");
+        }
+        let (a, b) = (slow.next_interval(0.0), normal.next_interval(0.0));
+        assert!((a.raw_s - 2.0 * b.raw_s).abs() < 1e-9, "the wait itself is scaled: {} vs {}", a.raw_s, b.raw_s);
+        assert_eq!(slow.set_pace(0.01), PACE_MIN, "bounded from below");
+        assert_eq!(slow.set_pace(1_000.0), PACE_MAX);
+        assert_eq!(slow.set_pace(f64::NAN), 1.0);
+        // The protocol minimum still holds at the quickest pace.
+        slow.set_pace(PACE_MIN);
+        assert!(slow.next_interval(2.0).interval_s >= 2.0);
     }
 
     #[test]

@@ -5,6 +5,7 @@ mod fortress_discovery;
 mod health;
 mod inventory;
 mod observe;
+mod pace;
 mod packets;
 mod pvp;
 mod recruitment;
@@ -20,6 +21,7 @@ use automation::*;
 use base_scan::*;
 use dev::CompletedView;
 pub use dev::{DevSnapshot, SpatialView};
+pub use pace::PaceControl;
 pub use station_view::JobView;
 use fortress_discovery::*;
 use health::*;
@@ -296,6 +298,7 @@ pub async fn run(
     status: Arc<RwLock<DirectStatus>>,
     licence: LicenceGate,
     dev: Arc<RwLock<DevSnapshot>>,
+    pace: PaceControl,
 ) {
     let endpoint = request.endpoint.clone();
     let account_id = request.credentials.player_name.trim().to_ascii_lowercase();
@@ -313,7 +316,7 @@ pub async fn run(
         if attempt > 0 {
             log_event(&store, &account_id, "connection.retry", &format!("retry {attempt}")).await;
         }
-        let result = run_inner(attempt_request.clone(), &store, &active_transport, &status, &licence, &dev).await;
+        let result = run_inner(attempt_request.clone(), &store, &active_transport, &status, &licence, &dev, &pace).await;
         *active_transport.write().await = None;
         // The session's own bookkeeping says how far this attempt got and how
         // long it lived; read it before it is overwritten below.
@@ -399,6 +402,7 @@ async fn run_inner(
     status: &Arc<RwLock<DirectStatus>>,
     licence: &LicenceGate,
     dev: &Arc<RwLock<DevSnapshot>>,
+    pace: &PaceControl,
 ) -> anyhow::Result<()> {
     licence.require_bootstrap("game_network").await?;
     let account_id = request.credentials.player_name.trim().to_ascii_lowercase();
@@ -1141,6 +1145,7 @@ async fn run_inner(
                     let now = now_ms();
                     let station_gate = station.gate(now);
                     automation.station_holds = station.holds(now);
+                    automation.set_pace(pace.get());
                     let mut sent = false;
                     if station_gate != Gate::Owned
                         && (station_gate == Gate::Open || recruitment.holds_transport())

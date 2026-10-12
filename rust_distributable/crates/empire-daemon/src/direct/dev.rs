@@ -59,6 +59,11 @@ pub struct TimingView {
     pub index: u64,
     /// The floor `m`, seconds: no generated wait is shorter.
     pub floor_s: f64,
+    /// The test pace in force: every wait, generated or projected, is this many times the
+    /// design's. 1 unless changed from the Development tab.
+    pub pace: f64,
+    /// No generated wait is longer than this at pace 1, seconds.
+    pub max_interval_s: f64,
     pub log_offset: f64,
     pub wave_sigma: f64,
     pub noise_sigma: f64,
@@ -175,6 +180,8 @@ impl Automation {
             timing: TimingView {
                 index: timer.index(),
                 floor_s: timer.floor_s(),
+                pace: timer.pace(),
+                max_interval_s: timer.config().max_interval_s,
                 log_offset: timer.config().log_offset,
                 wave_sigma: timer.config().wave_sigma,
                 noise_sigma: timer.config().noise_sigma,
