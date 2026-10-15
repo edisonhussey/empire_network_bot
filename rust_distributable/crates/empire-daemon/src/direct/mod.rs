@@ -7,6 +7,7 @@ mod inventory;
 mod observe;
 mod pace;
 mod packets;
+mod portal_id;
 mod pvp;
 mod recruitment;
 mod scheduler;
@@ -15,6 +16,8 @@ mod station_view;
 mod version;
 #[cfg(test)]
 mod station_tests;
+#[cfg(test)]
+mod grouping_tests;
 #[cfg(test)]
 mod tests;
 
@@ -79,10 +82,6 @@ const US1_ENDPOINT: &str = "wss://ep-live-us1-game.goodgamestudios.com/";
 const WORLD2_ENDPOINT: &str = "wss://ep-live-world2-game.goodgamestudios.com/";
 const US1_SERVER_HEADER: &str = "EmpireEx_21";
 const WORLD2_SERVER_HEADER: &str = "EmpireEx_49";
-const VENTRILO_PORTAL_ACCOUNT_ID: &str = "1780270034676433896";
-// Confirmed by Pingpoko's successful `lli` capture. This is a portal identity,
-// not the much smaller in-world owner ID, and it is account-specific.
-const PINGPOKO_PORTAL_ACCOUNT_ID: &str = "1782860727866351909";
 
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -94,14 +93,10 @@ pub enum GameServer {
 }
 
 impl GameServer {
-    fn connection(self) -> (&'static str, &'static str, &'static str) {
+    fn connection(self) -> (&'static str, &'static str) {
         match self {
-            GameServer::Us1 => (US1_ENDPOINT, US1_SERVER_HEADER, VENTRILO_PORTAL_ACCOUNT_ID),
-            GameServer::World2 => (
-                WORLD2_ENDPOINT,
-                WORLD2_SERVER_HEADER,
-                PINGPOKO_PORTAL_ACCOUNT_ID,
-            ),
+            GameServer::Us1 => (US1_ENDPOINT, US1_SERVER_HEADER),
+            GameServer::World2 => (WORLD2_ENDPOINT, WORLD2_SERVER_HEADER),
         }
     }
 }
@@ -111,6 +106,10 @@ pub struct InitializeAccountRequest {
     pub server: GameServer,
     pub username: String,
     pub password: String,
+    /// Optional portal identity for the login's `AID`. Remembered per account, so only the
+    /// first sign-in needs it; see `portal_id`.
+    #[serde(default)]
+    pub portal_account_id: Option<String>,
     #[serde(default = "default_scan_radius")]
     pub scan_radius: u16,
     /// Which permanent kingdoms to initialise, in the order to walk them, each
@@ -128,26 +127,31 @@ const fn default_scan_radius() -> u16 {
 }
 
 impl InitializeAccountRequest {
-    pub fn into_direct(self) -> DirectConnectRequest {
-        let (endpoint, server_header, portal_account_id) = self.server.connection();
+    pub async fn into_direct(self, store: &Store) -> Result<DirectConnectRequest, sqlx::Error> {
+        let (endpoint, server_header) = self.server.connection();
+        let player_name = self.username.trim().to_owned();
+        let account_id = empire_core::store::canonical_account_id(&player_name);
+        let portal_account_id =
+            portal_id::resolve(store, &account_id, self.portal_account_id.as_deref()).await?;
+        portal_id::remember(store, &account_id, &portal_account_id, now_ms()).await?;
         let settings = SessionSettings {
             map_scan_radius: self.scan_radius,
             kingdom_scans: self.kingdom_scans,
             server_header: server_header.to_owned(),
             ..SessionSettings::default()
         };
-        DirectConnectRequest {
+        Ok(DirectConnectRequest {
             endpoint: endpoint.to_owned(),
             credentials: LoginCredentials {
-                player_name: self.username.trim().to_owned(),
-                portal_account_id: portal_account_id.to_owned(),
+                player_name,
+                portal_account_id,
                 password: Some(self.password),
                 login_token: None,
                 registration_token: None,
             },
             settings,
             reuse_existing_map: self.reuse_existing_map,
-        }
+        })
     }
 }
 

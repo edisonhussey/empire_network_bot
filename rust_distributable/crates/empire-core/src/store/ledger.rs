@@ -417,6 +417,12 @@ impl Store {
         }
         self.record_fortress_result(&account_id, kid, x, y, loot.map(|v| v.1), observed_at_ms)
             .await?;
+        // A won attack on a tower raises its victory count (and so its level) by one. Only
+        // here, after the return matched an in-flight march: a replayed return matches no
+        // march, so it cannot count twice.
+        if hunt::return_area_type(payload) == Some(hunt::RBC_AREA_TYPE) && hunt::return_is_victory(payload) {
+            self.record_rbc_victory(&account_id, kid, x, y).await?;
+        }
         Ok(true)
     }
 

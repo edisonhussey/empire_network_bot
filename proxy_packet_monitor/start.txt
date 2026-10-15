@@ -1,4 +1,4 @@
 cd proxy_packet_monitor
-../venv/bin/python -m backend.web_server
+./run.sh
 
-Then open http://127.0.0.1:8799, select Incoming, set your kingdom and castle coordinates, and click Start proxy. The full setup is in the [README](/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/proxy_packet_monitor/README.md).
+Then open http://127.0.0.1:8008, select Incoming, set your kingdom and castle coordinates, and click Start proxy. The full setup is in the [README](/Users/edisonhussey/Desktop/github_gge_bot/empire_network_bot/proxy_packet_monitor/README.md).

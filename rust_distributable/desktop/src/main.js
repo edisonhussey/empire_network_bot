@@ -1485,6 +1485,9 @@ async function refresh() {
     if (direct.error) $("#direct-result").textContent = direct.error;
     promptForMissingLicence(direct.error);
     if (ready) { $("#initialize").disabled = false; $("#initialize").textContent = "Initialize account"; $("#direct-result").textContent = "Account connected and ready."; }
+    // A login that fails after the request was accepted (no licence, wrong password) never reaches
+    // "ready", so without this the button stays on "Initializing…" and cannot be retried.
+    if (direct.phase === "failed") { $("#initialize").disabled = false; $("#initialize").textContent = "Initialize account"; }
     if (currentLicence?.stage === "unactivated") {
       const licence = await api("/licence");
       currentLicence = licence;
@@ -1563,7 +1566,7 @@ $("#licence-form").addEventListener("submit", async (event) => { event.preventDe
 $("#add-credits").addEventListener("click", () => showActivation(true));
 $("#close-activation").addEventListener("click", () => { if (currentLicence?.active) activation.hidden = true; });
 $("#toggle-password").addEventListener("click", (event) => { const password = $("#password"); const showing = password.type === "text"; password.type = showing ? "password" : "text"; event.currentTarget.textContent = showing ? "Show" : "Hide"; });
-$("#direct-form").addEventListener("submit", async (event) => { event.preventDefault(); const button = $("#initialize"); const password = $("#password"); button.disabled = true; button.textContent = "Initializing…"; $("#direct-result").textContent = "OpenAuto is signing in, discovering the account, and preparing its initial map data."; const radius = Number($("#scan-radius").value) || 0; try { await api("/accounts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ server: $("#server").value, username: $("#player-name").value.trim(), password: password.value, scan_radius: radius, kingdom_scans: kingdomScans(radius), reuse_existing_map: false }) }); password.value = ""; addingAccount = false; accountContext.setViewed($("#player-name").value.trim()); await refresh(); } catch (error) { password.value = ""; button.disabled = false; button.textContent = "Initialize account"; $("#direct-result").textContent = error.message; } });
+$("#direct-form").addEventListener("submit", async (event) => { event.preventDefault(); const button = $("#initialize"); const password = $("#password"); button.disabled = true; button.textContent = "Initializing…"; $("#direct-result").textContent = "OpenAuto is signing in, discovering the account, and preparing its initial map data."; const radius = Number($("#scan-radius").value) || 0; try { await api("/accounts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ server: $("#server").value, username: $("#player-name").value.trim(), password: password.value, portal_account_id: $("#portal-account-id").value.trim() || undefined, scan_radius: radius, kingdom_scans: kingdomScans(radius), reuse_existing_map: false }) }); password.value = ""; addingAccount = false; accountContext.setViewed($("#player-name").value.trim()); await refresh(); } catch (error) { password.value = ""; button.disabled = false; button.textContent = "Initialize account"; $("#direct-result").textContent = error.message; } });
 $("#refresh-accounts").addEventListener("click", refreshAccounts);
 $("#add-account").addEventListener("click", () => {
   addingAccount = !addingAccount;

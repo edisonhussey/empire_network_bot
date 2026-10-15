@@ -39,9 +39,10 @@ impl MapTarget {
     }
 }
 
-/// Sands level codes are compressed; this is the inverse the Python bot used.
+/// Sands level from the raw victory count in a map row. Kept for the callers that only
+/// know Sands; the rule for every kingdom is [`crate::dungeon::level_for`].
 pub fn sands_level(raw: i64) -> i64 {
-    (1.9 * (raw.max(0) as f64).powf(0.555)).floor() as i64 + 35
+    crate::dungeon::level_for(raw.max(0), 1)
 }
 
 /// RBC rows from a `gaa` response.
@@ -64,7 +65,7 @@ pub fn rbc_targets_from_map(payload: &Value) -> Vec<MapTarget> {
                 kingdom_id,
                 x: row.get(1)?.as_i64()?,
                 y: row.get(2)?.as_i64()?,
-                level: raw_level.map(sands_level),
+                level: raw_level.map(|raw| crate::dungeon::level_for(raw, kingdom_id)),
             })
         })
         .collect()
@@ -447,6 +448,17 @@ pub fn loot_from_return(cat_payload: &Value) -> Option<(i64, i64)> {
         }
     }
     Some((coins, rubies))
+}
+
+/// A return that brought loot: the attack was won. This is what raises a robber baron's
+/// victory count; a lost attack returns no coins or rubies.
+pub fn return_is_victory(cat_payload: &Value) -> bool {
+    loot_from_return(cat_payload).is_some_and(|(coins, rubies)| coins > 0 || rubies > 0)
+}
+
+/// Area type of the attacked object in a return (`A.M.SA[0]`): 2 for a tower, 11 for a fortress.
+pub fn return_area_type(cat_payload: &Value) -> Option<i64> {
+    cat_payload.pointer("/A/M/SA/0").and_then(Value::as_i64)
 }
 
 /// Result flag from a return packet (`cat`), i.e. `A.S`.

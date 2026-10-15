@@ -32,8 +32,9 @@ The server replies with a dense payload of all entities within the bounding box,
 
 A tower row is `[2, x, y, -1, level_raw, remaining_s, 1]`. `remaining_s` is the
 seconds until the server lets the tower be attacked again, and `-1` (or any
-non-positive value) means it is ready. Levels in Sands are `level_raw` mapped
-through `sands_level` (raw `112` is level 61).
+non-positive value) means it is ready. The fifth field is the tower's **victory count**, not its
+level: the level is `floor(1.9 * count^0.555) + offset(kingdom)` in every kingdom (Sands raw `112`
+is level 61), see [`robber_baron_level_formula.md`](../game_infrastructure/robber_baron_level_formula.md).
 
 ```jsonc
 {"AI":[[2,584,626,-1,112,9504,1]]}   // cooling for 9504 s

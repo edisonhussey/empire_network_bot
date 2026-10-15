@@ -5,6 +5,9 @@ fire, sand). Fortresses are selected separately and are not covered here. The co
 `empire-core/src/targeting.rs`; the store feeds it through
 `reserve_rbc_target_with`.
 
+Which *kingdom* to attack in next (staying put instead of alternating) is
+[`kingdom-grouping.md`](kingdom-grouping.md).
+
 Selection is pure arithmetic over towers the database already marks ready (cooldown
 over, not leased, server says ready, level in range). It costs **no network
 requests**: the only packets are the ones that attack the chosen tower. Readiness

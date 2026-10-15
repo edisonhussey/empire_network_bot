@@ -1,6 +1,7 @@
 """One SQLite database per recording; source text and decoded payload are both retained."""
 from __future__ import annotations
 import json
+from contextlib import closing
 import os
 import sqlite3
 import threading
@@ -127,7 +128,7 @@ def recover_sessions(root: Path) -> int:
     recovered = 0
     for path in root.glob("*.partial.sqlite3"):
         try:
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn:
                 if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     continue
                 info = metadata(conn)
@@ -145,7 +146,7 @@ def list_sessions(root: Path) -> list[dict]:
     result = []
     for path in root.glob("*.sqlite3"):
         try:
-            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
                 entry = metadata(conn)
                 result.append(entry)
         except (sqlite3.Error, ValueError):
@@ -154,7 +155,7 @@ def list_sessions(root: Path) -> list[dict]:
 
 
 def events(root: Path, session_id: str, types: list[str], query: str, limit: int, offset: int) -> dict:
-    with sqlite3.connect(db_path(root, session_id)) as conn:
+    with closing(sqlite3.connect(db_path(root, session_id))) as conn:
         conn.row_factory = sqlite3.Row
         where, params = [], []
         if types:
@@ -171,7 +172,7 @@ def events(root: Path, session_id: str, types: list[str], query: str, limit: int
 
 
 def event(root: Path, session_id: str, seq: int) -> dict:
-    with sqlite3.connect(db_path(root, session_id)) as conn:
+    with closing(sqlite3.connect(db_path(root, session_id))) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT " + event_columns(conn) + " FROM events WHERE seq=?", (seq,)).fetchone()
         if row is None:
@@ -182,7 +183,7 @@ def event(root: Path, session_id: str, seq: int) -> dict:
 
 
 def export_session(root: Path, session_id: str, destination: Path) -> None:
-    with sqlite3.connect(db_path(root, session_id)) as conn:
+    with closing(sqlite3.connect(db_path(root, session_id))) as conn:
         conn.row_factory = sqlite3.Row
         info = metadata(conn)
         temp = destination.with_suffix(destination.suffix + ".tmp")

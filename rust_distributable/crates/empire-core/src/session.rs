@@ -11,6 +11,8 @@ pub const CLIENT_VERSION: &str = "1170022";
 #[derive(Clone, Deserialize)]
 pub struct LoginCredentials {
     pub player_name: String,
+    /// Optional: sent as the login's `AID`, empty when this machine has never learned one.
+    #[serde(default)]
     pub portal_account_id: String,
     #[serde(default)]
     pub password: Option<String>,

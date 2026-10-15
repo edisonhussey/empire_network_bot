@@ -24,6 +24,9 @@ pub struct RbcTarget {
     pub x: i64,
     pub y: i64,
     pub level: Option<i64>,
+    /// The server's victory count for this tower (`row[4]`), from which `level` and the
+    /// attacks still needed derive (see [`crate::dungeon`]). `None` for Berimond camps.
+    pub victory_count: Option<i64>,
     /// Seconds until the server lets this tower be hit again, as reported by
     /// the map row (`[2, x, y, -1, level, remaining, 1]`, `-1` when ready).
     /// Zero means ready.
@@ -190,10 +193,10 @@ pub fn rbc_targets(payload: &Value) -> Vec<RbcTarget> {
             if area_type != RBC_AREA_TYPE && area_type != BERIMOND_CAMP_TYPE {
                 return None;
             }
-            let raw_level = if area_type == BERIMOND_CAMP_TYPE {
-                1
+            let victory_count = if area_type == BERIMOND_CAMP_TYPE {
+                None
             } else {
-                row.get(4)?.as_i64()?
+                Some(row.get(4)?.as_i64()?)
             };
             // Berimond camps have no cooldown; only towers report one.
             let cooldown_remaining_s = if area_type == RBC_AREA_TYPE {
@@ -205,7 +208,9 @@ pub fn rbc_targets(payload: &Value) -> Vec<RbcTarget> {
                 kingdom_id,
                 x: row.get(1)?.as_i64()?,
                 y: row.get(2)?.as_i64()?,
-                level: (kingdom_id == SANDS_KINGDOM_ID).then(|| sands_level(raw_level)),
+                // Every kingdom's towers get a level, so a task can be given a band anywhere.
+                level: victory_count.map(|count| crate::dungeon::level_for(count, kingdom_id)),
+                victory_count,
                 cooldown_remaining_s,
             })
         })
@@ -251,10 +256,6 @@ fn castle_row(kingdom_id: i64, row: &[Value]) -> Option<OwnedCastle> {
         castle_id: row.get(3)?.as_i64()?,
         name: row.get(10).and_then(Value::as_str).unwrap_or("").to_owned(),
     })
-}
-
-fn sands_level(value: i64) -> i64 {
-    (1.9 * (value.max(0) as f64).powf(0.555)).floor() as i64 + 35
 }
 
 #[cfg(test)]

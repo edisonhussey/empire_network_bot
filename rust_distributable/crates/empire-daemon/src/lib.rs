@@ -335,7 +335,6 @@ async fn direct_connect(
         ));
     }
     if request.credentials.player_name.is_empty()
-        || request.credentials.portal_account_id.is_empty()
         || (request
             .credentials
             .password
@@ -348,7 +347,7 @@ async fn direct_connect(
                 .is_none_or(str::is_empty))
     {
         return Err(ApiError::bad_request(
-            "player, account ID, and either password or login token are required",
+            "player and either password or login token are required",
         ));
     }
     // Only this account's own session is replaced; others keep running.
@@ -385,7 +384,11 @@ async fn initialize_account(
             "scan radius must be between 0 and 500",
         ));
     }
-    direct_connect(State(state), Json(request.into_direct())).await
+    let request = request
+        .into_direct(&state.store)
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    direct_connect(State(state), Json(request)).await
 }
 
 /// End one account's session. The account is named with `?account_id=`; without it the

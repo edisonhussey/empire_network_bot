@@ -12,6 +12,8 @@ pub mod hunt;
 pub mod injection;
 #[cfg(feature = "application")]
 pub mod licence;
+pub mod dungeon;
+pub mod grouping;
 pub mod pacing;
 pub mod paths;
 #[cfg(feature = "application")]

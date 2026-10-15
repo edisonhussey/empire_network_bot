@@ -145,6 +145,26 @@ the plain counts always did. See [`troop-overview.md`](troop-overview.md).
 
 See [`troop-overview.md`](troop-overview.md) and [`station.md`](station.md).
 
+## V25: robber baron victory counts
+
+`rbc_target.victory_count` and `rbc_target.hits_to_next` (both nullable). The server sends a
+tower's victory count, not its level; the level is derived from the count and the kingdom
+([`robber_baron_level_formula.md`](../game_infrastructure/robber_baron_level_formula.md),
+`empire-core/src/dungeon.rs`). `level` stays, because selection filters on it, but it is now
+written for **every** kingdom (before, only Sands got one, so a task band in any other kingdom
+matched nothing). `hits_to_next` is how many more wins the next level needs.
+
+* A map row sets all three together (`upsert_rbc_targets`), so the server's own number always
+  wins on the next scan.
+* A **returned attack that brought loot** adds one win (`record_rbc_victory`, called from
+  `apply_attack_return` after the return has matched its in-flight march, so a replayed return
+  cannot count twice) and recomputes `level` and `hits_to_next`: no map read needed. Other
+  players' attacks are only learned from the next scan.
+* A row with no count (every row stored before V25 until it is next seen) is never advanced; a
+  guessed count would be worse than an old level.
+* The migration also drops the stored `map_scan_window` rows (not Berimond's), so every kingdom
+  is read once more and the rows fill in. This is a one-time extra scan, as V17 was for fortresses.
+
 ## Size
 
 For one account running one troop type flat out:

@@ -76,7 +76,10 @@ if [ "$BUILD" -eq 1 ]; then
     echo "==> clean-building $TAURI_VERSION"
     (cd "$DESKTOP" && cargo clean --manifest-path src-tauri/Cargo.toml)
     (cd "$DESKTOP" && npm ci)
-    (cd "$DESKTOP" && npm run tauri build)
+    # `strip = true` drops symbols but not the panic-location strings, which carry the
+    # builder's home directory. Remap them so a shared dmg does not name the machine's user.
+    RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup --remap-path-prefix=$ROOT=/src" \
+        bash -c 'cd "$1" && npm run tauri build' _ "$DESKTOP"
 fi
 
 DMG="$BUNDLE/dmg/OpenAuto_${TAURI_VERSION}_aarch64.dmg"
@@ -98,6 +101,12 @@ embedded_state="$(find "$APP" -type f \( -name '*.sqlite3' -o -name '*.sqlite3-w
 if [ -n "$embedded_state" ]; then
     echo "refusing to release app bundle containing user state: $embedded_state" >&2
     exit 1
+fi
+
+# The binary is what gets shared, so it must not name the builder's account.
+leaked="$(strings -a "$BIN" | grep -c "$HOME" || true)"
+if [ "$leaked" -gt 0 ]; then
+    echo "WARNING: the binary contains $leaked string(s) with $HOME; build with scripts/release.sh (not --no-build) to remap them" >&2
 fi
 
 # ----------------------------------------------------------------- staleness --

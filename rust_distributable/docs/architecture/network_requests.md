@@ -82,7 +82,7 @@ castle's coordinates, and the 6 tile requests start at
 | Field | Meaning |
 |---|---|
 | `NOM` | Player name. **This is the account identity** — never the portal id. |
-| `AID` | Portal account id. **Shared by every account under one login** — cannot identify an account. |
+| `AID` | Portal account id. **Shared by every account under one login** — cannot identify an account. Not compiled in: optional on the initialize form, remembered per account in `app_state` (`portal_account_id.<account>`), a generated 19-digit id if never supplied, as pygge sends a fixed unrelated one for every account (`direct/portal_id.rs`). |
 | `PW` | Password. Mutually exclusive with `LT`. |
 | `LT` | Login token (alternative to `PW`). |
 | `RCT` | Registration token, optional. |

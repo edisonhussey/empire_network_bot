@@ -12,6 +12,7 @@ about the system that uses them.
 | [`accounts.md`](accounts.md) | Several accounts at once: sessions, per-account licences and tiers, the account switcher and colour-coded maps |
 | [`runtime-flow.md`](runtime-flow.md) | How the window, daemon and game server fit together |
 | [`target-selection.md`](target-selection.md) | Which tower is attacked next: the spotlight algorithm, momentum, tuning and measured trade-offs |
+| [`kingdom-grouping.md`](kingdom-grouping.md) | Which kingdom is attacked in next: staying put instead of alternating, the short wait, the streak cap and its settings |
 | [`timing.md`](timing.md) | The stochastic wait generator and how global limits override it |
 | [`response-health.md`](response-health.md) | Missing and null responses, the rolling-hour tolerance and the safe pause |
 | [`development-tab.md`](development-tab.md) | The read-only Development tab: timing graph, kingdom map, movements |

@@ -90,6 +90,7 @@ async fn seed_account(store: &Store, account_id: &str) {
                 x: 600,
                 y: 610,
                 level: Some(61),
+                victory_count: None,
                 cooldown_remaining_s: 0,
             }],
             NOW,
@@ -818,6 +819,7 @@ async fn fortress_discovery_sweep_is_durable_and_never_repeats_a_block() {
                 x: 600,
                 y: 610,
                 level: Some(61),
+                victory_count: None,
                 cooldown_remaining_s: 0,
             }],
             NOW,
@@ -2176,6 +2178,7 @@ async fn a_tower_the_server_reports_cooling_is_not_selected_until_it_is_ready() 
         x: 600,
         y: 610,
         level: Some(61),
+        victory_count: None,
         cooldown_remaining_s: 600,
     };
     store.upsert_rbc_targets("ventrilo", std::slice::from_ref(&cooling), NOW).await.unwrap();
@@ -2208,7 +2211,7 @@ async fn a_tower_the_server_reports_cooling_is_not_selected_until_it_is_ready() 
     store
         .refresh_rbc_cooldowns(
             "ventrilo",
-            &[RbcTarget { cooldown_remaining_s: 0, ..cooling }, unknown],
+            &[RbcTarget { victory_count: None, cooldown_remaining_s: 0, ..cooling }, unknown],
             NOW + 1_000,
         )
         .await
@@ -2231,6 +2234,7 @@ async fn advanced_mode_is_biased_to_near_towers_even_when_far_ones_are_staler() 
         x,
         y,
         level: Some(61),
+        victory_count: None,
         cooldown_remaining_s: 0,
     };
     // Source (593, 613). Distances: 5, 7.6 (the tower `seed_account` adds at
@@ -2316,7 +2320,7 @@ async fn the_development_map_reads_towers_castle_and_open_marches_without_writin
     store
         .upsert_rbc_targets(
             "ventrilo",
-            &[RbcTarget { kingdom_id: 1, x: 640, y: 640, level: Some(50), cooldown_remaining_s: 1_000 }],
+            &[RbcTarget { kingdom_id: 1, x: 640, y: 640, level: Some(50), victory_count: None, cooldown_remaining_s: 1_000 }],
             NOW,
         )
         .await
@@ -2492,6 +2496,7 @@ async fn a_running_mode_compiles_tasks_and_reserves_each_target_once() {
                 x: 600,
                 y: 610,
                 level: Some(61),
+                victory_count: None,
                 cooldown_remaining_s: 0,
             }],
             NOW,
@@ -3389,4 +3394,105 @@ fn reserved_commanders_need_a_support_and_a_slot_needs_a_task_or_support() {
     assert!(draft(vec![slot("", true), slot("t", false)], Some(1)).validate().is_ok());
     assert!(draft(vec![slot("", false)], Some(1)).validate().is_err(), "a slot of nothing");
     assert!(draft(vec![slot("t", false)], None).validate().is_ok(), "a bot without support is as before");
+}
+
+// ---- robber baron victory counts and levels (see `crate::dungeon`) ----
+
+fn tower_row(kingdom_id: i64, x: i64, y: i64, count: i64) -> RbcTarget {
+    RbcTarget {
+        kingdom_id,
+        x,
+        y,
+        level: Some(crate::dungeon::level_for(count, kingdom_id)),
+        victory_count: Some(count),
+        cooldown_remaining_s: 0,
+    }
+}
+
+#[tokio::test]
+async fn a_map_row_stores_the_count_and_what_the_next_level_needs_in_every_kingdom() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    // One tower per kingdom, counts read in game: green 11 is level 8 with 3 to go.
+    let rows = [tower_row(0, 647, 637, 11), tower_row(2, 624, 647, 0), tower_row(3, 698, 581, 7)];
+    store.upsert_rbc_targets("ventrilo", &rows, NOW).await.unwrap();
+    let stored: Vec<(i64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT kingdom_id, level, victory_count, hits_to_next FROM rbc_target
+         WHERE x IN (647, 624, 698) ORDER BY kingdom_id",
+    )
+    .fetch_all(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(stored, vec![(0, 8, 11, 3), (2, 20, 0, 1), (3, 50, 7, 1)]);
+}
+
+#[tokio::test]
+async fn a_won_attack_raises_the_count_and_level_without_another_map_read() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    store.upsert_rbc_targets("ventrilo", &[tower_row(0, 643, 635, 13)], NOW).await.unwrap();
+    // 13 is level 8 with 1 to go: the next win makes it level 9 needing 3 more.
+    let next = store.record_rbc_victory("Ventrilo", 0, 643, 635).await.unwrap().unwrap();
+    assert_eq!((next.victories, next.level, next.hits_to_next), (14, 9, 3));
+    let after = store.rbc_progress("ventrilo", 0, 643, 635).await.unwrap().unwrap();
+    assert_eq!(after, next);
+    let level: i64 = sqlx::query_scalar("SELECT level FROM rbc_target WHERE x = 643")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(level, 9, "the column selection filters on moves with it");
+}
+
+#[tokio::test]
+async fn a_tower_whose_count_was_never_read_is_not_guessed_at() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    let old_row = RbcTarget { victory_count: None, level: None, ..tower_row(0, 650, 650, 0) };
+    store.upsert_rbc_targets("ventrilo", &[old_row], NOW).await.unwrap();
+    assert!(store.record_rbc_victory("ventrilo", 0, 650, 650).await.unwrap().is_none());
+    assert!(store.record_rbc_victory("ventrilo", 0, 1, 1).await.unwrap().is_none(), "unknown tower");
+    assert!(store.rbc_progress("ventrilo", 0, 650, 650).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_looted_return_counts_one_win_once_and_an_empty_one_counts_none() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    // Sands count 111 is level 60; one win makes it 112, level 61.
+    store.upsert_rbc_targets("ventrilo", &[tower_row(1, 600, 610, 111)], NOW).await.unwrap();
+    for id in [9100, 9101] {
+        store.record_march(&march(Some("sand"), id, 7)).await.unwrap();
+    }
+    let lost = json!({"A":{"A":[],"M":{"KID":1,"SA":[2,600,610],"TA":[12,593,613],"TT":205,"PT":0},
+        "UM":{"L":{"ID":7}},"G":[],"S":3}});
+    assert!(store.apply_attack_return("ventrilo", &lost, NOW + 100_000, 7000).await.unwrap());
+    assert_eq!(store.rbc_progress("ventrilo", 1, 600, 610).await.unwrap().unwrap().victories, 111, "no loot, no win");
+
+    let won = json!({"A":{"A":[],"M":{"KID":1,"SA":[2,600,610],"TA":[12,593,613],"TT":205,"PT":0},
+        "UM":{"L":{"ID":7}},"G":[["C1",22000]],"S":0}});
+    assert!(store.apply_attack_return("ventrilo", &won, NOW + 200_000, 7000).await.unwrap());
+    let p = store.rbc_progress("ventrilo", 1, 600, 610).await.unwrap().unwrap();
+    assert_eq!((p.victories, p.level), (112, 61));
+    // The same return arriving again (a replay) matches no in-flight march: not counted twice.
+    assert!(!store.apply_attack_return("ventrilo", &won, NOW + 300_000, 7000).await.unwrap());
+    assert_eq!(store.rbc_progress("ventrilo", 1, 600, 610).await.unwrap().unwrap().victories, 112);
+}
+
+#[tokio::test]
+async fn a_fresh_map_read_overrides_the_incremented_count() {
+    let store = Store::open("sqlite::memory:").await.unwrap();
+    seed_account(&store, "ventrilo").await;
+    store.upsert_rbc_targets("ventrilo", &[tower_row(0, 647, 637, 11)], NOW).await.unwrap();
+    store.record_rbc_victory("ventrilo", 0, 647, 637).await.unwrap();
+    // Other players also hit it: the server's own number wins on the next scan.
+    store.upsert_rbc_targets("ventrilo", &[tower_row(0, 647, 637, 15)], NOW + 1).await.unwrap();
+    let p = store.rbc_progress("ventrilo", 0, 647, 637).await.unwrap().unwrap();
+    assert_eq!((p.victories, p.level, p.hits_to_next), (15, 9, 2));
+}
+
+#[tokio::test]
+async fn existing_towers_get_their_map_windows_re_read_by_the_upgrade() {
+    // V25 drops stored windows (not Berimond's) so every tower is read once with its count.
+    let all_sql = schema::MIGRATIONS.last().unwrap().join(" ");
+    assert!(all_sql.contains("victory_count") && all_sql.contains("DELETE FROM map_scan_window"));
 }

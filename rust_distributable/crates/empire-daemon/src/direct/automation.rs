@@ -1,4 +1,5 @@
 use super::*;
+use empire_core::grouping::{KingdomGrouping, SETTINGS_KEY as GROUPING_KEY, Streak};
 use empire_core::planning::TargetAlgorithm;
 
 #[derive(Debug)]
@@ -90,6 +91,10 @@ pub(super) struct Automation {
     /// one: the troops are not there, the server refuses, and repeated refusals lock
     /// the account.
     pub(super) station_holds: Vec<(i64, i64, i64)>,
+    /// How tasks are ordered across kingdoms so the bot stays where it is (see `grouping`).
+    pub(super) grouping: KingdomGrouping,
+    /// Attacks in a row from the kingdom the bot is in.
+    pub(super) streak: Streak,
 }
 
 #[derive(Debug, Clone)]
@@ -248,6 +253,8 @@ impl Automation {
             selected: None,
             last_completed: None,
             station_holds: Vec::new(),
+            grouping: KingdomGrouping::default(),
+            streak: Streak::default(),
         }
     }
 
@@ -275,6 +282,40 @@ impl Automation {
         {
             self.health.set_tolerance(tolerance as usize);
         }
+        if let Ok(Some(value)) = store.app_state(GROUPING_KEY).await {
+            self.grouping = KingdomGrouping::from_json(&value);
+        }
+    }
+
+    /// Milliseconds until the first ordinary task of `kingdom` could attack: a commander home
+    /// and a tower off cooldown. `Some(0)` means one could now; `None` that the kingdom has no
+    /// task or tower to wait for. Costs only database reads, like the wait computation below.
+    async fn kingdom_ready_in_ms(
+        &self,
+        store: &Store,
+        account_id: &str,
+        tasks: &[ActiveModeTask],
+        states: &[CommanderState],
+        kingdom: i64,
+        now: i64,
+    ) -> anyhow::Result<Option<i64>> {
+        let mut soonest: Option<i64> = None;
+        for task in tasks
+            .iter()
+            .filter(|task| task.kingdom_id == kingdom && task.target_kind != "fortress")
+            .filter(|task| !self.castle_held(task))
+        {
+            let Some(target_ready) = store
+                .next_rbc_ready_ms(account_id, task.kingdom_id, task.level_min, task.level_max)
+                .await?
+            else {
+                continue;
+            };
+            let commander_ready = first_free_at(&task.commander_lids, states, now).unwrap_or(now);
+            let wait = (target_ready.max(commander_ready) - now).max(0);
+            soonest = Some(soonest.map_or(wait, |best| best.min(wait)));
+        }
+        Ok(soonest)
     }
 
     /// Record how an expected response went wrong. Only the cases in `health`
@@ -702,7 +743,18 @@ impl Automation {
         let rotated = (0..tasks.len())
             .map(|offset| (self.cursor + offset) % tasks.len())
             .collect::<Vec<_>>();
-        let indexes = rotated
+        // Try the kingdom the client is already in first, so attacks are not spread across
+        // kingdoms in turn (each change of kingdom costs a map request). Plain rotation when
+        // grouping is off. See `empire_core::grouping`.
+        let current_kingdom = store
+            .navigation(account_id)
+            .await?
+            .and_then(|state| state.current_kingdom_id);
+        let streak = self.streak.length_in(current_kingdom);
+        let order = self
+            .grouping
+            .order(&rotated, |index| tasks[index].kingdom_id, current_kingdom, streak);
+        let indexes = order
             .iter()
             .copied()
             .filter(|index| tasks[*index].target_kind == "fortress")
@@ -802,12 +854,29 @@ impl Automation {
         // (its section of the roster) and no other task may borrow it, whatever
         // is idle. Lending was tried and sent crossbow marches out under
         // commanders reserved for the other section.
-        for index in rotated
+        let mut hold: Option<i64> = None;
+        let mut left_current = false;
+        for index in order
             .iter()
             .copied()
             .filter(|index| tasks[*index].target_kind != "fortress")
         {
             let task = &tasks[index];
+            // About to try another kingdom: first see whether the current one is worth a
+            // short wait instead (a commander about to land, a tower about to come off
+            // cooldown), unless it has had its streak.
+            if !left_current && current_kingdom.is_some_and(|kingdom| kingdom != task.kingdom_id) {
+                left_current = true;
+                if let Some(kingdom) = current_kingdom {
+                    let ready_in = self
+                        .kingdom_ready_in_ms(store, account_id, &tasks, &states, kingdom, now)
+                        .await?;
+                    if self.grouping.should_wait(ready_in, streak) {
+                        hold = Some(kingdom);
+                        break;
+                    }
+                }
+            }
             if free_commanders(&task.commander_lids, &states, now).is_empty()
                 || self.castle_held(task)
             {
@@ -880,7 +949,14 @@ impl Automation {
         // which of the two is the limit.
         let mut wake: Option<i64> = None;
         let mut notes = Vec::new();
-        for task in tasks.iter().filter(|task| task.target_kind != "fortress") {
+        if let Some(kingdom) = hold {
+            notes.push(format!("staying in kingdom {kingdom} rather than switching"));
+        }
+        for task in tasks
+            .iter()
+            .filter(|task| task.target_kind != "fortress")
+            .filter(|task| hold.is_none_or(|kingdom| task.kingdom_id == kingdom))
+        {
             let free = free_commanders(&task.commander_lids, &states, now).len();
             let target_ready = store
                 .next_rbc_ready_ms(account_id, task.kingdom_id, task.level_min, task.level_max)
@@ -1360,6 +1436,7 @@ impl Automation {
                     selector.accept(pick.tower, pick.relocate);
                 }
                 self.selected = Some((target.x, target.y));
+                self.streak.note_attack(target.kingdom_id);
                 self.last_completed = Some(CompletedView {
                     march_id,
                     x: target.x,

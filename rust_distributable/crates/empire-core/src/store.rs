@@ -13,6 +13,7 @@ use crate::{
 
 mod config;
 mod dev;
+mod dungeon;
 mod ledger;
 mod modes;
 mod pvp;
@@ -337,7 +338,8 @@ impl Store {
         for chunk in targets.chunks(150) {
             let mut query = QueryBuilder::<Sqlite>::new(
                 "INSERT INTO rbc_target (
-                    account_id, kingdom_id, x, y, level, observed_at_ms, server_free_at_ms
+                    account_id, kingdom_id, x, y, level, observed_at_ms, server_free_at_ms,
+                    victory_count, hits_to_next
                  ) ",
             );
             query.push_values(chunk, |mut row, target| {
@@ -347,13 +349,19 @@ impl Store {
                     .push_bind(target.y)
                     .push_bind(target.level)
                     .push_bind(now_ms)
-                    .push_bind(server_free_at_ms(target, now_ms));
+                    .push_bind(server_free_at_ms(target, now_ms))
+                    .push_bind(target.victory_count)
+                    .push_bind(target.victory_count.map(|count| {
+                        crate::dungeon::hits_to_next(count, target.kingdom_id)
+                    }));
             });
             query.push(
                 " ON CONFLICT(account_id, kingdom_id, x, y) DO UPDATE SET
                     level = excluded.level,
                     observed_at_ms = excluded.observed_at_ms,
-                    server_free_at_ms = excluded.server_free_at_ms",
+                    server_free_at_ms = excluded.server_free_at_ms,
+                    victory_count = excluded.victory_count,
+                    hits_to_next = excluded.hits_to_next",
             );
             query.build().execute(&mut *tx).await?;
         }

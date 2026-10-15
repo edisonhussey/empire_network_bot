@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 24;
+pub const SCHEMA_VERSION: i64 = 25;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -792,8 +792,27 @@ pub const V24: Migration = &[
     )",
 ];
 
+/// What a robber baron's level is made of.
+///
+/// The server sends a tower's **victory count**; the level is derived from it (see
+/// `crate::dungeon`). Keeping the count lets a landed attack raise it by one and recompute
+/// the level without another map read, and `hits_to_next` records how many more wins the
+/// next level needs. `level` stays as the column selection filters on. Both new columns
+/// are `NULL` until the tower is next seen on a map row, and a row with no count is never
+/// incremented, because a guessed count would be worse than an old level.
+///
+/// Towers already stored have no count, and outside Sands no level either (that is why a
+/// kingdom such as green never fired: nothing could match its level band). The stored map
+/// windows are dropped once so each is read again and fills them in, as V17 did for
+/// fortresses.
+pub const V25: Migration = &[
+    "ALTER TABLE rbc_target ADD COLUMN victory_count INTEGER",
+    "ALTER TABLE rbc_target ADD COLUMN hits_to_next INTEGER",
+    "DELETE FROM map_scan_window WHERE kingdom_id != 10",
+];
+
 pub const MIGRATIONS: &[Migration] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25,
 ];
 
 /// Every table that holds user data, for the storage report and full wipe.

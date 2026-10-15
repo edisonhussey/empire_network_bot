@@ -9,6 +9,8 @@ import sys
 import time
 import uuid
 import mimetypes
+import shutil
+import signal
 import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,20 +20,35 @@ from .storage import db_path, event, events, export_session, list_sessions
 from .incoming import IncomingLedger
 from .auto_support import load_config as load_support_config, save_config as save_support_config
 from .protocol import matches_game_url
+from .login_capture import DEFAULT_HOSTS as DEFAULT_CAPTURE_HOSTS
+from .envfile import BY_CONFIG_KEY, overrides as env_overrides, update_env
 
 BASE = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = {"data_dir": str(BASE / "web_data"), "proxy_host": "127.0.0.1", "proxy_port": 8080,
-                  "api_host": "127.0.0.1", "api_port": 8799, "shortcut": "",
-                  "mitmdump": str(BASE.parents[0] / "venv" / "bin" / "mitmdump")}
+                  "api_host": "127.0.0.1", "api_port": 8008, "shortcut": "",
+                  "mitmdump": "", "capture_hosts": DEFAULT_CAPTURE_HOSTS}
+
+
+def find_mitmdump():
+    """mitmdump inside this folder's .venv, the repo's venv, then PATH."""
+    for candidate in (BASE / ".venv" / "bin" / "mitmdump", BASE.parent / "venv" / "bin" / "mitmdump"):
+        if candidate.exists():
+            return str(candidate)
+    return shutil.which("mitmdump") or ""
 
 
 class Service:
-    def __init__(self, config_path: Path):
+    def __init__(self, config_path: Path, env_path: Path | None = None):
         self.config_path = config_path
+        self.env_path = env_path
         config_path.parent.mkdir(parents=True, exist_ok=True)
         if not config_path.exists():
             self.save_config(DEFAULT_CONFIG)
         self.config = {**DEFAULT_CONFIG, **json.loads(config_path.read_text(encoding="utf-8"))}
+        if env_path is not None:
+            self.config.update(env_overrides(env_path))
+        if not self.config["mitmdump"]:
+            self.config["mitmdump"] = find_mitmdump()
         self.data = Path(self.config["data_dir"]).expanduser().resolve()
         self.data.mkdir(parents=True, exist_ok=True)
         self.sessions = BASE / "data" / "sessions"
@@ -39,10 +56,24 @@ class Service:
         self.incoming = IncomingLedger(self.data / "incoming_location.json")
         self.support_config_path = self.data / "auto_support.json"
         self.support_status_path = self.data / "auto_support_status.json"
+        self.capture_path = self.data / "login_capture.json"
         self.proxy = None
         self.keyboard = None
         self.shortcut_error = None
         self._start_shortcut()
+
+    def update_config(self, changes):
+        """Ports, hosts and executables live in .env (when there is one); the rest in the config file."""
+        allowed = {"data_dir", "proxy_host", "proxy_port", "api_host", "api_port", "shortcut", "mitmdump", "capture_hosts"}
+        changes = {key: value for key, value in changes.items() if key in allowed}
+        self.config.update(changes)
+        if self.env_path is None:
+            self.save_config(self.config)
+            return
+        in_env = {BY_CONFIG_KEY[key]: str(value) for key, value in changes.items() if key in BY_CONFIG_KEY}
+        if in_env:
+            update_env(self.env_path, in_env)
+        self.save_config({key: value for key, value in self.config.items() if key not in BY_CONFIG_KEY})
 
     def save_config(self, config):
         temp = self.config_path.with_suffix(".tmp")
@@ -59,6 +90,18 @@ class Service:
         except Exception as exc:
             self.shortcut_error = f"Global shortcut unavailable: {exc}"
 
+    def capture_enabled(self):
+        try:
+            return bool(json.loads(self.capture_path.read_text(encoding="utf-8")).get("enabled"))
+        except (OSError, ValueError, AttributeError):
+            return False
+
+    def set_capture(self, enabled):
+        temporary = self.capture_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"enabled": bool(enabled)}), encoding="utf-8")
+        temporary.replace(self.capture_path)
+        return {"enabled": bool(enabled)}
+
     def control(self, action):
         command = {"id": uuid.uuid4().hex, "action": action, "at": time.time()}
         temporary = self.data / "control.tmp"
@@ -71,9 +114,11 @@ class Service:
             return
         executable = self.config["mitmdump"]
         if not Path(executable).exists():
-            raise FileNotFoundError(f"mitmdump missing: {executable}")
+            raise FileNotFoundError(f"mitmdump not found ({executable or 'none'}); set PPM_MITMDUMP in .env")
         host, port = self.config["proxy_host"], int(self.config["proxy_port"])
         with socket.socket() as probe:
+            # Like the proxy itself: leftover TIME_WAIT connections from the browser are not "in use".
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 probe.bind((host, port))
             except OSError as exc:
@@ -82,6 +127,7 @@ class Service:
                     "or choose its port in Settings, then point the game client at that port."
                 ) from exc
         env = {**os.environ, "PACKET_MONITOR_DATA": str(self.data), "PACKET_MONITOR_SESSIONS": str(self.sessions)}
+        env["PPM_CAPTURE_HOSTS"] = self.config["capture_hosts"]
         env["PACKET_MONITOR_API"] = f"http://{self.config['api_host']}:{self.config['api_port']}"
         log = (self.data / "proxy.log").open("a", encoding="utf-8")
         self.proxy = subprocess.Popen([executable, "-s", str(BASE / "backend" / "incoming_addon.py"),
@@ -89,14 +135,15 @@ class Service:
             cwd=BASE, env=env, stdout=log, stderr=subprocess.STDOUT)
         log.close()
         check_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
-        for _ in range(30):
+        deadline = time.monotonic() + 30  # a cold start (imports from a busy disk) can take several seconds
+        while time.monotonic() < deadline:
             if self.proxy.poll() is not None:
                 raise RuntimeError(f"Proxy exited during startup. Check {self.data / 'proxy.log'}")
             try:
                 with socket.create_connection((check_host, port), timeout=0.1):
                     return
             except OSError:
-                time.sleep(0.05)
+                time.sleep(0.1)
         self.stop_proxy()
         raise RuntimeError(f"Proxy did not open {check_host}:{port}. Check {self.data / 'proxy.log'}")
 
@@ -121,6 +168,8 @@ class Service:
                 "endpoint": addon.get("endpoint") if running else None,
                 "last_websocket_url": addon.get("last_websocket_url") if running else None,
                 "last_websocket_matches_game": matches_game_url(addon["last_websocket_url"]) if running and addon.get("last_websocket_url") else None,
+                "capture_enabled": self.capture_enabled(),
+                "capture": addon.get("capture") if running else None,
                 "shortcut": self.config["shortcut"], "shortcut_error": self.shortcut_error,
                 "proxy_port": self.config["proxy_port"], "data_dir": str(self.data)}
 
@@ -200,6 +249,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/recording/toggle": result = self.service.control("toggle")
             elif path == "/api/recording/start": result = self.service.control("start")
             elif path == "/api/recording/stop": result = self.service.control("stop")
+            elif path == "/api/capture/config": result = self.service.set_capture(body.get("enabled"))
             elif path == "/api/incoming/config": result = self.service.incoming.configure(body)
             elif path == "/api/auto-support/config":
                 result = save_support_config(self.service.support_config_path, body)
@@ -213,9 +263,7 @@ class Handler(BaseHTTPRequestHandler):
                 subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(self.service.sessions)])
                 result = {"opened": str(self.service.sessions)}
             elif path == "/api/config":
-                allowed = {"data_dir", "proxy_host", "proxy_port", "api_host", "api_port", "shortcut", "mitmdump"}
-                self.service.config.update({key: value for key, value in body.items() if key in allowed})
-                self.service.save_config(self.service.config)
+                self.service.update_config(body)
                 result = {"saved": True, "restart_required": True}
             elif path.startswith("/api/sessions/") and path.endswith("/export"):
                 session_id = path.split("/")[3]
@@ -242,10 +290,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=BASE / "web_config.json")
     args = parser.parse_args()
-    service = Service(args.config)
+    service = Service(args.config, BASE / ".env")
     Handler.service = service
     server = ThreadingHTTPServer((service.config["api_host"], int(service.config["api_port"])), Handler)
     Handler.server_instance = server
+    # process_monitor's Stop sends SIGTERM: leave through `finally` so the proxy child stops too.
+    def on_sigterm(*_):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, on_sigterm)
     try: server.serve_forever()
     except KeyboardInterrupt: pass
     finally:

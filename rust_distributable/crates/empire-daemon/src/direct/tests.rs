@@ -143,6 +143,7 @@ async fn tower_store(cooldown_remaining_s: i64) -> Store {
                 x: 636,
                 y: 574,
                 level: Some(43),
+                victory_count: None,
                 cooldown_remaining_s,
             }],
             now_ms(),
@@ -488,6 +489,7 @@ async fn two_section_store() -> (Store, Vec<ActiveModeTask>) {
                 x: 600,
                 y: 610,
                 level: Some(61),
+                victory_count: None,
                 cooldown_remaining_s: 0,
             }],
             now_ms(),
@@ -588,6 +590,7 @@ async fn when_nothing_can_run_the_scheduler_sleeps_until_the_first_blocker_clear
                 x: 600,
                 y: 610,
                 level: Some(61),
+                victory_count: None,
                 cooldown_remaining_s: 1_200,
             }],
             now_ms(),
@@ -775,22 +778,11 @@ async fn old_errors_age_out_of_the_rolling_window() {
     }
 
     #[test]
-    fn world_profiles_keep_socket_and_portal_identity_together() {
-        assert_eq!(
-            GameServer::Us1.connection(),
-            (US1_ENDPOINT, US1_SERVER_HEADER, VENTRILO_PORTAL_ACCOUNT_ID)
-        );
+    fn world_profiles_keep_socket_and_server_header_together() {
+        assert_eq!(GameServer::Us1.connection(), (US1_ENDPOINT, US1_SERVER_HEADER));
         assert_eq!(
             GameServer::World2.connection(),
-            (
-                WORLD2_ENDPOINT,
-                WORLD2_SERVER_HEADER,
-                PINGPOKO_PORTAL_ACCOUNT_ID
-            )
-        );
-        assert_ne!(
-            GameServer::Us1.connection().2,
-            GameServer::World2.connection().2
+            (WORLD2_ENDPOINT, WORLD2_SERVER_HEADER)
         );
         assert_ne!(
             GameServer::Us1.connection().1,
