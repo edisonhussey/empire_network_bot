@@ -27,6 +27,7 @@ One concern, one owner. If a rule exists in two places, one of them is a bug.
 | `station.rs` | Auto-station state machine: one job per attacked castle, gate, castle holds, commander lease (rules in `empire-core/src/station.rs`) |
 | `station_view.rs` | The station's part of the Development snapshot |
 | `inventory.rs` | Sends the Overview's `dcl` when the window asks and the connection is free |
+| `transfer.rs` | Manual kingdom transfers: the runner that sends `kut` / `msk` one step at a time, only while the bot is off, and the state funnels (rules in `empire-core/src/transfer.rs`) |
 | `troops.rs` (daemon, top level) | `GET /v1/troops`: the Troop overview over `empire-core/src/store/troops.rs` |
 | `pvp.rs` | Feeds `gbd` identity, `gam` movements and `mrm` retreats to the PVP record (rules live in `empire-core/src/pvp.rs`) |
 | `tests.rs` | Unit tests for the above |
@@ -42,4 +43,5 @@ One concern, one owner. If a rule exists in two places, one of them is a bug.
 | `views/ruby-chart.js` | Dashboard chart renderer |
 | `views/pace-slider.js` | The vertical test-pace slider of the Development tab (control only) |
 | `views/pvp-model.js` | PVP rules and the movement colour scheme (pure) |
+| `views/transfer.js`, `views/transfer-model.js` | The Castle Overview's send-troops widget (projection and form) and its pure helpers |
 | `main.js` | Remaining shared state and views, still to be split view by view |

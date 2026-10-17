@@ -3493,6 +3493,6 @@ async fn a_fresh_map_read_overrides_the_incremented_count() {
 #[tokio::test]
 async fn existing_towers_get_their_map_windows_re_read_by_the_upgrade() {
     // V25 drops stored windows (not Berimond's) so every tower is read once with its count.
-    let all_sql = schema::MIGRATIONS.last().unwrap().join(" ");
+    let all_sql = schema::V25.join(" ");
     assert!(all_sql.contains("victory_count") && all_sql.contains("DELETE FROM map_scan_window"));
 }

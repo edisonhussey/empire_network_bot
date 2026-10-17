@@ -15,6 +15,11 @@ The goal of this folder is to document **observed behaviors**, **payload structu
 ### Map
 * [`gaa`](gaa.md) - Map Viewport Scan
 
+### Kingdom transfers
+* [`kut`](kut.md) - Kingdom Unit Transfer (send troops to another kingdom)
+* [`msk`](msk.md) - Minute Skip (spend a skip item on a transfer)
+* [`kpi`](kpi.md) - Kingdom Info, and the `gcu` / `sce` state packets beside it
+
 Kingdom/context switching (`gbl`, `upt`, `gbd`) is in [`../architecture/navigation.md`](../architecture/navigation.md).
 
 ### General Reference

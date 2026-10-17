@@ -2,4 +2,5 @@
 
 pub mod kingdoms;
 pub mod tools;
+pub mod travel_costs;
 pub mod troops;

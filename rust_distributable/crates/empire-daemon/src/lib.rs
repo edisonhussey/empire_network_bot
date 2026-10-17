@@ -6,6 +6,7 @@ mod pvp;
 mod relay;
 mod sessions;
 mod station;
+mod transfer;
 mod troops;
 
 use std::{
@@ -182,7 +183,10 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:47821";
 /// 53: `POST /v1/dev/pace` (test pace of the human-paced waits; `timing.pace` and
 /// `timing.max_interval_s` in `/v1/dev`); PVP leaves NPC movements out; the spotlight
 /// drifts instead of following each pick.
-pub const API_VERSION: u16 = 53;
+/// 54: manual kingdom transfers (`/v1/transfers`, `/check`, `/refresh`, `/{id}/cancel`): the
+/// Castle Overview can send troops to another kingdom while the bot is off, optionally spending
+/// minute-skip items until they land.
+pub const API_VERSION: u16 = 54;
 
 /// Is something already listening on the service port?
 ///
@@ -282,6 +286,10 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
         .route("/v1/troops", get(troops::troops))
         .route("/v1/overview/refresh", post(station::refresh_overview))
         .route("/v1/station/jobs", get(station::jobs))
+        .route("/v1/transfers", get(transfer::overview).post(transfer::create))
+        .route("/v1/transfers/check", post(transfer::check))
+        .route("/v1/transfers/refresh", post(transfer::refresh))
+        .route("/v1/transfers/{id}/cancel", post(transfer::cancel))
         .route("/v1/relay", get(relay_socket))
         .layer(cors)
         .with_state(state);

@@ -13,11 +13,14 @@ mod recruitment;
 mod scheduler;
 mod station;
 mod station_view;
+mod transfer;
 mod version;
 #[cfg(test)]
 mod station_tests;
 #[cfg(test)]
 mod grouping_tests;
+#[cfg(test)]
+mod transfer_tests;
 #[cfg(test)]
 mod tests;
 
@@ -35,6 +38,8 @@ use packets::*;
 use recruitment::*;
 use scheduler::*;
 use station::{Gate, StationAutomation};
+use transfer::TransferAutomation;
+pub use transfer::transfer_refresh_key;
 pub use inventory::overview_refresh_key;
 
 use std::{
@@ -495,6 +500,8 @@ async fn run_inner(
         log_event(store, &account_id, "march.lapsed", &format!("{closed} marches closed as home: their return was never reported")).await;
     }
     let mut inventory = InventoryPoll::new(&account_id);
+    // Manual kingdom transfers: run one at a time, only while the bot is off (see transfer.rs).
+    let mut transfer = TransferAutomation::new(&account_id);
     let mut station_tick = tokio::time::interval(Duration::from_millis(50));
     let mut fortress_rng = Rng::from_entropy();
     let mut scan_rng = Rng::from_entropy();
@@ -702,6 +709,7 @@ async fn run_inner(
                     automation.observe(store, &account_id, &text).await;
                     recruitment.observe(store, &account_id, &text).await;
                     station.observe(store, &account_id, &text, now_ms()).await;
+                    transfer.observe(store, &account_id, parsed_packet.as_ref(), now_ms()).await;
                     let frames = machine.on_server_text(&text)?;
                     if let Some(packet) = parsed_packet.as_ref()
                         && let Some(refused) =
@@ -1174,6 +1182,25 @@ async fn run_inner(
                         && (station_gate == Gate::Open || automation.holds_transport())
                         && let Some(packet) = automation
                             .next_packet(store, &account_id, &request.settings.server_header)
+                            .await?
+                    {
+                        record_safe_outbound(store, &account_id, &packet).await;
+                        sink.send(Message::Text(packet.into())).await?;
+                        sent = true;
+                    }
+                    let connection_free = station_gate == Gate::Open
+                        && !automation.holds_transport()
+                        && !recruitment.holds_transport();
+                    if !sent
+                        && let Some(packet) = transfer
+                            .next_packet(
+                                store,
+                                &account_id,
+                                &request.settings.server_header,
+                                now,
+                                connection_free,
+                                &automation.station_holds,
+                            )
                             .await?
                     {
                         record_safe_outbound(store, &account_id, &packet).await;

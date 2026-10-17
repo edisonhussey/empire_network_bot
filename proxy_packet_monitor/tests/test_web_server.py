@@ -22,6 +22,17 @@ class WebServerTests(unittest.TestCase):
                 service.start_proxy()
             self.assertIsNone(service.proxy)
 
+    def test_inject_is_refused_while_the_proxy_is_stopped(self):
+        from backend.injector import InjectError
+        with tempfile.TemporaryDirectory() as folder:
+            config = {**DEFAULT_CONFIG, "data_dir": str(Path(folder) / "data")}
+            path = Path(folder) / "config.json"
+            path.write_text(json.dumps(config), encoding="utf-8")
+            service = Service(path)
+            with self.assertRaisesRegex(InjectError, "not running"):
+                service.inject("%xt%EmpireEx_19%nch%1%")
+            self.assertFalse(service.injector.request.exists(), "nothing is queued for a later proxy")
+
     def test_cancelled_response_is_quiet(self):
         handler = Handler.__new__(Handler)
         handler.send_response = Mock()

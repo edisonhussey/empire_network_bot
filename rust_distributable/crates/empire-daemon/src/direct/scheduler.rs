@@ -103,6 +103,9 @@ pub enum Wait {
     /// station maps it into a window that fits the time left (see
     /// `empire_core::station::normalise_gaps`).
     Station,
+    /// A pause between steps of a manual kingdom transfer. The raw draw is compressed into
+    /// a window that suits an action the operator is watching (`empire_core::transfer::paced`).
+    Transfer,
 }
 
 impl Wait {
@@ -112,6 +115,7 @@ impl Wait {
             Self::BeforeAttack => 2.0,
             Self::AfterAck => 0.75,
             Self::Station => 0.5,
+            Self::Transfer => 1.0,
         }
     }
 }

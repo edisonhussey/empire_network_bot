@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 25;
+pub const SCHEMA_VERSION: i64 = 26;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -811,13 +811,46 @@ pub const V25: Migration = &[
     "DELETE FROM map_scan_window WHERE kingdom_id != 10",
 ];
 
+/// Moving troops between kingdoms (`docs/architecture/kingdom-transfer.md`).
+///
+/// `kingdom_transfer`: one row per transfer the operator asked for, from the request to the
+/// landing. `phase` is `queued` (waiting for the bot to be off and the connection free), `sent`
+/// (the `kut` went out, no answer yet), `travelling` (accepted; skips may be spent), then one of
+/// `done`, `failed` or `cancelled`. `detail` is the sentence the window shows. The coins,
+/// kingdom state and skip stock the checks read are small replace-wholesale snapshots in
+/// `app_state` (`transfer.*.<account>`), so they need no table.
+pub const V26: Migration = &[
+    "CREATE TABLE IF NOT EXISTS kingdom_transfer (
+        job_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id TEXT NOT NULL,
+        source_castle_id INTEGER NOT NULL,
+        source_kingdom_id INTEGER NOT NULL,
+        target_kingdom_id INTEGER NOT NULL,
+        target_castle_id INTEGER NOT NULL DEFAULT -1,
+        units_json TEXT NOT NULL,
+        skip_item TEXT,
+        phase TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT '',
+        cost_c1 INTEGER,
+        skips_sent INTEGER NOT NULL DEFAULT 0,
+        created_at_ms INTEGER NOT NULL,
+        sent_at_ms INTEGER,
+        landed_at_ms INTEGER,
+        updated_at_ms INTEGER NOT NULL,
+        FOREIGN KEY (account_id) REFERENCES account_profile(account_id) ON DELETE CASCADE
+    )",
+    "CREATE INDEX IF NOT EXISTS kingdom_transfer_recent_idx ON kingdom_transfer (account_id, created_at_ms)",
+    "CREATE INDEX IF NOT EXISTS kingdom_transfer_open_idx ON kingdom_transfer (account_id, phase)",
+];
+
 pub const MIGRATIONS: &[Migration] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26,
 ];
 
 /// Every table that holds user data, for the storage report and full wipe.
 /// Order matters for deletion: children before parents.
 pub const DATA_TABLES: &[&str] = &[
+    "kingdom_transfer",
     "automation_mode_reserve",
     "station_job",
     "castle_inventory",

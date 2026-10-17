@@ -165,6 +165,15 @@ matched nothing). `hits_to_next` is how many more wins the next level needs.
 * The migration also drops the stored `map_scan_window` rows (not Berimond's), so every kingdom
   is read once more and the rows fill in. This is a one-time extra scan, as V17 was for fortresses.
 
+## V26: kingdom transfers
+
+`kingdom_transfer`: one row per transfer asked for, from the request to the landing. `phase` is `queued`, `sent`
+(the `kut` is out, no answer yet), `travelling`, then `done`, `failed` or `cancelled`; `detail` is the sentence the
+window shows; `cost_c1` the coins it will cost; `skips_sent` how many skip items were spent. Kept for good (about
+300 bytes a row). The coins, the kingdom state and the skip stock the checks read are small snapshots in `app_state`
+(`transfer.currency.<account>`, `transfer.kingdoms.<account>`, `transfer.skips.<account>`), replaced whole when the
+server reports them. See [`kingdom-transfer.md`](kingdom-transfer.md).
+
 ## Size
 
 For one account running one troop type flat out:

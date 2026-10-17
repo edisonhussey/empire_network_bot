@@ -20,6 +20,7 @@ from .storage import db_path, event, events, export_session, list_sessions
 from .incoming import IncomingLedger
 from .auto_support import load_config as load_support_config, save_config as save_support_config
 from .protocol import matches_game_url
+from .injector import InjectChannel, InjectError
 from .login_capture import DEFAULT_HOSTS as DEFAULT_CAPTURE_HOSTS
 from .envfile import BY_CONFIG_KEY, overrides as env_overrides, update_env
 
@@ -57,6 +58,7 @@ class Service:
         self.support_config_path = self.data / "auto_support.json"
         self.support_status_path = self.data / "auto_support_status.json"
         self.capture_path = self.data / "login_capture.json"
+        self.injector = InjectChannel(self.data)
         self.proxy = None
         self.keyboard = None
         self.shortcut_error = None
@@ -108,6 +110,11 @@ class Service:
         temporary.write_text(json.dumps(command), encoding="utf-8")
         temporary.replace(self.data / "control.json")
         return command
+
+    def inject(self, text, to_client=False):
+        if not (self.proxy is not None and self.proxy.poll() is None):
+            raise InjectError("The proxy is not running.")
+        return self.injector.submit(text, to_client)
 
     def start_proxy(self):
         if self.proxy and self.proxy.poll() is None:
@@ -249,6 +256,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/recording/toggle": result = self.service.control("toggle")
             elif path == "/api/recording/start": result = self.service.control("start")
             elif path == "/api/recording/stop": result = self.service.control("stop")
+            elif path == "/api/inject": result = self.service.inject(body.get("text"), body.get("to_client"))
             elif path == "/api/capture/config": result = self.service.set_capture(body.get("enabled"))
             elif path == "/api/incoming/config": result = self.service.incoming.configure(body)
             elif path == "/api/auto-support/config":

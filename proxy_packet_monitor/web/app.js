@@ -1,6 +1,6 @@
 const API = '';
 const app = document.querySelector('#app');
-const state = { sessions: [], selected: null, rows: [], counts: {}, total: 0, offset: 0, types: new Set(), query: '', event: null, raw: false, status: null, busy: false, settings: null, tab: 'sessions', incoming: null, autoSupport: null };
+const state = { sessions: [], selected: null, rows: [], counts: {}, total: 0, offset: 0, types: new Set(), query: '', event: null, raw: false, status: null, busy: false, settings: null, tab: 'sessions', incoming: null, autoSupport: null, injectText: '', injectToClient: false };
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const date = value => value ? new Date(value * 1000).toLocaleString() : '—';
 const time = value => value ? new Date(value * 1000).toLocaleTimeString(undefined,{hour12:false, fractionalSecondDigits:3}) : '—';
@@ -95,6 +95,10 @@ function settingsDialog() {
   if (!c) return '';
   return `<div class="modal-backdrop"><form id="settings-form" class="modal"><div class="modal-heading"><span class="eyebrow">CONFIGURATION</span><h2>Monitor settings</h2><p>Changes apply after restarting the monitor.</p></div><label>Recording folder<input name="data_dir" value="${esc(c.data_dir)}"></label><div class="modal-grid"><label>Proxy host<input name="proxy_host" value="${esc(c.proxy_host)}"></label><label>Proxy port<input name="proxy_port" type="number" min="1" max="65535" value="${esc(c.proxy_port)}"></label></div><label>Global shortcut<input name="shortcut" value="${esc(c.shortcut)}"></label><label>mitmdump executable<input name="mitmdump" value="${esc(c.mitmdump)}"></label><div class="modal-actions"><button type="button" id="settings-cancel">Cancel</button><button type="submit" class="primary">Save settings</button></div></form></div>`;
 }
+function injectBar() {
+  const live = !!state.status?.connected;
+  return `<form id="inject-form" class="inject-bar" ${state.tab==='sessions'?'':'hidden'}><label for="inject-text">Inject</label><textarea id="inject-text" rows="2" spellcheck="false" placeholder="%xt%EmpireEx_19%nch%1%  (one frame per line; Ctrl/Cmd+Enter sends)">${esc(state.injectText)}</textarea><select id="inject-direction" title="Direction"><option value="server" ${state.injectToClient?'':'selected'}>To server</option><option value="client" ${state.injectToClient?'selected':''}>To client</option></select><button class="primary" type="submit">Send</button><small class="${live?'ok':''}">${live?'Game WebSocket connected':'No game WebSocket'}</small></form>`;
+}
 function connectionHint(status) {
   if (!status?.proxy_running) return 'Start the proxy to listen for game traffic.';
   if (status.connected) return 'Game WebSocket connected.';
@@ -149,11 +153,11 @@ async function refreshIncoming() {
 }
 function render() {
   const focused = document.activeElement?.id;
-  const selection = focused === 'search' ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
-  app.innerHTML = `${header()}<nav class="tabs"><button data-tab="sessions" class="${state.tab==='sessions'?'active':''}">Recorded sessions</button><button data-tab="incoming" class="${state.tab==='incoming'?'active':''}">Incoming <span>${state.incoming?.active_count ?? 0}</span></button><button data-tab="support" class="${state.tab==='support'?'active':''}">Auto Support</button></nav><main ${state.tab==='sessions'?'':'hidden'}>${sessionPanel()}${eventsPanel()}${detailPanel()}</main>${incomingPanel()}${supportPanel()}${settingsDialog()}<div id="notice" hidden></div>`;
+  const selection = focused === 'search' || focused === 'inject-text' ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
+  app.innerHTML = `${header()}<nav class="tabs"><button data-tab="sessions" class="${state.tab==='sessions'?'active':''}">Recorded sessions</button><button data-tab="incoming" class="${state.tab==='incoming'?'active':''}">Incoming <span>${state.incoming?.active_count ?? 0}</span></button><button data-tab="support" class="${state.tab==='support'?'active':''}">Auto Support</button></nav>${injectBar()}<main ${state.tab==='sessions'?'':'hidden'}>${sessionPanel()}${eventsPanel()}${detailPanel()}</main>${incomingPanel()}${supportPanel()}${settingsDialog()}<div id="notice" hidden></div>`;
   bind();
   updateCountdowns();
-  if (selection) { const input = document.querySelector('#search'); input.focus(); input.setSelectionRange(...selection); }
+  if (selection) { const input = document.querySelector('#' + focused); input.focus(); input.setSelectionRange(...selection); }
 }
 async function refreshStatus() { try { const previous=state.status; state.status=await api('/api/status'); if (JSON.stringify(previous)!==JSON.stringify(state.status)) render(); } catch {} }
 async function refreshSupport() {
@@ -195,6 +199,15 @@ async function selectEvent(seq) {
 }
 function bind() {
   document.querySelectorAll('[data-tab]').forEach(button => button.onclick=() => { state.tab=button.dataset.tab; render(); });
+  const injectText=document.querySelector('#inject-text');
+  injectText.oninput=() => { state.injectText=injectText.value; };
+  document.querySelector('#inject-direction').onchange=event => { state.injectToClient=event.target.value==='client'; };
+  injectText.onkeydown=event => { if (event.key==='Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); document.querySelector('#inject-form').requestSubmit(); } };
+  document.querySelector('#inject-form').onsubmit=async event => {
+    event.preventDefault();
+    try { const result=await api('/api/inject','POST',{text:state.injectText,to_client:state.injectToClient}); notice(`Sent ${result.sent} frame${result.sent===1?'':'s'} ${result.to_client?'to the client':'to the server'}.`); }
+    catch(e) { notice(e.message); }
+  };
   const locationForm=document.querySelector('#location-form');
   locationForm.onsubmit=async event => { event.preventDefault(); const value=Object.fromEntries(new FormData(locationForm)); try { await api('/api/incoming/config','POST',value); await refreshIncoming(); notice('Incoming location updated. Previous location ledger cleared.'); } catch(e) { notice(e.message); } };
   const supportConfig = () => JSON.parse(JSON.stringify(state.autoSupport?.config || {enabled:false,castles:[],destinations:{},lid:0}));

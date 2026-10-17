@@ -3,6 +3,7 @@ import { accountContext } from "../account-context.js";
 import { element } from "../dom.js";
 import { compactNumber, humanize } from "../format.js";
 import { kingdomLabel } from "./pvp-model.js";
+import { createTransferWidget } from "./transfer.js";
 
 /// The Overview tab: every castle's troops, tools, food and mead as the game last
 /// reported them.
@@ -41,6 +42,7 @@ export function readable(value) {
 export function createOverview() {
   const $ = (selector) => document.querySelector(selector);
   const state = { open: false, timer: 0, data: null, error: "", asked: false };
+  const transfer = createTransferWidget();
 
   function unitList(title, units) {
     const block = element("div", "overview-units");
@@ -70,6 +72,12 @@ export function createOverview() {
       supplies.append(cell);
     }
     card.append(head, supplies, unitList("Troops", castle.troops), unitList("Tools", castle.tools));
+    if (castle.troops.length) {
+      const send = element("button", "mini-action", "Send troops…");
+      send.type = "button";
+      send.addEventListener("click", () => transfer.selectSource(castle.castle_id));
+      card.append(send);
+    }
     if (castle.other.length) card.append(unitList("Other", castle.other.map((unit) => ({ ...unit, name: `unit ${unit.id}` }))));
     return card;
   }
@@ -93,6 +101,7 @@ export function createOverview() {
         : pending ? "A new reading has been asked for and will arrive when the bot is between actions."
           : !castles.length ? "No castles are known yet. Initialize the account first." : "");
     grid.replaceChildren(...castles.map((castle) => castleCard(castle, now)));
+    transfer.update(castles);
   }
 
   async function load() {
@@ -129,11 +138,13 @@ export function createOverview() {
       state.open = true;
       state.asked = false;
       load();
+      transfer.show();
       state.timer = setInterval(load, POLL_MS);
     },
     hide() {
       state.open = false;
       clearInterval(state.timer);
+      transfer.hide();
     },
   };
 }

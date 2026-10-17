@@ -23,6 +23,7 @@ mod state;
 mod station;
 mod storage;
 mod telemetry;
+mod transfer;
 mod troops;
 
 #[cfg(test)]
@@ -45,6 +46,10 @@ pub use schema::SCHEMA_VERSION;
 pub use station::{
     AccountStationBot, ActiveStation, JOB_DONE, OverviewCastle, STATION_KINGDOMS, StationBot,
     StationBotKingdom, StationJobRow,
+};
+pub use transfer::{
+    TRANSFER_CANCELLED, TRANSFER_DONE, TRANSFER_FAILED, TRANSFER_QUEUED, TRANSFER_SENT,
+    TRANSFER_TRAVELLING, TransferRow,
 };
 pub use troops::{RecentMarch, TroopOverview, TroopRow, TroopState};
 pub use state::{CastleUnit, NavigationState, RecruitCastleState};

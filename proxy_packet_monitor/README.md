@@ -33,6 +33,10 @@ Run the focused checks with:
 PYTHONPATH=. ../venv/bin/python -m unittest discover -s tests -v
 ```
 
+**Inject** (box under the tabs on the home screen). Paste a frame such as `%xt%EmpireEx_19%nch%1%` and press Send (or Ctrl/Cmd+Enter) to push it through the live game WebSocket, to see the effect in the game at once. One frame per line, up to 20 at a time; frames are sent exactly as pasted. *To server* is what the game client would send; *To client* makes the game think the server sent it. The box says whether a game WebSocket is connected, and a refusal ("No active game WebSocket", "proxy is not running") is shown in the notice. Injected frames are recorded in the session like any other, but a frame injected *to the client* is not shown to Auto Support or the Incoming ledger, so a test `gam` cannot trigger a real support march. The page and proxy talk through `inject.json` / `inject_result.json` in the data folder (`backend/injector.py`); after updating, restart the page and stop/start the proxy once so the running proxy loads the new code.
+
+**Reading replies while recording.** An active recording is a `*.partial.sqlite3` that is committed to disk only every 100 events, so a reply injected a moment ago is not in the file yet. Stopping the recording flushes and finalises it (the file loses `.partial`); to read the result of an injected frame, stop, read, then start again.
+
 ## Optional compiled desktop
 
 From the repository root:

@@ -19,6 +19,7 @@ from backend.protocol import Decoder, matches_game_url
 from backend.storage import Recorder
 from backend.login_capture import DEFAULT_HOSTS, LoginCapture
 from backend.auto_support import AutoSupport, SupportNotSent, packet as support_packet
+from backend.injector import InjectChannel
 from mitmproxy import ctx
 
 DATA = Path(os.environ.get("PACKET_MONITOR_DATA", BASE / "data")).expanduser().resolve()
@@ -48,6 +49,7 @@ class PacketMonitor:
         self.capture = LoginCapture(DATA / "login_data", DATA / "login_capture.json",
                                     os.environ.get("PPM_CAPTURE_HOSTS") or DEFAULT_HOSTS)
         self.capture_reported = None
+        self.injector = InjectChannel(DATA)
         self.incoming_queue = SimpleQueue()
         self.incoming_worker = Thread(target=self._send_incoming, daemon=True)
         self.incoming_worker.start()
@@ -91,6 +93,13 @@ class PacketMonitor:
         frame = support_packet(self.server_header, command, payload)
         ctx.master.commands.call("inject.websocket", flow, False, frame.encode("utf-8"))
 
+    def _inject_frame(self, frame, to_client):
+        """Send a pasted frame through the live game socket (the Inject box on the page)."""
+        flow = self.active_flow
+        if not flow or not flow.websocket or flow.websocket.timestamp_end is not None:
+            raise RuntimeError("No active game WebSocket. Reconnect the game through the proxy.")
+        ctx.master.commands.call("inject.websocket", flow, to_client, frame.encode("utf-8"))
+
     async def _poll(self):
         while True:
             try:
@@ -108,6 +117,7 @@ class PacketMonitor:
             except (OSError, ValueError) as exc:
                 print(f"packet monitor control error: {exc!r}", flush=True)
             self.auto_support.tick(self._send_support, self.active_flow is not None)
+            self.injector.tick(self._inject_frame)
             if self.capture_reported != (self.capture.saved, self.capture.ws_seq):
                 self._status()
             await asyncio.sleep(0.05)
@@ -159,9 +169,11 @@ class PacketMonitor:
             parsed = self._client_packet(decoded)
             if parsed and parsed.get("server_header"):
                 self.server_header = parsed["server_header"]
-        elif not message.from_client and flow is self.active_flow:
+        elif not message.from_client and flow is self.active_flow and not message.injected:
             self.auto_support.observe(decoded, received_at)
-        if not message.from_client and decoded.startswith(("%xt%gam%", "%xt%mrm%")):
+        # A frame pasted into the Inject box toward the client is a test: it is recorded, but it must
+        # not drive Auto Support or the Incoming ledger as if the server had sent it.
+        if not message.from_client and not message.injected and decoded.startswith(("%xt%gam%", "%xt%mrm%")):
             self.incoming_queue.put((decoded, received_at))
         # Long lived sockets otherwise retain every intercepted frame in RAM.
         if len(flow.websocket.messages) > 8:
