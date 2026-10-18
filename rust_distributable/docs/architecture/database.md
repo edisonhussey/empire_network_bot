@@ -174,6 +174,13 @@ window shows; `cost_c1` the coins it will cost; `skips_sent` how many skip items
 (`transfer.currency.<account>`, `transfer.kingdoms.<account>`, `transfer.skips.<account>`), replaced whole when the
 server reports them. See [`kingdom-transfer.md`](kingdom-transfer.md).
 
+## V27: alliance chat
+
+`alliance_chat`: one row per alliance message the account's session heard (`player_id`, `player_name`, `text`,
+`sent_at_ms`, `received_at_ms`). The server sends no clock, only the message's age, so `sent_at_ms` is the arrival
+time minus that age. The newest 2,000 rows per account are kept; a message the same sender sent within five seconds of
+an existing identical row is not stored twice. See [`chat.md`](chat.md).
+
 ## Size
 
 For one account running one troop type flat out:

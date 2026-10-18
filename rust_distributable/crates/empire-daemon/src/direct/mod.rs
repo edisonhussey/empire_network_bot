@@ -1,5 +1,6 @@
 mod automation;
 mod base_scan;
+mod chat;
 mod dev;
 mod fortress_discovery;
 mod health;
@@ -710,6 +711,7 @@ async fn run_inner(
                     recruitment.observe(store, &account_id, &text).await;
                     station.observe(store, &account_id, &text, now_ms()).await;
                     transfer.observe(store, &account_id, parsed_packet.as_ref(), now_ms()).await;
+                    chat::observe(store, &account_id, parsed_packet.as_ref(), now_ms()).await;
                     let frames = machine.on_server_text(&text)?;
                     if let Some(packet) = parsed_packet.as_ref()
                         && let Some(refused) =

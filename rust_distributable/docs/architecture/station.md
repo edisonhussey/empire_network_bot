@@ -6,7 +6,7 @@ passed. A *support bot* is only the spot to send them, one coordinate per kingdo
 kingdom with none is never stationed. The castles themselves are known from sign-in,
 so nothing about them is configured.
 
-Packet facts: [`../network_packets/station_sequence.md`](../network_packets/station_sequence.md).
+Packet facts: [`../network/sequences/support.md`](../network/sequences/support.md).
 Rules (pure): `empire-core/src/station.rs`. Persistence: `store/station.rs` (migration
 V22). The session part: `empire-daemon/src/direct/station.rs`. HTTP: `daemon/src/station.rs`.
 

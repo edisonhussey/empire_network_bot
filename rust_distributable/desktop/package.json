@@ -8,7 +8,7 @@
     "build": "vite build",
     "tauri": "tauri",
     "test": "node --test src/",
-    "release": "../scripts/release.sh"
+    "release": "../utils/scripts/release.sh"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.0",

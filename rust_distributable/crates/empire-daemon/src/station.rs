@@ -10,7 +10,7 @@ use axum::{
     http::StatusCode,
 };
 use empire_core::{
-    station::{UnitKind, unit_kind},
+    station::{UnitKind, unit_label},
     store::{OverviewCastle, STATION_KINGDOMS, StationBotKingdom, StationJobRow},
 };
 use serde::{Deserialize, Serialize};
@@ -141,7 +141,7 @@ fn overview_row(castle: OverviewCastle) -> OverviewRow {
     let mut tools = Vec::new();
     let mut other = Vec::new();
     for (id, count) in castle.units.iter().filter(|(_, count)| **count > 0) {
-        let (kind, name) = unit_kind(*id);
+        let (kind, name) = unit_label(*id);
         let entry = UnitCount { id: *id, name, count: *count };
         match kind {
             UnitKind::Troop => troops.push(entry),
@@ -282,8 +282,10 @@ mod tests {
         assert_eq!(row.troops.len(), 1);
         assert_eq!((row.troops[0].id, row.troops[0].count), (602, 9));
         assert_eq!(row.tools.iter().map(|tool| tool.id).collect::<Vec<_>>(), vec![614, 660], "637 has none");
-        assert_eq!(row.tools[0].name, "scaling_ladder");
-        assert_eq!(row.other.len(), 1);
+        // Names are the ones the player reads, from the game's own unit table (it was `scaling_ladder`).
+        assert_eq!(row.tools[0].name, "Scaling ladder");
+        assert_eq!(row.troops[0].name, "Spearman");
+        assert_eq!(row.other.len(), 1, "an id the game does not define stays in Other");
         assert!((row.food - 637.14).abs() < 1e-9);
     }
 }

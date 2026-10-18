@@ -1,8 +1,14 @@
-# `msk` (Minute Skip, kingdom transfer)
+# `msk`: Minute Skip (kingdom transfer)
 
-Spends one **minute-skip item** to shorten a transfer travelling between kingdoms. It does not touch map
-marches or tower cooldowns (the packet carries no march or tower id). Proven live on 2026-10-17: two `MS5` on
-a 7200 s transfer into Fire Peaks landed it. Rules: [`../game_infrastructure/kingdom_transfer_rules.md`](../game_infrastructure/kingdom_transfer_rules.md).
+| | |
+| --- | --- |
+| Direction | client to server, with a reply |
+| Evidence | proven live (two `MS5` skips landed a 7200 s transfer, 2026-10-17) |
+| Code | `empire-core/src/transfer.rs` (`msk_packet`, `skip_item`), `empire-daemon/src/direct/transfer.rs` |
+
+## Purpose
+
+Spends one **minute-skip item** to shorten a transfer travelling between kingdoms. It does not touch map marches or tower cooldowns; the packet carries no march or tower id.
 
 ## Request
 
@@ -14,7 +20,7 @@ a 7200 s transfer into Fire Peaks landed it. Rules: [`../game_infrastructure/kin
 | --- | --- |
 | `MST` | the skip item: `MS` plus its 1-based position in the seven minute-skips (below) |
 | `KID` | the **target** kingdom of the transfer being skipped, as a **string** |
-| `TT` | transfer type as a **string**: `"1"` troops, `"2"` goods. Read from the client; only `"1"` has been sent |
+| `TT` | transfer type, as a **string**: `"1"` troops, `"2"` goods (read from the client; only `"1"` sent) |
 
 | `MST` | Duration |
 | --- | ---: |
@@ -26,27 +32,30 @@ a 7200 s transfer into Fire Peaks landed it. Rules: [`../game_infrastructure/kin
 | `MS6` | 5 h |
 | `MS7` | 24 h |
 
-Only `MS5` has been sent; the others come from the items file (`currencyMinutesSkipValues`, ids 1001 to
-1007) and the keys the server itself lists in `gbd.sce` (`MS1`..`MS7`, an item missing when the account has
-none).
+Only `MS5` has been sent. The list is the items file's `currencyMinutesSkipValues` (ids 1001 to 1007) and the keys the server itself lists in `gbd.sce` (`MS1`..`MS7`; an item is missing when the account has none).
 
-## Replies
+## Reply
 
-Each skip answers with three independent things:
+Three independent things:
 
-1. `sce`: `[["MS5",995]]`, the item's new count.
+1. [`sce`](sce.md): `[["MS5",995]]`, the item's new count.
 2. the `msk` reply: `{"kpi":{... "UT":[{"KID":3,"RS":3589,...}]}}`, the transfer with its new seconds left.
-3. when it lands, a plain `kpi` with **no `UT`** for that kingdom.
+3. on landing, a plain [`kpi`](kpi.md) with **no `UT`** for that kingdom.
 
-Live timeline (a 7200 s transfer, skips about 10 s apart): 7200, then 3589 after one `MS5`, then landed after
-the second. One `MS5` takes off 3600 s; a skip worth more than what is left finishes it and the rest is lost.
+## Rules and behaviour
+
+* One `MS5` takes 3600 s off. A skip worth more than what is left finishes the transfer and the rest is lost (the second `MS5` was used with 3597 s left).
+* A skip needs a transfer in progress for that `KID` and `TT`; send it after the `kut` reply shows the `UT` entry.
+* The full-skip alternative `kst` (`{"KID":3,"TT":1}`, spends rubies) exists in the client; it was deliberately not used and is undocumented beyond its name.
 
 ## Handling in the code
 
-`direct/transfer.rs` spends the chosen item one at a time, each after a paced pause and only while a transfer
-is really travelling (read from the stored `kpi`), stops when the item runs out or after one more than the
-journey needs, and never retries a refused skip. The window offers only skip items a journey can use in ten
-or fewer. See [`../architecture/kingdom-transfer.md`](../architecture/kingdom-transfer.md).
+One `msk` per paced pause while the stored `kpi` still shows the transfer travelling; stops when the item runs out, after one more than the journey needs, or when a `kpi` shows no `UT`; a refused skip is never retried ([`../architecture/kingdom-transfer.md`](../architecture/kingdom-transfer.md)).
 
-The full-skip alternative `kst` (`{"KID":3,"TT":1}`, rubies) exists in the client and was deliberately not
-used; it is undocumented beyond its name.
+## Captures
+
+[`msk_request.txt`](captures/msk_request.txt), [`msk_response_first.txt`](captures/msk_response_first.txt), [`msk_response_landed.txt`](captures/msk_response_landed.txt), [`sce_push.txt`](captures/sce_push.txt).
+
+## Open questions
+
+Skip items other than `MS5`; `TT` `"2"`; `kst`; the error statuses.

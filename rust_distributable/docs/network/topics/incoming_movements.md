@@ -1,6 +1,6 @@
 # Incoming movements from GAM packets
 
-This note records what is known about incoming movements. It is based on the [supplied GAM fixture](gam_sample.txt), a second packet supplied for an alliance target ([gam.txt](gam.txt)), the user's comparison of timing values across packets from the same movement, local September 2026 GAM captures, and the owned-castle attack fixture [gam_156095506.txt](gam_156095506.txt). The parser is `crates/empire-core/src/pvp.rs`; the PVP record is described in [`../architecture/pvp.md`](../architecture/pvp.md). Treat these as observed packet shapes, not a complete GAM schema.
+This note records what is known about incoming movements. It is based on the [supplied GAM fixture](../captures/gam_incoming_fixture.txt), a second packet supplied for an alliance target ([gam_alliance_target.txt](../captures/gam_alliance_target.txt)), the user's comparison of timing values across packets from the same movement, local September 2026 GAM captures, and the owned-castle attack fixture [gam_attack_on_owned_castle.txt](../captures/gam_attack_on_owned_castle.txt). The parser is `crates/empire-core/src/pvp.rs`; the PVP record is described in [`../architecture/pvp.md`](../../architecture/pvp.md). Treat these as observed packet shapes, not a complete GAM schema.
 
 ## Confidence and scope
 
@@ -95,15 +95,15 @@ M[i].M.TA[2] == own_y
 
 For the fixture, `(own_kid, own_x, own_y) = (0, 677, 688)` matches. `(0, 647, 759)` does **not** match: those are the sender coordinates. This rule does not establish that the movement is hostile. Keep any later hostile/support distinction in the isolated `is_incoming()` predicate after it is verified from real packets.
 
-The Rust record is persistent and keyed by `(account_id, MID)`. **First observation wins** for the ETA and player details. A later GAM for the same MID may fill an unknown composition when the first packet had only `GS`. Multiple distinct MIDs are tracked independently. See [`../architecture/pvp.md`](../architecture/pvp.md).
+The Rust record is persistent and keyed by `(account_id, MID)`. **First observation wins** for the ETA and player details. A later GAM for the same MID may fill an unknown composition when the first packet had only `GS`. Multiple distinct MIDs are tracked independently. See [`../architecture/pvp.md`](../../architecture/pvp.md).
 
-An inbound successful [`mrm` frame](mrm.md) containing its `MID` moves a known entry to **Retreated**. The user reports that retreat is irreversible and the MID is terminal. A request alone is not a confirmed retreat.
+An inbound successful [`mrm` frame](../mrm.md) containing its `MID` moves a known entry to **Retreated**. The user reports that retreat is irreversible and the MID is terminal. A request alone is not a confirmed retreat.
 
 ## GA troop counts; tools and waves still unknown
 
 The original supplied `payload.M[0]` has only `GS`, so troop quantity remains Unknown in that version. A later GAM can carry `GA` with arrays `L`, `M`, `R`, `RW`, each containing `[unit_id,count]` pairs. Sum all four groups for the march's visible troop count. `UM.L.EQ` is commander equipment and must not be counted as troops or tools; `UM.PWD` and `UM.TWD` are not verified totals. Tool and wave counts remain Unknown.
 
-For the [latest owned-castle attack fixture](gam_156095506.txt), `TA[1:3]=[543,520]` is the receiver and `SA[1:3]=[546,520]` the sender. `TID=596904` resolves to receiver alliance `3026`, while `SID=432945` resolves to sender alliance `3652`; their positions in `O[]` are reversed from the earlier fixture. `TT-PT=185-4=181` seconds remain at observation. `GA.M=[[10,22]]` means 22 of unit 10 (Veteran Deathly Horror); `GA.RW=[[655,67]]` means 67 of unit 655 (Traveling Knight). `L` and `R` are empty, so **22 + 67 = 89 visible troops**. The operator describes the RW amount as courtyard attack troops; the packet key alone does not establish its exact battle role, so the UI labels it RW / reserve-courtyard. It is included in the total. `GS` alone is still Unknown, and a later GA fills that value without moving the original ETA.
+For the [latest owned-castle attack fixture](../captures/gam_attack_on_owned_castle.txt), `TA[1:3]=[543,520]` is the receiver and `SA[1:3]=[546,520]` the sender. `TID=596904` resolves to receiver alliance `3026`, while `SID=432945` resolves to sender alliance `3652`; their positions in `O[]` are reversed from the earlier fixture. `TT-PT=185-4=181` seconds remain at observation. `GA.M=[[10,22]]` means 22 of unit 10 (Veteran Deathly Horror); `GA.RW=[[655,67]]` means 67 of unit 655 (Traveling Knight). `L` and `R` are empty, so **22 + 67 = 89 visible troops**. The operator describes the RW amount as courtyard attack troops; the packet key alone does not establish its exact battle role, so the UI labels it RW / reserve-courtyard. It is included in the total. `GS` alone is still Unknown, and a later GA fills that value without moving the original ETA.
 
 That MID was an attack on an owned castle that was retreated before the support window opened; the proof-of-concept proxy recorded it as **Retreated** and never reached the DCL/SDI/CDS dispatch window.
 

@@ -8,6 +8,7 @@
 #   oa version            print the current version
 #   oa test               cargo test + frontend build
 #   oa check              fast cargo check
+#   oa clean              delete the debug build cache (rebuilds on demand; code and release builds untouched)
 #
 # Works through a symlink, so it can live on your PATH.
 
@@ -21,14 +22,14 @@ while [ -L "$SELF" ]; do
         *) SELF="$(dirname "$SELF")/$LINK" ;;
     esac
 done
-ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+ROOT="$(cd "$(dirname "$SELF")/../.." && pwd)"
 
 current() { tr -d '[:space:]' < "$ROOT/VERSION"; }
 
 case "${1:-help}" in
     build)
         shift
-        exec "$ROOT/scripts/release.sh" "$@"
+        exec "$ROOT/utils/scripts/release.sh" "$@"
         ;;
     bump)
         if [ -n "${2:-}" ]; then
@@ -38,7 +39,7 @@ case "${1:-help}" in
             next="$major.$minor.$((patch + 1))"
         fi
         echo "$next" > "$ROOT/VERSION"
-        "$ROOT/scripts/sync-version.sh"
+        "$ROOT/utils/scripts/sync-version.sh"
         ;;
     version)
         current
@@ -50,7 +51,11 @@ case "${1:-help}" in
     check)
         (cd "$ROOT" && cargo check --workspace --tests)
         ;;
+    clean)
+        (cd "$ROOT" && cargo clean --profile dev)
+        (cd "$ROOT" && cargo clean --profile dev --manifest-path desktop/src-tauri/Cargo.toml)
+        ;;
     *)
-        sed -n '2,13p' "$SELF" | sed 's/^# \{0,1\}//'
+        sed -n '2,14p' "$SELF" | sed 's/^# \{0,1\}//'
         ;;
 esac

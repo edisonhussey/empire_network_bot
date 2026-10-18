@@ -1,3 +1,4 @@
+mod chat;
 mod dev_shared;
 mod direct;
 mod licence;
@@ -186,7 +187,9 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:47821";
 /// 54: manual kingdom transfers (`/v1/transfers`, `/check`, `/refresh`, `/{id}/cancel`): the
 /// Castle Overview can send troops to another kingdom while the bot is off, optionally spending
 /// minute-skip items until they land.
-pub const API_VERSION: u16 = 54;
+/// 55: the Chat tab: `GET /v1/chat` lists the alliance messages an account's session has heard
+/// (`acm`, stored per account, newest 2,000).
+pub const API_VERSION: u16 = 55;
 
 /// Is something already listening on the service port?
 ///
@@ -279,6 +282,7 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
         .route("/v1/dev/pace", post(dev_pace))
         .route("/v1/dev/map", get(dev_map))
         .route("/v1/dev/movements", get(dev_movements))
+        .route("/v1/chat", get(chat::chat))
         .route("/v1/pvp", get(pvp::pvp))
         .route("/v1/plans/station-bots", post(station::create_station_bot))
         .route("/v1/plans/station-bots/{id}", delete(station::delete_station_bot))

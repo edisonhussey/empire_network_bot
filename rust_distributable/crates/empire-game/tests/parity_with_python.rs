@@ -1,9 +1,8 @@
 //! Proves the Rust port matches the Python source of truth.
 //!
-//! `tests/fixtures/sands_attacks.json` is produced by `scripts/gen_game_data.py`
-//! from the real Python serialiser (`bot/game_data/attack.py`), so a failure
-//! here means the Rust side has drifted from the bot — not that the test is
-//! brittle.
+//! `tests/fixtures/sands_attacks.json` was produced once from the real Python serialiser
+//! (`bot/game_data/attack.py`) and is kept as a frozen fixture, so a failure here means the Rust
+//! attack encoder no longer produces the bytes the Python bot produced, not that the test is brittle.
 
 use empire_game::{
     Attack, KINGDOMS, SAND_KINGDOM_ID, Side, Slot, TOOLS, TROOPS, Wave, tool_by_name, troop_by_id,

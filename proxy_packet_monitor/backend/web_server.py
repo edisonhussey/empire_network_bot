@@ -16,10 +16,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .storage import db_path, event, events, export_session, list_sessions
+from .storage import db_path, event, events, export_raw, export_session, list_sessions, raw_lines
 from .incoming import IncomingLedger
 from .auto_support import load_config as load_support_config, save_config as save_support_config
 from .protocol import matches_game_url
+from .hotkey import Hotkey
 from .injector import InjectChannel, InjectError
 from .login_capture import DEFAULT_HOSTS as DEFAULT_CAPTURE_HOSTS
 from .envfile import BY_CONFIG_KEY, overrides as env_overrides, update_env
@@ -60,9 +61,8 @@ class Service:
         self.capture_path = self.data / "login_capture.json"
         self.injector = InjectChannel(self.data)
         self.proxy = None
-        self.keyboard = None
-        self.shortcut_error = None
-        self._start_shortcut()
+        # The global recording key listens only while the proxy runs (started and stopped with it).
+        self.hotkey = Hotkey(self._hotkey_pressed)
 
     def update_config(self, changes):
         """Ports, hosts and executables live in .env (when there is one); the rest in the config file."""
@@ -82,15 +82,12 @@ class Service:
         temp.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
         temp.replace(self.config_path)
 
-    def _start_shortcut(self):
-        if not self.config.get("shortcut"):
-            return
-        try:
-            from pynput import keyboard
-            self.keyboard = keyboard.GlobalHotKeys({self.config["shortcut"]: lambda: self.control("toggle")})
-            self.keyboard.start()
-        except Exception as exc:
-            self.shortcut_error = f"Global shortcut unavailable: {exc}"
+    def proxy_running(self):
+        return self.proxy is not None and self.proxy.poll() is None
+
+    def _hotkey_pressed(self):
+        if self.proxy_running():
+            self.control("toggle")
 
     def capture_enabled(self):
         try:
@@ -98,11 +95,34 @@ class Service:
         except (OSError, ValueError, AttributeError):
             return False
 
-    def set_capture(self, enabled):
+    def capture_images(self):
+        try:
+            return bool(json.loads(self.capture_path.read_text(encoding="utf-8")).get("images"))
+        except (OSError, ValueError, AttributeError):
+            return False
+
+    def set_capture(self, enabled=None, images=None):
+        """Either box may be set on its own; the one not given keeps its value."""
+        state = {"enabled": self.capture_enabled() if enabled is None else bool(enabled),
+                 "images": self.capture_images() if images is None else bool(images)}
         temporary = self.capture_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"enabled": bool(enabled)}), encoding="utf-8")
+        temporary.write_text(json.dumps(state), encoding="utf-8")
         temporary.replace(self.capture_path)
-        return {"enabled": bool(enabled)}
+        return state
+
+    def export_raw(self, session_id, types, query):
+        """Write the events the timeline shows (same filter) as raw text, one per line, to `exports/`.
+        Also copied to `exports/latest.txt`, so the newest export always has the same path."""
+        types = [str(item) for item in (types or [])]
+        query = str(query or "")
+        label = "_".join(part for part in ("-".join(sorted(types)) if types else "", f"q-{query}" if query else "") if part)
+        name = f"{session_id[:8]}{'_' + label if label else ''}"
+        name = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)[:80]
+        destination = self.data / "exports" / f"{name}.txt"
+        count = export_raw(self.sessions, session_id, types, query, destination)
+        latest = self.data / "exports" / "latest.txt"
+        shutil.copyfile(destination, latest)
+        return {"path": str(destination), "latest": str(latest), "count": count}
 
     def control(self, action):
         command = {"id": uuid.uuid4().hex, "action": action, "at": time.time()}
@@ -112,7 +132,7 @@ class Service:
         return command
 
     def inject(self, text, to_client=False):
-        if not (self.proxy is not None and self.proxy.poll() is None):
+        if not self.proxy_running():
             raise InjectError("The proxy is not running.")
         return self.injector.submit(text, to_client)
 
@@ -148,6 +168,7 @@ class Service:
                 raise RuntimeError(f"Proxy exited during startup. Check {self.data / 'proxy.log'}")
             try:
                 with socket.create_connection((check_host, port), timeout=0.1):
+                    self.hotkey.start(self.config.get("shortcut", ""))
                     return
             except OSError:
                 time.sleep(0.1)
@@ -155,6 +176,7 @@ class Service:
         raise RuntimeError(f"Proxy did not open {check_host}:{port}. Check {self.data / 'proxy.log'}")
 
     def stop_proxy(self):
+        self.hotkey.stop()
         if self.proxy and self.proxy.poll() is None:
             self.proxy.terminate()
             try:
@@ -175,9 +197,10 @@ class Service:
                 "endpoint": addon.get("endpoint") if running else None,
                 "last_websocket_url": addon.get("last_websocket_url") if running else None,
                 "last_websocket_matches_game": matches_game_url(addon["last_websocket_url"]) if running and addon.get("last_websocket_url") else None,
-                "capture_enabled": self.capture_enabled(),
+                "capture_enabled": self.capture_enabled(), "capture_images": self.capture_images(),
                 "capture": addon.get("capture") if running else None,
-                "shortcut": self.config["shortcut"], "shortcut_error": self.shortcut_error,
+                "shortcut": self.hotkey.shortcut or self.config["shortcut"], "shortcut_active": running and self.hotkey.active,
+                "shortcut_error": self.hotkey.error,
                 "proxy_port": self.config["proxy_port"], "data_dir": str(self.data)}
 
 
@@ -193,6 +216,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _text(self, status, body, filename):
+        data = body.encode("utf-8")
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError):
@@ -240,6 +276,9 @@ class Handler(BaseHTTPRequestHandler):
                                 min(300, max(1, int(args.get("limit", ["100"])[0]))), max(0, int(args.get("offset", ["0"])[0])))
             elif len(parts) == 5 and parts[:2] == ["api", "sessions"] and parts[3] == "events":
                 result = event(self.service.sessions, parts[2], int(parts[4]))
+            elif len(parts) == 4 and parts[:2] == ["api", "sessions"] and parts[3] == "raw":
+                lines = raw_lines(self.service.sessions, parts[2], args.get("type", []), args.get("q", [""])[0])
+                return self._text(200, "".join(line + "\n" for line in lines), f"{parts[2][:8]}.txt")
             else: return self._reply(404, {"error": "not found"})
             self._reply(200, result)
         except (ValueError, FileNotFoundError) as exc:
@@ -257,7 +296,9 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/recording/start": result = self.service.control("start")
             elif path == "/api/recording/stop": result = self.service.control("stop")
             elif path == "/api/inject": result = self.service.inject(body.get("text"), body.get("to_client"))
-            elif path == "/api/capture/config": result = self.service.set_capture(body.get("enabled"))
+            elif path == "/api/capture/config": result = self.service.set_capture(body.get("enabled"), body.get("images"))
+            elif path.startswith("/api/sessions/") and path.endswith("/export-raw"):
+                result = self.service.export_raw(path.split("/")[3], body.get("types"), body.get("q"))
             elif path == "/api/incoming/config": result = self.service.incoming.configure(body)
             elif path == "/api/auto-support/config":
                 result = save_support_config(self.service.support_config_path, body)
@@ -310,7 +351,6 @@ def main():
     except KeyboardInterrupt: pass
     finally:
         service.stop_proxy()
-        if service.keyboard: service.keyboard.stop()
         server.server_close()
 
 if __name__ == "__main__": main()

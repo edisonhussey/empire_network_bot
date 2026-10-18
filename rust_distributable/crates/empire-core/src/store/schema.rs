@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 26;
+pub const SCHEMA_VERSION: i64 = 27;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -843,13 +843,33 @@ pub const V26: Migration = &[
     "CREATE INDEX IF NOT EXISTS kingdom_transfer_open_idx ON kingdom_transfer (account_id, phase)",
 ];
 
+/// Alliance chat, per account (`docs/network/acm.md`).
+///
+/// `alliance_chat`: one row per message the account's own session heard (`acm`, or the
+/// history `acl`). The server sends no timestamp, only the message's age, so `sent_at_ms` is the
+/// arrival time minus that age. Bounded: only the newest 2,000 rows per account are kept.
+pub const V27: Migration = &[
+    "CREATE TABLE IF NOT EXISTS alliance_chat (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id TEXT NOT NULL,
+        player_id INTEGER NOT NULL,
+        player_name TEXT NOT NULL,
+        text TEXT NOT NULL,
+        sent_at_ms INTEGER NOT NULL,
+        received_at_ms INTEGER NOT NULL,
+        FOREIGN KEY (account_id) REFERENCES account_profile(account_id) ON DELETE CASCADE
+    )",
+    "CREATE INDEX IF NOT EXISTS alliance_chat_recent_idx ON alliance_chat (account_id, id)",
+];
+
 pub const MIGRATIONS: &[Migration] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27,
 ];
 
 /// Every table that holds user data, for the storage report and full wipe.
 /// Order matters for deletion: children before parents.
 pub const DATA_TABLES: &[&str] = &[
+    "alliance_chat",
     "kingdom_transfer",
     "automation_mode_reserve",
     "station_job",

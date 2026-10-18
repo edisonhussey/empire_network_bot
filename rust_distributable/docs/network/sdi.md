@@ -1,9 +1,46 @@
-# SDI: open support details
+# `sdi`: Support Defence Info (opens the support page)
 
-The captured outbound request in [sdi.txt](sdi.txt) is `%xt%EmpireEx_49%sdi%1%{"TX":468,"TY":507,"SX":543,"SY":520}%`. `S` coordinates are the source castle and `T` coordinates are the destination. This opens/inspects the support page; it does not dispatch troops. The successful inbound reply contains `SCID=437391`, `gui.I` (observed `[item_id,count]` home rows), `gui.TU` (units out), and `gli.C` (the roster, not proof of a free LID). Validate `SCID` against the selected source castle.
+| | |
+| --- | --- |
+| Direction | client to server, with a reply |
+| Evidence | captured |
+| Code | `empire-core/src/station.rs` (`parse_sdi`), `empire-daemon/src/direct/station.rs` |
 
-The proxy support proof of concept intersects positive `gui.I` quantities with a recent matching `dcl.C[].AI[].AC` and known troop IDs. This is a conservative way to choose home units; confirm the exact source and inventory semantics with additional captures.
+## Purpose
 
-Captured response excerpt:
+Opens and inspects the support page for a destination. It does **not** dispatch troops; [`cds`](cds.md) does.
 
-%xt%sdi%1%0%{"SCID":437391,"gaa":{"AI":[1,468,507,408808,561635,3,3,3,2,0,"Castel ERIC2507",0,0,-1,-1,-1,0,0,[],0]},"B":{"ID":1,"WID":1,"VIS":0,"LICID":-1,"GID":104,"L":1,"ST":0,"W":4,"D":2,"SPR":2,"EQ":[[24050925,1,1,3,0,[[6,[5.0]],[11,[9.0]],[8,[8.0]]],-1,-1,0,-1,-1,0],[24218952,2,1,3,1,[[3,[10.0]],[9,[10.0]],[10,[6.0]]],-1,-1,0,-1,-1,0],[25579699,3,1,3,3,[[9,[11.0]],[1,[4.0]],[9,[7.0]]],-1,-1,0,-1,-1,0],[23509919,4,1,3,2,[[8,[13.0]],[6,[2.0]],[11,[4.0]]],-1,-1,0,-1,-1,0],[24281110,6,1,13,5,[[205,[18.0]],[304,[-5.0]]],-1,-1,0,-1,-1,0]],"E":[[6,[5.0],"EQ"],[11,[9.0],"EQ"],[8,[8.0],"EQ"],[3,[10.0],"EQ"],[9,[10.0],"EQ"],[10,[6.0],"EQ"],[9,[11.0],"EQ"],[1,[4.0],"EQ"],[9,[7.0],"EQ"],[8,[13.0],"EQ"],[6,[2.0],"EQ"],[11,[4.0],"EQ"],[205,[18.0],"EQ"],[304,[-5.0],"EQ"]],"AE":[[702,[100000],"BG"],[706,[100000],"BG"],[427,[3.0],"BG"],[702,[3000],"BG"],[706,[1500],"BG"],[702,[15000],"BG"],[706,[5000],"BG"]],"GASAIDS":[],"SIDS":[]},"S":[[[652,27]],[],[[652,1]],[],[],[],[]],"AS":0,"gui":{"I":[[602,9],[637,0],[614,5],[660,3]],"SHI":[],"HI":[],"TU":[]},"gli":{"B":[{"ID":1,"WID":1,"VIS":0,"LICID":437391,"N":"","GID":-1,"W":1,"D":1,"SPR":0,"EQ":[]}],"C":[{"ID":0,"WID":2,"VIS":0,"N":"","GID":-1,"W":1,"D":0,"SPR":1,"EQ":[[28560429,6,2,10,0,[[242,[25.0]]],801,22,0,-1,-1,1]]},{"ID":2,"WID":2,"VIS":1,"N":"","GID":-1,"W":0,"D":0,"SPR":0,"EQ":[]},{"ID":3,"WID":2,"VIS":2,"N":"","GID":-1,"W":0,"D":0,"SPR":0,"EQ":[]}]},"abe":{"B":[{"ID":1,"WID":1,"VIS":0,"LICID":408808,"N":"","GID":-1,"W":1,"D":1,"SPR":0,"EQ":[]}],"C":[{"ID":0,"WID":2,"VIS":0,"N":"","GID":-1,"W":1,"D":0,"SPR":1,"EQ":[[28560429,6,2,10,0,[[242,[25.0]]],801,22,0,-1,-1,1]]},{"ID":2,"WID":2,"VIS":1,"N":"","GID":-1,"W":0,"D":0,"SPR":0,"EQ":[]},{"ID":3,"WID":2,"VIS":2,"N":"","GID":-1,"W":0,"D":0,"SPR":0,"EQ":[]}]},"AE":[[15,[35.0],"AB"]],"UYL":224500,"AUYL":106500,"UWL":300}%
+## Request
+
+```
+%xt%EmpireEx_49%sdi%1%{"TX":468,"TY":507,"SX":543,"SY":520}%
+```
+
+`S` coordinates are the source castle, `T` the destination.
+
+## Reply
+
+| Field | Meaning |
+| --- | --- |
+| `SCID` | the source castle id; validate it against the selected source castle |
+| `gui.I` | `[item_id, count]` rows at home (observed) |
+| `gui.TU` | units already out |
+| `gli.C` | the commander roster (not proof of a free `LID`) |
+
+A shortened excerpt: `%xt%sdi%1%0%{"SCID":437391,"gaa":{"AI":[1,468,507,408808,561635,...]},"B":{...},"gui":{"I":[[602,9],[637,0],[614,5],[660,3]],"SHI":[],"HI":[],"TU":[]},"gli":{...},...}%` (full text in the capture).
+
+## Rules and behaviour
+
+The support proof of concept intersects positive `gui.I` quantities with a recent matching `dcl` area's `AC` and known troop ids: a conservative way to choose home units. Confirm the exact source and inventory semantics with more captures.
+
+## Handling in the code
+
+Step 2 of [`sequences/support.md`](sequences/support.md).
+
+## Captures
+
+[`sdi_request.txt`](captures/sdi_request.txt), [`sdi_response.txt`](captures/sdi_response.txt).
+
+## Open questions
+
+Refusal statuses (none captured).

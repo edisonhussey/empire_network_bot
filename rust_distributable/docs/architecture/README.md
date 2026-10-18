@@ -14,6 +14,7 @@ about the system that uses them.
 | [`target-selection.md`](target-selection.md) | Which tower is attacked next: the spotlight algorithm, momentum, tuning and measured trade-offs |
 | [`kingdom-grouping.md`](kingdom-grouping.md) | Which kingdom is attacked in next: staying put instead of alternating, the short wait, the streak cap and its settings |
 | [`kingdom-transfer.md`](kingdom-transfer.md) | Moving troops between kingdoms from the Castle Overview: the checks before sending, the skips, the state funnels and the pacing |
+| [`chat.md`](chat.md) | The Chat tab: how alliance messages are heard, timed (the packet has only an age), stored per account and shown |
 | [`timing.md`](timing.md) | The stochastic wait generator and how global limits override it |
 | [`response-health.md`](response-health.md) | Missing and null responses, the rolling-hour tolerance and the safe pause |
 | [`development-tab.md`](development-tab.md) | The read-only Development tab: timing graph, kingdom map, movements |

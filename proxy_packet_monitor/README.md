@@ -37,6 +37,15 @@ PYTHONPATH=. ../venv/bin/python -m unittest discover -s tests -v
 
 **Reading replies while recording.** An active recording is a `*.partial.sqlite3` that is committed to disk only every 100 events, so a reply injected a moment ago is not in the file yet. Stopping the recording flushes and finalises it (the file loses `.partial`); to read the result of an injected frame, stop, read, then start again.
 
+**Recording shortcut** (Settings, "shortcut"; set to `space` now). One key, **in any application**, toggles recording (`● Start` / `■ Stop`), so a short snippet becomes its own session without looking at the page. It listens **only while the proxy is running** (started and stopped with it; the header says "listening" or "starts with the proxy"), and a held key flips it once. Names accepted: `space`, `f9`, `esc`, `enter`, `ctrl+alt+r`, a single character, or pynput's `<space>`. Two things to know:
+* The key is *listened to, not swallowed*: it still types in whatever you are using. With `space` (or a letter), **every space you type anywhere while the proxy runs also toggles recording**, including in the game's own chat. Pick a key you do not type (`f9`, `ctrl+alt+r`) if that gets in the way, or clear the setting to switch it off.
+* macOS only delivers the key if the program that launched the monitor (Terminal, or the process monitor) is allowed under System Settings, Privacy and Security, **Input Monitoring**. Without it nothing arrives and no error is shown.
+A recording in progress is a `.partial` file that is committed only every 100 events, so a snippet is readable (by you or by anyone querying the folder) once it is **stopped**; the newest session is then the one just recorded.
+
+**Export visible (raw)** (button under the session list). Writes the events the timeline shows right now, meaning your type filters and search together, as raw text, **one event per line**, to `<data_dir>/exports/<session>_<filters>.txt`, and copies it to `<data_dir>/exports/latest.txt` so the newest export always has the same path (the path is also copied to your clipboard). A line break inside a frame (rare, some XML frames) is written as `\n`. The same text is available as a download from `GET /api/sessions/<id>/raw?type=KPI&q=...`.
+
+**Include images** (checkbox beside Download login data, off by default). Also keeps the pictures the game loads (png, jpg, gif, webp, svg) with the other login downloads, under `files/<host>/<path>`; audio, video and fonts are never kept. Needs Download login data on, and a hard reload of the game so it fetches the pictures again. The header shows the megabytes saved so far. Pictures load as they are used, so one login saves what that login showed; sort them into the project with `utils/scripts/organize_game_data.py` (in `rust_distributable`).
+
 ## Optional compiled desktop
 
 From the repository root:

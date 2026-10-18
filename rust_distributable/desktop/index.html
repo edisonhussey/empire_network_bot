@@ -45,6 +45,7 @@
           <button class="active" data-view="dashboard"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-dashboard"/></svg></span>Dashboard</button>
           <button data-view="overview"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-accounts"/></svg></span>Castle Overview</button>
           <button data-view="troops"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-attacks"/></svg></span>Troop overview</button>
+          <button data-view="chat"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-logs"/></svg></span>Chat</button>
           <div class="nav-group" data-group="attack">
             <button class="nav-parent" type="button" aria-expanded="false" aria-controls="nav-attack"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-attacks"/></svg></span>Attack<span class="nav-caret" aria-hidden="true"></span></button>
             <div class="nav-sub" id="nav-attack" hidden>
@@ -261,6 +262,14 @@
           <section class="card log-card"><div class="card-title"><div><p class="eyebrow">Support console</p><h2>Connection logs</h2></div><div class="row-actions"><span id="log-live" class="log-live offline"><i></i><span id="log-live-label">Offline</span></span><button id="refresh-logs" class="secondary-action" type="button">Refresh now</button><button id="copy-logs" class="secondary-action" type="button">Copy logs</button></div></div><p class="log-note">Updates automatically only while a game socket is connected. Passwords and session tokens are removed.</p><pre id="account-logs" class="log-console">No active connection. Stored events remain available below.</pre><output id="log-result"></output></section>
         </section>
 
+        <section id="view-chat" class="view" hidden>
+          <section class="card chat-card">
+            <div class="card-title"><div><p class="eyebrow">Alliance</p><h2>Chat</h2></div><span id="chat-count" class="dev-legend">–</span></div>
+            <p id="chat-note" class="dev-note"></p>
+            <div id="chat-list" class="chat-list"></div>
+            <p class="dev-note">Messages from the account's alliance, heard in the background while it is connected and stored per account (the newest 2,000). The game sends no clock, only each message's age, so the time shown is when it was written, worked out from when it arrived. Read-only.</p>
+          </section>
+        </section>
         <section id="view-pvp" class="view" hidden>
           <section class="card pvp-card">
             <div class="card-title"><div><p class="eyebrow">Movements seen</p><h2>PVP</h2></div><span id="pvp-who" class="dev-legend">–</span></div>

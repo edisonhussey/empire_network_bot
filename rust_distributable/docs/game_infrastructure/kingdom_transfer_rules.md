@@ -7,9 +7,10 @@ proved them. Packets: [`../network/kut.md`](../network/kut.md), [`../network/msk
 ## Where the numbers come from
 
 The items file (`items_v787.03.json`, the game's own data, version 787.03) and the client code. Both are
-saved by `proxy_packet_monitor` ("Download login data"). `scripts/gen_travel_costs.py <items.json>` turns
-the items file into `crates/empire-game/src/generated/travel_costs.rs`; run it again after a game update and
-the numbers follow.
+saved by `proxy_packet_monitor` ("Download login data"). `utils/scripts/build_tables.py` turns the items file into
+the lookup tables (`data/tables/units.csv`, `kingdoms.csv`, `minute_skips.csv`) and the Rust that mirrors them
+(`crates/empire-game/src/generated/units.rs`, `rules.rs`); run it again after a game update and the numbers follow
+([`../game_data/tables.md`](../game_data/tables.md)).
 
 ## The formula
 

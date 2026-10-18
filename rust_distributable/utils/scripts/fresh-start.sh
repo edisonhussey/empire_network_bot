@@ -13,9 +13,9 @@
 # backup first - and only the newest few backups are kept, so repeated test runs
 # do not leave dozens of multi-megabyte files behind.
 #
-#   scripts/fresh-start.sh --dry-run     show what would happen, change nothing
-#   scripts/fresh-start.sh               do it
-#   KEEP_BACKUPS=5 scripts/fresh-start.sh
+#   utils/scripts/fresh-start.sh --dry-run     show what would happen, change nothing
+#   utils/scripts/fresh-start.sh               do it
+#   KEEP_BACKUPS=5 utils/scripts/fresh-start.sh
 set -euo pipefail
 
 if [ -n "${APPDATA:-}" ]; then

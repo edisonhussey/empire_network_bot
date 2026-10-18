@@ -1,36 +1,50 @@
-# `cat` (Commander Action / Target Return)
+# `cat`: Commander Action / target return
 
-The `cat` packet is an inbound broadcast from the server indicating that a march has landed, looted, and/or begun its return journey.
+| | |
+| --- | --- |
+| Direction | server to client (push) |
+| Evidence | captured |
+| Code | `empire-core/src/hunt.rs` (`return_target`, `loot_from_return`), `store/ledger.rs` (`apply_attack_return`) |
 
-## Inbound Payload
+## Purpose
 
-When a march hits an RBC, Fortress, or player, the `cat` packet pushes the battle outcome, loot payload, and the commander's return time.
+Says a march has landed, looted and begun its return, with the loot and the return time.
 
-**Example Payload:**
+## Push
+
 ```jsonc
 {
   "M": [
     {
-      "MID": 101093730,     // A NEW March ID (not the outbound ID)
-      "KID": 1, 
-      "LID": 16,            // The Commander ID that was used
-      "SA": [ ... ],        // Source Area (Now the RBC)
-      "TA": [ ... ],        // Target Area (Now your Castle)
-      "TT": 1275,           // Return Travel Time
+      "MID": 101093730,     // a NEW march id (not the outbound one)
+      "KID": 1,
+      "LID": 16,            // the commander used
+      "SA": [ ... ],        // source area (now the tower)
+      "TA": [ ... ],        // target area (now your castle)
+      "TT": 1275,           // return travel time
       "LOOT": [ ... ]
     }
   ]
 }
 ```
 
-### Observed Behaviors & Edge Cases
+The loot and result are read by the bot from `A.G` (`[["C1",coins],["C2",rubies]]`) and `A.S` (result flag); the movement from `A.M` (`SA`, `KID`, `MID`, `TT`, `PT`).
 
-1. **March ID Rotation (`MID`)**:
-   As noted, the `MID` here is brand new. To attribute a `cat` to the original `cra`, you must match the packet using the `LID` (Lord ID) and the coordinates. 
-   *Note:* The areas swap on the return leg! The RBC is now the Source Area (`SA`), and your castle is the Target Area (`TA`).
+## Rules and behaviour
 
-2. **Refining Cooldowns**:
-   While the outbound `gam` packet provides a highly accurate estimate of the landing time, the arrival of the `cat` packet provides the exact, irrefutable server timestamp of the landing. The bot should use this moment to apply minor heuristic refinements (e.g., +/- random backoff buffers) to the database cooldown timer.
+1. **The march id is replaced.** `MID` is new. To attribute a `cat` to the original `cra`, match on `LID` plus the coordinates. The areas **swap** on the return leg: the tower is now `SA`, your castle `TA`.
+2. **It refines cooldowns.** The outbound `gam` gives an accurate landing estimate; `cat` is the exact, authoritative landing moment. Use it to apply small refinements (for example random back-off) to the stored cooldown.
+3. **It releases the commander.** `TT` is the return leg. Keep the commander (`LID`) locked until `now + TT + hold_buffer`.
+4. **A looted return is a won attack**, which raises a robber baron's victory count by one ([`../game_infrastructure/robber_baron_level_formula.md`](../game_infrastructure/robber_baron_level_formula.md)).
 
-3. **Commander Release**:
-   The `cat` packet contains the `TT` (Travel Time) for the return leg. The commander (`LID`) must remain locked in the bot's usable pool until `now + TT + hold_buffer` has elapsed.
+## Handling in the code
+
+`apply_attack_return` matches it to the in-flight march by target and commander, closes the ledger row and, for a tower with loot, records the victory.
+
+## Captures
+
+None saved as a file.
+
+## Open questions
+
+The full meaning of `A.S` values.

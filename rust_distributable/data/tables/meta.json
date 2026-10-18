@@ -1,0 +1,17 @@
+{
+  "items_version": "787.03",
+  "items_file": "items_v787.03.json",
+  "items_sha256": "c2eed8bec03ff343e51ea19f12c9503f525bab2d5e4fac067705a9be886e5cf7",
+  "texts_file": "4375/en.json",
+  "texts_sha256": "cf1bed767655103434054f314a47c8a334cbab88c5706a770b02095a256a9e2d",
+  "rows": {
+    "units": 1001,
+    "kingdoms": 6,
+    "minute_skips": 7
+  },
+  "named_units": 826,
+  "art_table_entries": 8143,
+  "units_with_art": 1001,
+  "captured_images": 237,
+  "ggs_dll_file": "ggs.dll.0b914fe686cb8e274f41.js"
+}

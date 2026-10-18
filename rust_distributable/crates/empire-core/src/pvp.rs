@@ -1,7 +1,7 @@
 //! Incoming and alliance movements (the PVP tab), parsed from `gam` and `mrm`.
 //!
 //! Pure functions only: nothing here touches the store or the clock, so the rules
-//! are tested against the captured packets in `docs/network_packets/`.
+//! are tested against the captured packets in `docs/network/captures/`.
 //!
 //! Three steps, each its own function:
 //!
@@ -9,7 +9,7 @@
 //! 2. [`seen_movements`] lists every movement in a `gam`, as the wire states it.
 //! 3. [`classify`] decides whether we record it and how it relates to us.
 //!
-//! Packet facts and their limits: `docs/network_packets/incoming_gam.md`.
+//! Packet facts and their limits: `docs/network/topics/incoming_movements.md`.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -296,9 +296,9 @@ mod tests {
     use super::*;
     use crate::protocol::parse_xt_packet;
 
-    /// The alliance-target capture in `docs/network_packets/gam.txt`.
-    const ALLIANCE_GAM: &str = include_str!("../../../docs/network_packets/gam.txt");
-    const MRM: &str = include_str!("../../../docs/network_packets/mrm.txt");
+    /// The alliance-target capture in `docs/network/captures/gam_alliance_target.txt`.
+    const ALLIANCE_GAM: &str = include_str!("../../../docs/network/captures/gam_alliance_target.txt");
+    const MRM: &str = include_str!("../../../docs/network/captures/mrm_retreat.txt");
 
     fn me(alliance: Option<(i64, &str)>) -> AllianceIdentity {
         AllianceIdentity {

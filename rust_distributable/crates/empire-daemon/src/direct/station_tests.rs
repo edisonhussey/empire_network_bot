@@ -1,6 +1,6 @@
 //! Station tests against a fake clock.
 //!
-//! The captures in `docs/network_packets/` are the packets: the `gam` of an attack
+//! The captures in `docs/network/captures/` are the packets: the `gam` of an attack
 //! on castle 437391 of account `ventrilo` (player 596904, alliance 3026), and the
 //! `dcl`, `sdi`, `cds` and `mcm` replies for the same castle. A [`Sim`] plays the
 //! server: it answers each request a fixed round trip later, or not at all.
@@ -11,11 +11,11 @@ use empire_core::{account::OwnedCastle, store::StationBotKingdom};
 
 const ACCOUNT: &str = "ventrilo";
 const HEADER: &str = "EmpireEx_49";
-const ATTACK: &str = include_str!("../../../../docs/network_packets/gam_156095506.txt");
-const DCL: &str = include_str!("../../../../docs/network_packets/dcl.txt");
-const SDI: &str = include_str!("../../../../docs/network_packets/sdi_response.txt");
-const CDS: &str = include_str!("../../../../docs/network_packets/cds.txt");
-const MCM: &str = include_str!("../../../../docs/network_packets/mcm_response.txt");
+const ATTACK: &str = include_str!("../../../../docs/network/captures/gam_attack_on_owned_castle.txt");
+const DCL: &str = include_str!("../../../../docs/network/captures/dcl_exchange.txt");
+const SDI: &str = include_str!("../../../../docs/network/captures/sdi_response.txt");
+const CDS: &str = include_str!("../../../../docs/network/captures/cds_response.txt");
+const MCM: &str = include_str!("../../../../docs/network/captures/mcm_response.txt");
 const T0: i64 = 1_800_000_000_000;
 /// Remaining travel in the capture: `TT - PT = 185 - 4`.
 const REMAINING_MS: i64 = 181_000;

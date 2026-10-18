@@ -19,8 +19,9 @@ from urllib.parse import unquote, urlsplit
 
 DEFAULT_HOSTS = "empire-html5.goodgamestudios.com,files-ak.goodgamestudios.com,langserv.public.ggs-ep.com"
 SKIP_TYPES = ("image/", "audio/", "video/", "font/")
-SKIP_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg", ".mp3", ".ogg", ".wav", ".mp4",
-                 ".woff", ".woff2", ".ttf", ".otf"}
+IMAGE_TYPES = ("image/",)
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg"}
+SKIP_SUFFIXES = IMAGE_SUFFIXES | {".mp3", ".ogg", ".wav", ".mp4", ".woff", ".woff2", ".ttf", ".otf"}
 MAX_BYTES = 64 * 1024 * 1024
 
 
@@ -38,7 +39,8 @@ class LoginCapture:
         self.ws_seq = 0
         self.saved = 0
         self.last_saved_at = None
-        self._flag = (None, False)
+        self._flag = (None, False, False)
+        self.bytes_saved = 0
         self._known: dict[str, str] = {}
         self._queue: SimpleQueue = SimpleQueue()
         self._worker = None
@@ -54,20 +56,28 @@ class LoginCapture:
         except (OSError, ValueError):
             pass
 
-    def enabled(self) -> bool:
-        """The checkbox. Re-read only when the flag file changes."""
+    def _read_flags(self) -> tuple:
+        """`(enabled, images)` from the flag file, re-read only when the file changes."""
         try:
             stamp = self.flag_path.stat().st_mtime_ns
         except OSError:
-            self._flag = (None, False)
-            return False
+            self._flag = (None, False, False)
+            return self._flag
         if self._flag[0] != stamp:
             try:
-                value = bool(json.loads(self.flag_path.read_text(encoding="utf-8")).get("enabled"))
+                body = json.loads(self.flag_path.read_text(encoding="utf-8"))
+                self._flag = (stamp, bool(body.get("enabled")), bool(body.get("images")))
             except (OSError, ValueError, AttributeError):
-                value = False
-            self._flag = (stamp, value)
-        return self._flag[1]
+                self._flag = (stamp, False, False)
+        return self._flag
+
+    def enabled(self) -> bool:
+        """The "Download login data" checkbox."""
+        return self._read_flags()[1]
+
+    def images_enabled(self) -> bool:
+        """The "Include images" checkbox: pictures are kept too (audio, video and fonts never are)."""
+        return self._read_flags()[2]
 
     def wants_host(self, host: str) -> bool:
         return (host or "").lower() in self.hosts
@@ -78,13 +88,17 @@ class LoginCapture:
         parts = urlsplit(url)
         if (parts.hostname or "").lower() not in self.hosts:
             return False
-        if content_type.lower().startswith(SKIP_TYPES):
+        skipped_types, skipped_suffixes = SKIP_TYPES, SKIP_SUFFIXES
+        if self.images_enabled():
+            skipped_types = tuple(t for t in SKIP_TYPES if t not in IMAGE_TYPES)
+            skipped_suffixes = SKIP_SUFFIXES - IMAGE_SUFFIXES
+        if content_type.lower().startswith(skipped_types):
             return False
-        return Path(parts.path).suffix.lower() not in SKIP_SUFFIXES
+        return Path(parts.path).suffix.lower() not in skipped_suffixes
 
     def stats(self) -> dict:
-        return {"enabled": self.enabled(), "saved": self.saved, "logins": self.ws_seq,
-                "last_saved_at": self.last_saved_at, "dir": str(self.root)}
+        return {"enabled": self.enabled(), "images": self.images_enabled(), "saved": self.saved, "logins": self.ws_seq,
+                "megabytes": round(self.bytes_saved / 1e6, 1), "last_saved_at": self.last_saved_at, "dir": str(self.root)}
 
     def on_websocket(self, url: str) -> None:
         self.ws_seq += 1
@@ -143,6 +157,7 @@ class LoginCapture:
             self._known[digest] = relative
             new = True
             self.saved += 1
+            self.bytes_saved += len(body)
             self.last_saved_at = time.time()
         entry = {"t": at, "ws_seq": self.ws_seq, "url": url, "host": parts.hostname, "status": status,
                  "type": content_type, "size": len(body), "sha256": digest, "file": relative, "new": new}

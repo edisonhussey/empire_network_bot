@@ -3,9 +3,9 @@
 The PVP tab lists movements other players make that concern the account or its alliance,
 recorded from the `gam` stream. The Development tab draws the ones still travelling.
 Packet facts and their limits are in
-[`../network_packets/incoming_gam.md`](../network_packets/incoming_gam.md),
-[`../network_packets/mrm.md`](../network_packets/mrm.md) and
-[`../network_packets/alliance_fields.md`](../network_packets/alliance_fields.md).
+[`../network/topics/incoming_movements.md`](../network/topics/incoming_movements.md),
+[`../network/mrm.md`](../network/mrm.md) and
+[`../network/topics/alliance_fields.md`](../network/topics/alliance_fields.md).
 
 ## What is recorded
 

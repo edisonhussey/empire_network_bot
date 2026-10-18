@@ -4,7 +4,7 @@ One concern, one owner. If a rule exists in two places, one of them is a bug.
 
 | Layer | Owns | Must not |
 | --- | --- | --- |
-| `crates/empire-game` | Static game data (troops, tools, kingdoms), attack encoding | Do I/O, touch SQLite, or know about the network |
+| `crates/empire-game` | Static game data (the complete unit and rule tables generated from `data/tables/`, plus the older troop/tool/kingdom tables), attack encoding | Do I/O, touch SQLite, or know about the network |
 | `crates/empire-core` | Domain rules, pacing, planning, licence, SQLite `store` (**single source of truth**) | Open sockets or know about HTTP |
 | `crates/empire-daemon` | Axum API (`lib.rs`, `plans.rs`, `station.rs`, `dev_shared.rs`), one game session per account (`sessions.rs`, `direct/`), `relay.rs` | Invent rules; it applies the ones in `empire-core` |
 | `desktop/src-tauri` | Window and service lifecycle only | Contain business logic |
@@ -27,6 +27,7 @@ One concern, one owner. If a rule exists in two places, one of them is a bug.
 | `station.rs` | Auto-station state machine: one job per attacked castle, gate, castle holds, commander lease (rules in `empire-core/src/station.rs`) |
 | `station_view.rs` | The station's part of the Development snapshot |
 | `inventory.rs` | Sends the Overview's `dcl` when the window asks and the connection is free |
+| `chat.rs` | Listens for alliance chat (`acm`, `acl`) and stores it; sends nothing (parsing in `empire-core/src/chat.rs`) |
 | `transfer.rs` | Manual kingdom transfers: the runner that sends `kut` / `msk` one step at a time, only while the bot is off, and the state funnels (rules in `empire-core/src/transfer.rs`) |
 | `troops.rs` (daemon, top level) | `GET /v1/troops`: the Troop overview over `empire-core/src/store/troops.rs` |
 | `pvp.rs` | Feeds `gbd` identity, `gam` movements and `mrm` retreats to the PVP record (rules live in `empire-core/src/pvp.rs`) |
@@ -43,5 +44,6 @@ One concern, one owner. If a rule exists in two places, one of them is a bug.
 | `views/ruby-chart.js` | Dashboard chart renderer |
 | `views/pace-slider.js` | The vertical test-pace slider of the Development tab (control only) |
 | `views/pvp-model.js` | PVP rules and the movement colour scheme (pure) |
+| `views/chat.js`, `views/chat-model.js` | The Chat tab: alliance messages with sender and time (read-only) |
 | `views/transfer.js`, `views/transfer-model.js` | The Castle Overview's send-troops widget (projection and form) and its pure helpers |
 | `main.js` | Remaining shared state and views, still to be split view by view |

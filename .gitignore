@@ -23,3 +23,12 @@ how_to_.txt
 ventrilo_conn.txt
 workspace.txt
 bot/rbc_proxy_listener.log
+unused
+tests
+output_rust_visual
+development
+bot
+.vscode
+rust_distributable/useless
+rust_distributable/admin
+

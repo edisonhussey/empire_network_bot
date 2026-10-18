@@ -13,6 +13,7 @@ import { commanderRanges } from "./views/commander-ranges.js";
 import { createModeBuilder } from "./views/mode-builder.js";
 import { createSupportBots } from "./views/support-bots.js";
 import { createTroops } from "./views/troops.js";
+import { createChat } from "./views/chat.js";
 import { renderSparkBars } from "./views/spark-bars.js";
 const activation = $("#activation");
 const appShell = $("#app-shell");
@@ -177,6 +178,7 @@ const viewTitles = {
   logs: ["Diagnostics", "Logs"],
   overview: ["Castles", "Castle Overview"],
   troops: ["Commanders", "Troop overview"],
+  chat: ["Alliance", "Chat"],
   "support-bots": ["Station", "Create support"],
   pvp: ["Intelligence", "PVP"],
   development: ["Diagnostics", "Development"],
@@ -188,6 +190,7 @@ const pvp = createPvp();
 const overview = createOverview();
 const modeBuilder = createModeBuilder({ getLibrary: () => library, kingdomLabel: (id) => kingdomLabel(id) });
 const troops = createTroops();
+const chat = createChat();
 // A support bot is stored only; which one an account runs is chosen in the Control Panel.
 const supportBots = createSupportBots({ getLibrary: () => library, reload: () => loadLibrary() });
 
@@ -206,6 +209,7 @@ function switchView(name) {
   if (name === "pvp") pvp.show(); else pvp.hide();
   if (name === "overview") overview.show(); else overview.hide();
   if (name === "troops") troops.show(); else troops.hide();
+  if (name === "chat") chat.show(); else chat.hide();
 }
 
 function setNavGroup(group, open) {

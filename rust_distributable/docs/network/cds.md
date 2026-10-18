@@ -1,10 +1,46 @@
-# CDS: commit a support march
+# `cds`: Commit a Support march
 
-The captured client request below dispatches support. `SID=437391` matches the source castle's `SCID` in the preceding `sdi` reply, not a movement MID. `TX,TY` are destination coordinates; `LID` is the selected server lord/commander ID. `A` contains `[troop_id,count]` rows. The capture uses `WT=1`, `HBW=-1`, and zero values for `BPC`, `PTT`, and `SD`; their general allowed values need more captures.
+| | |
+| --- | --- |
+| Direction | client to server, with a reply |
+| Evidence | captured |
+| Code | `empire-core/src/station.rs` (`cds_packet`, `parse_cds`), `empire-daemon/src/direct/station.rs` |
 
+## Purpose
+
+Sends support troops from a castle to a destination.
+
+## Request
+
+```
 %xt%EmpireEx_49%cds%1%{"SID":437391,"TX":468,"TY":507,"LID":0,"WT":1,"HBW":-1,"BPC":0,"PTT":0,"SD":0,"A":[[602,5]]}%
-troop id 602 and 5 of them in this case, hbw = -1 means no horse nothnig 
-The inbound `cds` success reply in [cds.txt](cds.txt) contains `A.M.MID`, `PT`, `TT`, `KID`, source `SA`, destination `TA`, and troop array `A.A`. Match the reply's source area ID and destination coordinates to the pending request before confirming it. A request injection or timeout alone is not confirmation. A timed-out send may have succeeded; reconcile before retrying.
+```
 
+| Field | Meaning |
+| --- | --- |
+| `SID` | the source **castle id** (matches `sdi`'s `SCID`), not a movement id |
+| `TX`, `TY` | destination coordinates |
+| `LID` | the selected server lord/commander id |
+| `A` | `[[troop_id, count], ...]` (here troop 602, five of them) |
+| `WT`, `HBW`, `BPC`, `PTT`, `SD` | `1`, `-1` (no horse, nothing), `0`, `0`, `0` in the capture; their general values need more captures |
 
-The reply also contains `O[]` player details, much like `gam`. Match players by ID rather than relying on `O[0]` and `O[1]` positions.
+## Reply
+
+The success reply carries `A.M.MID` (the **support** march id), `PT`, `TT`, `KID`, the source `SA`, the destination `TA`, and the troop array `A.A`. It also carries `O[]` player details like `gam`: match players by id, not by the positions of `O[0]` and `O[1]`.
+
+## Rules and behaviour
+
+* Match the reply's source area id and destination coordinates to the pending request before confirming it. A request injection or a timeout alone is not confirmation; a timed-out send may have succeeded, so reconcile before retrying.
+* The support march's `MID` is the one [`mcm`](mcm.md) must name, not the attack's.
+
+## Handling in the code
+
+Step 3 of [`sequences/support.md`](sequences/support.md).
+
+## Captures
+
+[`cds_request.txt`](captures/cds_request.txt), [`cds_response.txt`](captures/cds_response.txt).
+
+## Open questions
+
+The allowed `WT`, `BPC`, `PTT`, `SD` values; what a valid destination must be (the capture sent to another player's castle in the same alliance); refusal statuses.

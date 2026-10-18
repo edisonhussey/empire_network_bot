@@ -2,7 +2,7 @@
 //! seconds, then call them back. Pure rules only; the session loop that sends the
 //! packets is `empire-daemon/src/direct/station.rs`.
 //!
-//! The sequence, from the captures in `docs/network_packets/`:
+//! The sequence, from the captures in `docs/network/captures/`:
 //!
 //! 1. `gam` shows an attack on an owned castle ([`threat_from`]).
 //! 2. About seven seconds before landing `dcl` reads every castle's stock.
@@ -527,6 +527,19 @@ pub fn unit_kind(id: i64) -> (UnitKind, String) {
     }
 }
 
+/// What an id is and what to call it **on screen**, from the game's own complete unit table
+/// (`empire_game::units`): the game's `role` says troop or tool, and the name is the one the player reads.
+///
+/// This is for showing stock, not for deciding what is sent. [`unit_kind`] and [`known_troops_only`] still use the older,
+/// smaller tables on purpose, so support armies and attacks are built from exactly the units they always were
+/// (`docs/game_data/tables.md`, "What still uses the older tables").
+pub fn unit_label(id: i64) -> (UnitKind, String) {
+    match empire_game::unit_by_id(id) {
+        Some(unit) => (if unit.is_troop() { UnitKind::Troop } else { UnitKind::Tool }, unit.label().to_owned()),
+        None => (UnitKind::Unknown, format!("unit {id}")),
+    }
+}
+
 /// The same army without the ids the game tables do not know: the fallback if the
 /// server refuses an army that included one.
 pub fn known_troops_only(army: &[(i64, i64)]) -> Vec<(i64, i64)> {
@@ -613,11 +626,11 @@ mod tests {
     use crate::protocol::parse_xt_packet;
     use crate::pvp::seen_movements;
 
-    const ATTACK: &str = include_str!("../../../docs/network_packets/gam_156095506.txt");
-    const DCL: &str = include_str!("../../../docs/network_packets/dcl.txt");
-    const SDI_REPLY: &str = include_str!("../../../docs/network_packets/sdi_response.txt");
-    const CDS: &str = include_str!("../../../docs/network_packets/cds.txt");
-    const MCM: &str = include_str!("../../../docs/network_packets/mcm_response.txt");
+    const ATTACK: &str = include_str!("../../../docs/network/captures/gam_attack_on_owned_castle.txt");
+    const DCL: &str = include_str!("../../../docs/network/captures/dcl_exchange.txt");
+    const SDI_REPLY: &str = include_str!("../../../docs/network/captures/sdi_response.txt");
+    const CDS: &str = include_str!("../../../docs/network/captures/cds_response.txt");
+    const MCM: &str = include_str!("../../../docs/network/captures/mcm_response.txt");
 
     fn reply(text: &str, prefix: &str) -> Value {
         let line = text
@@ -923,6 +936,14 @@ mod tests {
         assert_eq!(unit_kind(602).0, UnitKind::Troop);
         assert_eq!(unit_kind(614), (UnitKind::Tool, "scaling_ladder".to_owned()));
         assert_eq!(unit_kind(999_999).0, UnitKind::Unknown);
+        // The display labels come from the game's own table and know every id the older tables miss.
+        assert_eq!(unit_label(214), (UnitKind::Troop, "Valkyrie ranger".to_owned()));
+        assert_eq!(unit_label(215), (UnitKind::Troop, "Shield-maiden".to_owned()));
+        assert_eq!(unit_label(614), (UnitKind::Tool, "Scaling ladder".to_owned()));
+        assert_eq!(unit_label(999_999), (UnitKind::Unknown, "unit 999999".to_owned()));
+        // ...but what is sent is still decided by the older tables: 215 is a troop on screen, not a known troop to send.
+        assert_eq!(unit_kind(215).0, UnitKind::Unknown);
+        assert_eq!(known_troops_only(&[(215, 10), (607, 5)]), vec![(607, 5)]);
     }
 
     #[test]

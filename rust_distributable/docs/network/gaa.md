@@ -1,56 +1,59 @@
-# `gaa` (Game Area Activity)
+# `gaa`: Game Area Activity (map viewport)
 
-The `gaa` packet is the core map scanning viewport request. It pulls down the live state of the map grid.
+| | |
+| --- | --- |
+| Direction | client to server, with a reply |
+| Evidence | captured, and used live by the bot |
+| Code | `empire-core/src/account.rs` (`rbc_targets`, `fortress_targets`), `empire-core/src/hunt.rs` (`gaa_packet`), `empire-daemon/src/direct/observe.rs` |
 
-## Outbound Request
+## Purpose
 
-The client requests a rectangular bounding box of coordinates to inspect.
+Reads the live state of a rectangle of the map: towers, fortresses, camps and castles, with their levels and cooldowns.
 
-**Example Request:**
+## Request
+
 ```jsonc
 {"KID":1,"AX1":572,"AY1":598,"AX2":584,"AY2":610}
 ```
-* `KID`: Kingdom ID (0 = Green, 1 = Sands, 10 = Berimond)
-* `AX1`, `AY1`: Top-left bounds
-* `AX2`, `AY2`: Bottom-right bounds
 
-### Viewport Origins
-The 3x2 tile grid always steps 13 tiles, but the offset from the main castle is kingdom-specific and cannot be collapsed into a single formula.
-* Green (`KID: 0`): Offset is `-13, -13`
-* Sands (`KID: 1`): Offset is `-21, -15`
+| Field | Meaning |
+| --- | --- |
+| `KID` | kingdom id (0 green, 1 Sands, 10 Berimond) |
+| `AX1`, `AY1` | top-left bounds |
+| `AX2`, `AY2` | bottom-right bounds |
 
-## Inbound Response
+The 3x2 tile grid always steps 13 tiles, but the offset from the main castle is kingdom-specific: green is `-13, -13`, Sands `-21, -15`.
 
-The server replies with a dense payload of all entities within the bounding box, including their area types, levels, and owner IDs.
+## Reply
 
-**Example Entities in Payload:**
-* `Area Type 2`: Standard Robber Baron Castle (RBC)
-* `Area Type 17`: Berimond Camp (Kingdom 10)
-* `Area Type 12`: Player Castle (Sands)
+A dense payload of everything inside the box, `AI[]` rows by area type: type 2 a standard tower, 17 a Berimond camp (kingdom 10), 12 a player castle (Sands), 11 a fortress.
 
-### RBC rows carry the server's cooldown
+A **tower row** is `[2, x, y, -1, victory_count, remaining_s, kingdom_id]`:
 
-A tower row is `[2, x, y, -1, level_raw, remaining_s, 1]`. `remaining_s` is the
-seconds until the server lets the tower be attacked again, and `-1` (or any
-non-positive value) means it is ready. The fifth field is the tower's **victory count**, not its
-level: the level is `floor(1.9 * count^0.555) + offset(kingdom)` in every kingdom (Sands raw `112`
-is level 61), see [`robber_baron_level_formula.md`](../game_infrastructure/robber_baron_level_formula.md).
+* `victory_count` is the number of attacks won against it, **not its level**. The level is worked out from it and the kingdom: [`../game_infrastructure/robber_baron_level_formula.md`](../game_infrastructure/robber_baron_level_formula.md).
+* `remaining_s` is seconds until it can be attacked again; `-1` or any non-positive value means ready.
 
 ```jsonc
 {"AI":[[2,584,626,-1,112,9504,1]]}   // cooling for 9504 s
 {"AI":[[2,600,628,-1,112,-1,1]]}     // ready
 ```
 
-Fortress rows (`type 11`) use the same slot for their remaining seconds.
-Berimond camps (`type 17`) report no cooldown.
+Fortress rows (type 11) use the same slot for their remaining seconds. Berimond camps (type 17) report no cooldown.
 
-### Observed behaviours
+## Rules and behaviour
 
-1. **Unsolicited tile updates.** The server pushes a one-row `gaa` for a tower
-   around the time its army comes home (`cat`). It is a free, authoritative
-   cooldown read.
-2. **Cooldowns are not static.** Other players hit the same towers, so the map
-   read at login goes stale. The remaining value is the only way to know about
-   those hits without being refused (see [`errors.md`](../architecture/errors.md), status 95).
-3. **A tile read is cheap.** A 13x13 window centred on one tower
-   (`AX1 = x-6 ... AX2 = x+6`) returns that tower and its neighbours.
+1. **Unsolicited tile updates.** The server pushes a one-row `gaa` for a tower around the time its army comes home (`cat`): a free, authoritative cooldown read.
+2. **Cooldowns are not static.** Other players hit the same towers, so the map read at login goes stale. The remaining value is the only way to know about those hits without being refused ([`../architecture/errors.md`](../architecture/errors.md), status 95).
+3. **A tile read is cheap.** A 13x13 window centred on one tower (`AX1 = x-6 ... AX2 = x+6`) returns that tower and its neighbours.
+
+## Handling in the code
+
+Every map response refreshes known towers' cooldowns; scans store new ones with their level (`rbc_target`, [`../architecture/database.md`](../architecture/database.md) V25).
+
+## Captures
+
+None saved as a file; see [`adi.md`](adi.md) for refusing a tower that is cooling.
+
+## Open questions
+
+Elements of the tower row beyond the ones listed.

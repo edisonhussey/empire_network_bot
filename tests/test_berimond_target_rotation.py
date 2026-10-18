@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bot_berimond import (
+from unused.bot_berimond import (
     Control,
     aci_target_was_defeated,
     addon_binding_hint,

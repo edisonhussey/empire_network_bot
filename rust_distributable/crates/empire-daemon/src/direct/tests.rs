@@ -1103,8 +1103,8 @@ mod pvp_stream {
     use super::*;
     use empire_core::store::{PvpQuery, PvpState};
 
-    const GAM: &str = include_str!("../../../../docs/network_packets/gam.txt");
-    const MRM: &str = include_str!("../../../../docs/network_packets/mrm.txt");
+    const GAM: &str = include_str!("../../../../docs/network/captures/gam_alliance_target.txt");
+    const MRM: &str = include_str!("../../../../docs/network/captures/mrm_retreat.txt");
 
     async fn observe(store: &Store, raw: &str) {
         observe_account_packet(

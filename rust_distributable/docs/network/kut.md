@@ -1,8 +1,14 @@
-# `kut` (Kingdom Unit Transfer)
+# `kut`: Kingdom Unit Transfer
 
-Moves troops from one of the account's castles to another kingdom. Proven live on 2026-10-17: one unit 277
-from Burning Sands to green, then 20 Travelling Knights (unit 655) from green to Fire Peaks, both with
-status 0. Rules and cost: [`../game_infrastructure/kingdom_transfer_rules.md`](../game_infrastructure/kingdom_transfer_rules.md).
+| | |
+| --- | --- |
+| Direction | client to server, with a reply |
+| Evidence | proven live (2026-10-17: 1 unit 277 Sands to green; 20 Travelling Knights green to Fire Peaks) |
+| Code | `empire-core/src/transfer.rs` (`kut_packet`, `parse_kut_reply`, `check`), `empire-daemon/src/direct/transfer.rs` |
+
+## Purpose
+
+Moves troops from one of the account's castles to another kingdom. Rules and price: [`../game_infrastructure/kingdom_transfer_rules.md`](../game_infrastructure/kingdom_transfer_rules.md); the whole flow: [`sequences/kingdom_transfer.md`](sequences/kingdom_transfer.md).
 
 ## Request
 
@@ -18,7 +24,7 @@ status 0. Rules and cost: [`../game_infrastructure/kingdom_transfer_rules.md`](.
 | `CID` | the target castle id; `-1` when none is chosen (the client sends `-1` unless a castle is picked) | `-1` proven into green and into Fire Peaks |
 | `A` | `[[unit_id, count], ...]`, troops only | `dcl` `AC` of the **source** castle |
 
-The client builds it in that field order; `empire_core::transfer::kut_packet` keeps the order.
+The client builds the fields in that order; `kut_packet` keeps it.
 
 ## Reply
 
@@ -26,19 +32,23 @@ The client builds it in that field order; `empire_core::transfer::kut_packet` ke
 %xt%kut%1%0%{"kpi":{"UL":[...],"UT":[{"KID":3,"RS":7200,"I":[[655,20]]}]}}%
 ```
 
-Status `0` is success; the payload's `kpi` shows the transfer in `UT` (`KID` the target, `RS` seconds left,
-`I` the units on the way). Any other status is an error dialog in the client; the status codes seen so far
-are in [`../architecture/errors.md`](../architecture/errors.md), and none has been collected for this
-command yet. A `gcu` (coins) arrives alongside and is stored separately, see [`kpi.md`](kpi.md).
+Status `0` is success; the payload's `kpi` shows the transfer in `UT` (`KID` the target, `RS` seconds left, `I` the units). Any other status is an error dialog in the client; none has been collected for this command. A [`gcu`](gcu.md) with the cost taken off arrives alongside.
 
-## What it costs and takes
+## Rules and behaviour
 
-`coins = round(sum(kingdomTravellingCost(unit) * count) * unitTravelTaxRate(target kingdom) / 100)`; the
-journey is 7200 s into every kingdom. Live: 20 knights into Fire Peaks charged exactly 2,500 coins.
+* **Price:** `coins = round(sum(kingdomTravellingCost * count) * unitTravelTaxRate(target) / 100)`; the journey is 7200 s into every kingdom. Live: 20 knights into Fire Peaks charged exactly 2,500.
+* **One transfer per target kingdom** is shown at a time (`kpi.UT` has one entry per kingdom), so a second to the same kingdom is refused by the code.
+* A `kut` with no reply is **never sent twice**: read [`kpi`](kpi.md) to learn whether it went out.
+* The source castle's stock drops at once; a reading older than the send is not trusted.
 
 ## Handling in the code
 
-`empire-core/src/transfer.rs` builds the packet and checks everything the server would refuse (stock, coins,
-unlocked kingdom, a transfer already travelling there); `direct/transfer.rs` sends it, only while the bot is
-off. A `kut` with no reply is never sent twice: `kpi` is read to learn whether it went out. See
-[`../architecture/kingdom-transfer.md`](../architecture/kingdom-transfer.md).
+`transfer::check` refuses what the server would refuse (stock, coins, locked kingdom, one already travelling, bot running); the session sends it only while the bot is off ([`../architecture/kingdom-transfer.md`](../architecture/kingdom-transfer.md)).
+
+## Captures
+
+[`kut_request.txt`](captures/kut_request.txt), [`kut_response.txt`](captures/kut_response.txt), [`gcu_push.txt`](captures/gcu_push.txt).
+
+## Open questions
+
+The error statuses; `CID` other than `-1`; whether a second transfer into a kingdom already receiving one is allowed.

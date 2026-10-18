@@ -623,3 +623,12 @@ dialog[open] { display: grid; gap: 12px; }
 .transfer-job { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
 .transfer-job div { display: grid; gap: 2px; }
 .transfer-failed small, .transfer-cancelled small { color: var(--ink-3); }
+
+/* Chat tab (views/chat.js) */
+.chat-list { display: grid; gap: 2px; align-content: start; height: min(62vh, 640px); overflow: auto; margin-top: 14px; padding-right: 6px; }
+.chat-line { display: grid; grid-template-columns: 96px minmax(110px, 190px) 1fr; gap: 12px; padding: 5px 0; border-top: 1px solid var(--line); align-items: baseline; }
+.chat-line:first-child { border-top: 0; }
+.chat-time { color: var(--ink-3); font-size: 12px; white-space: nowrap; }
+.chat-name { font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-text { overflow-wrap: anywhere; white-space: pre-wrap; }
+.chat-system .chat-name, .chat-system .chat-text { color: var(--ink-3); }

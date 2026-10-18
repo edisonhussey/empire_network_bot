@@ -1,18 +1,39 @@
-# MRM: retreat an attack
+# `mrm`: Movement Retreat
 
-The supplied [MRM example](mrm.txt) is:
+| | |
+| --- | --- |
+| Direction | server to client (observed); the same shape is the retreat command |
+| Evidence | captured (one example) |
+| Code | `empire-core/src/pvp.rs`, `empire-daemon/src/direct/pvp.rs`, `empire-daemon/src/direct/station.rs` |
+
+## Purpose
+
+An attack was retreated.
+
+## Push
 
 ```text
 %xt%mrm%1%0%{"MID":155312686}%
 ```
 
-## Observed structure
-
 | Part | Example | Meaning |
 | --- | --- | --- |
-| XT command | `mrm` | Movement retreat command, as identified by the user. |
-| JSON `MID` | `155312686` | Movement ID of the attack being retreated. This matches the `M.MID` field used by [GAM movement records](incoming_gam.md). |
+| XT command | `mrm` | movement retreat |
+| JSON `MID` | `155312686` | the movement id of the attack being retreated; the `M.MID` of a [`gam`](gam.md) record |
 
-The user has confirmed that `mrm` **logically retreats the attack**. Once this action is taken, it **cannot be undone** and that MID is **finished permanently**. Treat the MID as terminal after a confirmed retreat; do not resume or reuse it as an active attack. A new attack would need a new MID.
+## Rules and behaviour
 
-The single example does not establish whether this exact frame is a client request, server response, or both, nor whether a separate acknowledgement confirms success. Code handling live traffic should distinguish a sent command from a confirmed retreat before marking an attack terminal. The command's remaining XT header fields are left uninterpreted here.
+* A retreat **cannot be undone**: that `MID` is finished permanently. Treat it as terminal after a confirmed retreat and never resume or reuse it; a new attack has a new `MID`.
+* The single example does not establish whether this exact frame is a client request, a server response or both, nor whether a separate acknowledgement confirms success. Distinguish a sent command from a confirmed retreat before marking an attack terminal. The remaining XT header fields are not interpreted.
+
+## Handling in the code
+
+An inbound successful `mrm` moves a known entry to Retreated ([`topics/incoming_movements.md`](topics/incoming_movements.md)) and releases a waiting support recall ([`sequences/support.md`](sequences/support.md)).
+
+## Captures
+
+[`mrm_retreat.txt`](captures/mrm_retreat.txt).
+
+## Open questions
+
+Direction, acknowledgement and header fields, as above.

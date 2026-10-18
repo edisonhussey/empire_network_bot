@@ -5,15 +5,15 @@
 # then collected in `releases/`. This script is the only supported way to cut
 # one, so a developer's incremental target cannot accidentally become the DMG.
 #
-#   scripts/release.sh                 build, collect, install
-#   scripts/release.sh --no-build      collect what is already in target/
-#   OUTPUT_DIR=/somewhere scripts/release.sh
+#   utils/scripts/release.sh                 build, collect, install
+#   utils/scripts/release.sh --no-build      collect what is already in target/
+#   OUTPUT_DIR=/somewhere utils/scripts/release.sh
 #
 # Written for bash 3.2: no mapfile, no bare "${arr[@]}" under `set -u`.
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DESKTOP="$ROOT/desktop"
 BUNDLE="$DESKTOP/src-tauri/target/release/bundle"
 BIN="$DESKTOP/src-tauri/target/release/empire-desktop"
@@ -33,7 +33,7 @@ fi
 # API_VERSION makes a *stale service* serve the new window's requests (the
 # failure mode that once had a fortress task attacking RBCs for a whole run).
 # API_VERSION is a separate contract number and is never synced from VERSION.
-"$ROOT/scripts/sync-version.sh"
+"$ROOT/utils/scripts/sync-version.sh"
 
 json_version() {
     python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$1"
@@ -106,7 +106,7 @@ fi
 # The binary is what gets shared, so it must not name the builder's account.
 leaked="$(strings -a "$BIN" | grep -c "$HOME" || true)"
 if [ "$leaked" -gt 0 ]; then
-    echo "WARNING: the binary contains $leaked string(s) with $HOME; build with scripts/release.sh (not --no-build) to remap them" >&2
+    echo "WARNING: the binary contains $leaked string(s) with $HOME; build with utils/scripts/release.sh (not --no-build) to remap them" >&2
 fi
 
 # ----------------------------------------------------------------- staleness --

@@ -28,3 +28,12 @@ The daemon does not create per-packet files. Structured SQLite rows are both
 developer-visible and suitable for migration in a packaged executable. Payloads
 larger than the packet limit are represented by small metadata records rather
 than copied into persistent storage.
+
+## Design constraints (from the original README)
+
+* Bind locally unless the user explicitly changes the address.
+* Never keep an unlimited packet history in memory or on disk.
+* Never place private signing keys in the distributed application: it embeds only an Ed25519 public key and verifies time-bound signed claims.
+* Route every injected packet through one bounded queue and one active transport.
+* Keep game-specific state machines out of UI code.
+* Do not claim a protocol transition is implemented until observed traffic proves it.

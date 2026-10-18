@@ -1,0 +1,7 @@
+kID,kingdomName,display_name,legacy_name,legacy_constant,minC2Level,minLevel,noobProtectionTime,npcCooldownFactor,premiumUnlockDiscount,requiredKingdomID,resourceTravelTaxRate,resourceTravelTime,skipResourceTravelC2Cost,skipUnitTravelC2Cost,unitTravelTaxRate,unitTravelTime,villageCapCoal,villageCapFood,villageCapGlass,villageCapIron,villageCapOil,villageCapStone,villageCapWood
+0,Classic,The Great Empire,green_kingdom,GREEN_KINGDOM,,0,604800,1,,-1,25,7200,240,240,70,7200,0,0,0,0,0,0,0
+1,Dessert,The Burning Sands,sand_kingdom,SAND_KINGDOM,35,40,172800,10,50,2,20,7200,240,240,40,7200,0,10,0,0,0,10,10
+2,Icecream,The Everwinter Glacier,ice_kingdom,ICE_KINGDOM,18,25,172800,7,50,0,20,7200,240,240,30,7200,0,5,0,0,0,5,5
+3,Volcano,The Fire Peaks,fire_kingdom,FIRE_KINGDOM,45,50,172800,13,50,1,20,7200,240,240,50,7200,0,10,0,0,0,10,10
+4,Eiland,The Storm Islands,storm_kingdom,STORM_KINGDOM,,35,86400,0,,0,20,7200,240,240,40,7200,0,0,0,0,0,0,0
+10,Faction,The Battle for Berimond,berimond_kingdom,BERIMOND_KINGDOM,,15,86400,0,,0,,7200,0,240,0,7200,,0,,,,0,0

@@ -1,48 +1,52 @@
-# `adi` (Attack Details Inspection)
+# `adi`: Attack Details Inspection
 
-The `adi` packet is used to inspect a target before sending an attack. It queries the server for the target's current state, defensive setup, and capacity.
+| | |
+| --- | --- |
+| Direction | client to server, with a reply |
+| Evidence | captured |
+| Code | `empire-daemon/src/direct/automation.rs` (`ReadyAdi`, `AwaitAdi`), `empire-core/src/hunt.rs` (`AttackInfoKind`) |
 
-## Outbound Request
+## Purpose
 
-When targeting an RBC (Robber Baron Castle) or player, the client sends an `adi` packet to request the attack screen details.
+Inspects a target before an attack: its current state, defence setup and capacity. A type-2 tower uses `adi`; a type-11 fortress uses `abi`.
 
-**Example Request:**
+## Request
+
 ```jsonc
 {"KID":1,"SX":593,"SY":613,"TX":554,"TY":655}
 ```
-* `KID`: Kingdom ID (0 = Green, 1 = Sands, 10 = Berimond, etc.)
-* `SX`, `SY`: Source Coordinates (Your castle)
-* `TX`, `TY`: Target Coordinates
 
-## Inbound Response
+| Field | Meaning |
+| --- | --- |
+| `KID` | kingdom id (0 green, 1 Sands, 10 Berimond, ...) |
+| `SX`, `SY` | source coordinates (your castle) |
+| `TX`, `TY` | target coordinates |
 
-The server responds with the target's available limits, flank capacity, and valid tools/troops. 
+## Reply
 
-**Example Success Response:**
+The target's limits, flank capacity and valid tools and troops.
+
 ```jsonc
-{
-  "payload": [1,2,5,-1,[[4,58,[114.9]],[5,68,[75.4]]],-1,-1,0,-1,-1,3,[1,5,3290,[]]],
-  "status": "0"
-}
+{"payload": [1,2,5,-1,[[4,58,[114.9]],[5,68,[75.4]]],-1,-1,0,-1,-1,3,[1,5,3290,[]]], "status": "0"}
 ```
 
-### Observed Behaviors & Edge Cases
+## Rules and behaviour
 
-1. **Target on Cooldown (`status: 95`)**:
-   If an RBC is on cooldown (recently hit by you or another player), the server
-   refuses the inspection with `status: "95"` and a `null` payload. It means the
-   client's picture of the tower is out of date, not that anything is wrong.
+1. **Target on cooldown (`status: 95`).** A tower on cooldown (hit by you or another player) refuses the inspection with status `95` and a `null` payload. It means the client's picture of the tower is out of date, not that anything is wrong. The tower's real remaining cooldown is in its `gaa` row ([`gaa.md`](gaa.md)). How the bot reacts: [`../architecture/attack-scheduling.md`](../architecture/attack-scheduling.md).
    ```jsonc
    16:50:56  IN   adi       {"payload":null,"status":"95"}
    ```
-   The tower's real remaining cooldown is in its `gaa` row ([`gaa.md`](gaa.md)).
-   How the bot reacts is in [`attack-scheduling.md`](../architecture/attack-scheduling.md).
+2. **Berimond camps (`KID` 10).** They have no cooldowns. A `95` for a camp means another player defeated it just before the inspection; delete the target for good.
+3. **`gli.C` is the whole roster, not availability.** Every `adi` lists all owned commanders (`gli.C[].ID`, for example all 35) whoever is marching, so it cannot be used to find free commanders. Availability comes only from our own state: the `cra` ack (`TT`), then `cat` (return time).
 
-2. **Berimond Camps (`KID: 10`)**:
-   Berimond camps do not have cooldowns. If an `adi` returns `status: 95` for a Berimond camp, it means the camp was defeated by another player right before we inspected it. The target should be permanently deleted from the database.
+## Handling in the code
 
-3. **`gli.C` is the whole roster, not availability.**
-   Every `adi` reply lists all owned commanders (`gli.C[].ID`, e.g. all 35)
-   regardless of who is marching. It cannot be intersected with local state to
-   find free commanders. Commander availability comes only from our own state:
-   `cra` ack (`TT`) then `cat` (return time).
+Phase `ReadyAdi` sends it after a paced pause; `AwaitAdi` waits for the reply (a timeout quarantines the target). See [`../architecture/attack-scheduling.md`](../architecture/attack-scheduling.md).
+
+## Captures
+
+None saved as a file; the shapes above are from live logs.
+
+## Open questions
+
+The meaning of each element of the reply array beyond the level (`TL` row in `AE`).

@@ -21,3 +21,12 @@ These are not necessarily "bot failures"—they are usually just the game engine
 | Code | Meaning | Handling |
 |---|---|---|
 | `27` | Account locked | Payload `{"GDPR":0,"RS":<seconds>}`; `RS` counts down to a fixed expiry (24 h after the trigger). Do not log in again until it passes; every attempt is refused and only adds suspicious traffic. |
+
+## Rolling operational-error limit
+
+Mutating automation uses a rolling five-minute safety window. The first genuine
+request timeout or server rejection is isolated and backed off. A second such
+error inside the same five minutes pauses further attack mutations until the
+oldest error ages out. Restarting a mode does not erase the timestamps. Normal
+game state—positive cooldowns, expired one-minute windows, no free commander,
+or no eligible target—is not an error and does not spend this allowance.

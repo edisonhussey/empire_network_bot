@@ -154,21 +154,46 @@ def list_sessions(root: Path) -> list[dict]:
     return sorted(result, key=lambda item: item["started_at"], reverse=True)
 
 
+def _filter(types: list[str], query: str) -> tuple[str, list]:
+    """The timeline's filter: the chosen types, and a text search over summary, type and raw. One definition, so what an
+    export writes is exactly what the timeline shows."""
+    where, params = [], []
+    if types:
+        where.append("type IN (" + ",".join("?" for _ in types) + ")")
+        params.extend(types)
+    if query:
+        where.append("(summary LIKE ? OR type LIKE ? OR raw LIKE ?)")
+        params.extend([f"%{query}%"] * 3)
+    return (" WHERE " + " AND ".join(where) if where else ""), params
+
+
 def events(root: Path, session_id: str, types: list[str], query: str, limit: int, offset: int) -> dict:
     with closing(sqlite3.connect(db_path(root, session_id))) as conn:
         conn.row_factory = sqlite3.Row
-        where, params = [], []
-        if types:
-            where.append("type IN (" + ",".join("?" for _ in types) + ")")
-            params.extend(types)
-        if query:
-            where.append("(summary LIKE ? OR type LIKE ? OR raw LIKE ?)")
-            params.extend([f"%{query}%"] * 3)
-        clause = " WHERE " + " AND ".join(where) if where else ""
+        clause, params = _filter(types, query)
         count = conn.execute("SELECT count(*) FROM events" + clause, params).fetchone()[0]
         rows = conn.execute("SELECT " + event_columns(conn, "seq,received_at,type,summary,direction") + " FROM events" + clause + " ORDER BY seq LIMIT ? OFFSET ?", [*params, limit, offset]).fetchall()
         counts = conn.execute("SELECT type,count(*) FROM events GROUP BY type ORDER BY count(*) DESC").fetchall()
         return {"total": count, "events": [dict(row) for row in rows], "types": dict(counts)}
+
+
+def raw_lines(root: Path, session_id: str, types: list[str], query: str) -> list[str]:
+    """The raw text of every event the filter shows, in order, one string per event. A line break inside a frame (rare:
+    some XML frames) is written as the two characters `\\n`, so one event is always exactly one line."""
+    with closing(sqlite3.connect(db_path(root, session_id))) as conn:
+        clause, params = _filter(types, query)
+        rows = conn.execute("SELECT raw FROM events" + clause + " ORDER BY seq", params).fetchall()
+    return [row[0].replace("\r\n", "\\n").replace("\n", "\\n").replace("\r", "\\n") for row in rows]
+
+
+def export_raw(root: Path, session_id: str, types: list[str], query: str, destination: Path) -> int:
+    """Write [`raw_lines`] to `destination`, newline separated. Returns how many events were written."""
+    lines = raw_lines(root, session_id, types, query)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temp = destination.with_suffix(destination.suffix + ".tmp")
+    temp.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+    temp.replace(destination)
+    return len(lines)
 
 
 def event(root: Path, session_id: str, seq: int) -> dict:

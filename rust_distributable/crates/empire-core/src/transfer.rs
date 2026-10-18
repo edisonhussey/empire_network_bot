@@ -47,10 +47,8 @@ pub fn travel_seconds(kingdom_id: i64) -> Option<i64> {
 }
 
 fn rate(kingdom_id: i64) -> Option<(i64, i64)> {
-    empire_game::KINGDOM_TRANSFER_RATES
-        .iter()
-        .find(|(id, _, _)| *id == kingdom_id)
-        .map(|(_, tax, seconds)| (*tax, *seconds))
+    let rule = empire_game::kingdom_rule(kingdom_id)?;
+    Some((rule.unit_travel_tax_rate?, rule.unit_travel_time?))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,17 +79,17 @@ pub struct SkipItem {
 
 /// The skip item for a key such as `MS5`.
 pub fn skip_item(key: &str) -> Option<SkipItem> {
-    empire_game::MINUTE_SKIPS
+    empire_game::minute_skips()
         .iter()
-        .find(|(known, _, _)| *known == key)
-        .map(|(known, _, seconds)| SkipItem { key: known, seconds: *seconds })
+        .find(|skip| skip.mst == key)
+        .map(|skip| SkipItem { key: skip.mst, seconds: skip.minutes_skip_value * 60 })
 }
 
 /// Every skip item, shortest first.
 pub fn skip_items() -> Vec<SkipItem> {
-    empire_game::MINUTE_SKIPS
+    empire_game::minute_skips()
         .iter()
-        .map(|(key, _, seconds)| SkipItem { key, seconds: *seconds })
+        .map(|skip| SkipItem { key: skip.mst, seconds: skip.minutes_skip_value * 60 })
         .collect()
 }
 

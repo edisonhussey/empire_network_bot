@@ -105,3 +105,29 @@ not operational errors. A request that times out while nothing at all has
 arrived for 25 s is blamed on the link, not the target: the tower is released,
 no error is counted, and an attack that may have left keeps its commander
 reserved.
+
+## Behaviour notes (carried over from the old `docs.md`)
+
+* A running account mode is executed by the direct session after Sands is
+  ready. The runner leases a database target, sends the target-specific attack
+  information request (`adi` or `abi`), selects an available
+  commander from that task's allocation, waits the configured jitter, then
+  sends `cra`. It does not depend on the visible client screen.
+* The four-second `cra` separation is a hard transport-level floor. Normal
+  waits add variance above it. An acknowledged march is written immediately;
+  commander availability and the target's last-attack time are durable.
+* Stopping an account mode prevents a pending `cra` from being committed. A
+  disconnected socket cannot execute a mode even if its database flag is on.
+* Account discovery and map targets persist locally. A normal login for an
+  initialized account reuses that data, but still sends one live map request
+  per required transition because cache freshness is not navigation proof. An
+  explicit additional scan requests only windows that are not still fresh,
+  apart from the one live request needed to establish current context.
+* Network logs can continue to show stored history while disconnected, but
+  they are live only while the direct game socket is connected. Closing or
+  losing that socket stops the account's running mode.
+* A successful `cra` supplies the outbound duration. Until a battle result is
+  observed, commander availability uses `1.2 × outbound + 5–10 seconds`; this
+  is the restart-safe fallback if the socket closes before the result arrives.
+  A matched `cat` replaces that estimate with its exact remaining return
+  duration plus a randomized 5–10 second reuse hold.

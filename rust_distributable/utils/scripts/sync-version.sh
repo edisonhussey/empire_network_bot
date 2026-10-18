@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DESKTOP="$ROOT/desktop"
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
 

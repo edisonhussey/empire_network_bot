@@ -45,7 +45,7 @@ fn named(row: TroopRow) -> TroopRowView {
         .iter()
         .map(|(id, count)| Unit {
             id: *id,
-            name: empire_core::station::unit_kind(*id).1,
+            name: empire_core::station::unit_label(*id).1,
             count: *count,
         })
         .collect::<Vec<_>>();

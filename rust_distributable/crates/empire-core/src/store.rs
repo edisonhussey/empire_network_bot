@@ -11,6 +11,7 @@ use crate::{
     planning::TravelMode,
 };
 
+mod chat;
 mod config;
 mod dev;
 mod dungeon;
@@ -29,6 +30,7 @@ mod troops;
 #[cfg(test)]
 mod tests;
 
+pub use chat::ChatRow;
 pub use config::{AttackProfile, SubscriptionRecord, TaskRecord};
 pub use dev::{AccountWorld, MapTower, Movement, MovementPhase, progress as movement_progress};
 pub use ledger::{
