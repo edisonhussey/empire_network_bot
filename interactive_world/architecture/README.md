@@ -5,6 +5,7 @@ This folder holds the rules for the **new base** in `interactive_world/core/`. R
 | Document | What it fixes |
 |---|---|
 | [TERRAIN_CELL_ARCHITECTURE.md](TERRAIN_CELL_ARCHITECTURE.md) | the terrain: per-cell corner heights, triangulation, reconstruction walls, chunks, generation, validation |
+| [ASSET_GLB_PROTOCOL.md](ASSET_GLB_PROTOCOL.md) | building GLBs: frame (front = north = −Z), origin, footprint in cells, Blender export, placement and facing |
 | [renders/](renders/) | reference renders of terrain prototype 1 |
 
 ## Ground rules for `core/`
@@ -24,9 +25,10 @@ core/
   index.html            the terrain prototype page (http://127.0.0.1:5174/core/)
   math/                 rng.js (mulberry32, hash2), noise.js (value noise, fbm, smoothstep)
   terrain/              grid.js, surface.js, mesh_top.js, mesh_connectors.js, chunks.js, generate.js
-  render/               stage.js, terrain_view.js
-  app/                  terrain_demo.js (bootstrap, panel, views, hover)
-  tests/                terrain.test.mjs   (node core/tests/terrain.test.mjs)
+  placement/            footprint.js (placeOnCells, facing N/E/S/W, footprintLevel)
+  render/               stage.js, terrain_view.js, asset_view.js (building GLBs), compass.js (N/E/S/W letters + rose)
+  app/                  terrain_demo.js (bootstrap, panel, views, hover, the shrine on the middle pad)
+  tests/                terrain.test.mjs, placement.test.mjs   (node core/tests/<file>)
 ```
 
 The static server is `interactive_world/serve.mjs` (`node serve.mjs 5174`).

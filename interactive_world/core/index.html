@@ -17,14 +17,18 @@
   #panel .box { margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, .14); font-size: 12px; }
   #panel code { font-size: 12px; color: #fff; }
   #panel .dim { color: #9a9a9a; }
+  .compass-rose { position: fixed; right: 16px; bottom: 16px; pointer-events: none; }
+  .compass-rose[hidden] { display: none; }
 </style>
 </head>
 <body>
 <div id="app"></div>
 <div id="panel">
   <h1>Terrain cells · prototype</h1>
-  <div class="row"><button data-view="wide">Wide</button><button data-view="cells">Cells</button><button data-view="cliffs">Cliffs</button><button data-view="terraces">Terraces</button><button data-view="scarp">Escarpment</button></div>
-  <div class="row"><button data-t="outlines">Cell outlines</button><button data-t="highlight">Highlight connectors</button><button data-t="wire">Wireframe</button><button data-t="shadows">Shadows</button></div>
+  <div class="row"><button data-view="wide">Wide</button><button data-view="cells">Cells</button><button data-view="cliffs">Cliffs</button><button data-view="terraces">Terraces</button><button data-view="scarp">Escarpment</button><button data-view="shrine">Shrine</button><button data-view="shrine_top">Shrine top</button></div>
+  <div class="row"><button data-t="outlines">Cell outlines</button><button data-t="highlight">Highlight connectors</button><button data-t="wire">Wireframe</button><button data-t="shadows">Shadows</button><button data-t="compass">Compass</button><button data-t="footprint">Footprint</button></div>
+  <div class="row"><span class="dim">shrine faces</span><button data-facing="N">N</button><button data-facing="E">E</button><button data-facing="S">S</button><button data-facing="W">W</button></div>
+  <div class="box" data-asset><span class="dim">loading the shrine…</span></div>
   <div class="row"><span class="dim">relief</span><button data-relief="1">×1</button><button data-relief="2">×2</button><button data-relief="4">×4</button></div>
   <div class="row"><span class="dim">seed</span><input data-seed type="number" min="1" step="1"></div>
   <div class="box" data-cell></div>
