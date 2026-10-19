@@ -1,0 +1,21 @@
+/* Shared panel styling for the viewer (index.html) and the map (world.html). */
+  :root { --ink:#2a241d; --panel:rgba(28,24,20,.82); --line:rgba(255,255,255,.14); --accent:#f2b84b; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; overflow:hidden; background:#ece6d8; font:13px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#eee; }
+  canvas { display:block; width:100%; height:100%; }
+  #ui { position:fixed; top:12px; left:12px; width:268px; max-height:calc(100% - 24px); overflow:auto; padding:12px; background:var(--panel); border:1px solid var(--line); border-radius:10px; backdrop-filter:blur(8px); }
+  #ui h1 { margin:0 0 2px; font-size:14px; letter-spacing:.04em; }
+  #ui small { color:#bfb6a6; }
+  .row { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0; }
+  button { background:rgba(255,255,255,.08); color:#eee; border:1px solid var(--line); border-radius:6px; padding:5px 9px; font:inherit; cursor:pointer; }
+  button:hover { background:rgba(255,255,255,.16); } button.on { background:var(--accent); color:#222; border-color:var(--accent); }
+  label { display:grid; grid-template-columns:86px 1fr 34px; gap:6px; align-items:center; margin:5px 0; color:#d6cdbd; }
+  label output { text-align:right; color:#bfb6a6; font-variant-numeric:tabular-nums; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  .sec { margin-top:10px; padding-top:8px; border-top:1px solid var(--line); color:#bfb6a6; font-size:11px; letter-spacing:.08em; text-transform:uppercase; }
+  #stats { position:fixed; right:12px; bottom:10px; color:#6b6254; font-size:11px; text-align:right; }
+  #ref { position:fixed; right:12px; top:12px; width:340px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:8px; display:none; }
+  #ref img { width:100%; display:block; border-radius:6px; }
+  #overlay { position:fixed; inset:0; pointer-events:none; object-fit:contain; opacity:0; width:100%; height:100%; mix-blend-mode:normal; }
+  body.shot #ui, body.shot #stats { display:none; }
+  #msg { position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); color:#6b6254; font-size:15px; }

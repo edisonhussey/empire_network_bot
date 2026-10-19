@@ -12,3 +12,8 @@ What it writes: a new button under the session list writes the events the timeli
 Where it goes: web_data/exports/<session>_<filters>.txt, plus a copy at exports/latest.txt that always has the same path. The path is also copied to your clipboard.
 Download: the same text is available from GET /api/sessions/<id>/raw.
 Checked on a real session: I exported one unfiltered and got 19 raw lines. A line break inside a frame is written as \n so one event stays one line.
+
+
+if the question relates to the interactive_world leave the background service host online.
+
+if question relates to building assets esp, trees, bushes, refer to optimization.md on how to minimze traingle count while maximize performance and aesthetic. 

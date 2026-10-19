@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Castle viewer</title>
+<link rel="stylesheet" href="src/ui.css">
+</head>
+<body>
+<div id="msg">Loading castle…</div>
+<img id="overlay" alt="">
+<div id="ui">
+  <h1>CASTLE &nbsp;·&nbsp; model viewer</h1>
+  <small>drag to orbit · wheel to zoom · right-drag to pan</small>
+  <div class="sec">Model</div>
+  <div class="row" id="models"></div>
+  <div class="sec">View</div>
+  <div class="row" id="views"></div>
+  <div class="row"><button id="spin">Auto-rotate</button><button id="refBtn">Reference</button><button id="shot">Save PNG</button></div>
+  <label>Overlay<input id="ovl" type="range" min="0" max="1" step="0.01" value="0"><output id="ovlOut">0</output></label>
+  <div class="sec">Army</div>
+  <div class="row"><button id="armyShow" class="on">Show</button><button id="armyWalk">Walk</button><button id="armyAssault">Assault</button><button id="armyPause">Pause</button></div>
+  <div class="row" id="clips"></div>
+  <div class="sec">Team colours</div>
+  <div class="row" id="teams"></div>
+  <label>Primary<input id="colA" type="color"></label>
+  <label>Secondary<input id="colB" type="color"></label>
+  <div class="sec">Light</div>
+  <div class="row" id="lights"></div>
+  <label>Sun angle<input id="az" type="range" min="-180" max="180" step="1"><output id="azOut"></output></label>
+  <label>Sun height<input id="el" type="range" min="5" max="85" step="1"><output id="elOut"></output></label>
+  <label>Sun<input id="sun" type="range" min="0" max="6" step="0.05"><output id="sunOut"></output></label>
+  <label>Sky/fill<input id="fill" type="range" min="0" max="2.5" step="0.05"><output id="fillOut"></output></label>
+  <label>Ambient env<input id="env" type="range" min="0" max="1.5" step="0.02"><output id="envOut"></output></label>
+  <label>Exposure<input id="exp" type="range" min="0.3" max="2.2" step="0.02"><output id="expOut"></output></label>
+  <div class="sec">Look</div>
+  <div class="row"><button id="tShadow" class="on">Shadows</button><button id="tOutline" class="on">Outline</button><button id="tWire">Wire</button><button id="tGround" class="on">Ground</button><button id="tFlat">Flat colour</button></div>
+  <label>Outline<input id="olw" type="range" min="0" max="0.02" step="0.0005" value="0.0035"><output id="olwOut"></output></label>
+</div>
+<div id="ref"><img src="assets/ref/hero.png" alt="reference"></div>
+<div id="stats"></div>
+<script type="importmap">{ "imports": { "three": "./vendor/three/three.module.js", "three/addons/": "./vendor/three/jsm/" } }</script>
+<script type="module" src="src/viewer.js"></script>
+</body>
+</html>
