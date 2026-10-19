@@ -1,5 +1,8 @@
 # interactive_world
 
+> **New base (2026-10-19):** fresh work goes in `core/`, ruled by `architecture/` (start with `architecture/README.md`). The terrain is now per-cell corner heights with reconstruction walls (`core/`, http://127.0.0.1:5174/core/). Everything below describes the previous map prototype in `src/`, kept for reference; `core/` does not import it.
+
+
 Prototype of the 3D, cartoon-stylised game view. Zero dependencies (three.js r160 is vendored in `vendor/`). Read `CONTEXT.md` first when resuming:
 it holds the goal, the decisions already made and what is intentionally unbuilt.
 
