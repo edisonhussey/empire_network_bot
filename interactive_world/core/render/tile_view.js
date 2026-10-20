@@ -50,6 +50,36 @@ function splatTexture(grid) {
   return t;
 }
 
+/**
+ * Soft ground occlusion, two texels per metre: darker at the foot of cliffs and risers (by their height) and under tree crowns.
+ * Computed from the dressing data, sampled by the ground shader with linear filtering.
+ */
+function occlusionTexture(grid, dressing) {
+  const R = 2, w = grid.width * R, d = grid.depth * R, ao = new Float32Array(w * d).fill(1);
+  const darken = (x, z, k) => { const i = Math.floor(z * R) * w + Math.floor(x * R); if (i >= 0 && i < ao.length && x >= 0 && z >= 0 && x < grid.width) ao[i] = Math.min(ao[i], k); };
+  for (const e of dressing.edges ?? []) {
+    if (e.kind === 'border') continue;
+    const h = e.high - e.low, reach = Math.min(1.6, 0.4 + h * 0.4);
+    for (let t = 0.05; t < 1; t += 0.25 / 1) for (let o = 0.1; o < reach; o += 1 / R / 2) {
+      const x = e.ax + (e.bx - e.ax) * t + e.nx * o, z = e.az + (e.bz - e.az) * t + e.nz * o;
+      darken(x, z, 1 - Math.min(0.42, 0.18 + h * 0.08) * (1 - o / reach));
+    }
+  }
+  for (const [name, list] of Object.entries(dressing.pieces ?? {})) {
+    if (!/^Tree/.test(name)) continue;
+    for (const p of list) for (let dz = -2; dz <= 2; dz += 0.5) for (let dx = -2; dx <= 2; dx += 0.5) {
+      const r = Math.hypot(dx, dz) / (1.9 * p.s);
+      if (r < 1) darken(p.x + dx, p.z + dz, 1 - 0.22 * (1 - r));
+    }
+  }
+  const data = new Uint8Array(w * d * 4);
+  for (let i = 0; i < ao.length; i++) { const v = Math.round(ao[i] * 255); data[i * 4] = data[i * 4 + 1] = data[i * 4 + 2] = v; data[i * 4 + 3] = 255; }
+  const t = new THREE.DataTexture(data, w, d, THREE.RGBAFormat);
+  t.magFilter = t.minFilter = THREE.LinearFilter;
+  t.needsUpdate = true;
+  return t;
+}
+
 function groundMaterial(grid, uniforms) {
   const m = new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 });
   m.onBeforeCompile = (sh) => {
@@ -58,7 +88,7 @@ function groundMaterial(grid, uniforms) {
       .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;');
     sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>
       varying vec3 vWorld;
-      uniform sampler2D tGrass, tDirt, tSand, tSplat; uniform vec2 uSize; uniform float uGrid;`)
+      uniform sampler2D tGrass, tDirt, tSand, tSplat, tAO; uniform vec2 uSize; uniform float uGrid;`)
       .replace('#include <map_fragment>', `
       vec2 wuv = vWorld.xz / 4.0;
       vec3 grass = texture2D(tGrass, wuv).rgb;
@@ -74,6 +104,7 @@ function groundMaterial(grid, uniforms) {
       col = mix(col, dirt, path);
       col = mix(col, sand * vec3(0.62, 0.66, 0.62), bed);
       col *= 0.94 + 0.08 * clamp(vWorld.y / 5.0, 0.0, 1.0);
+      col *= texture2D(tAO, vWorld.xz / uSize).r;
       vec2 f = abs(fract(vWorld.xz) - 0.5);
       col = mix(col, vec3(1.0), uGrid * 0.32 * smoothstep(0.475, 0.497, max(f.x, f.y)));
       diffuseColor.rgb *= col;`);
@@ -131,8 +162,8 @@ function waterMaterial(uniforms) {
 function fallMaterial(uniforms) {
   return new THREE.ShaderMaterial({
     uniforms, transparent: true, depthWrite: false, side: THREE.DoubleSide,
-    vertexShader: `varying vec2 vUv; varying float vY; void main(){ vUv = uv; vec4 w = modelMatrix * vec4(position, 1.0); vY = w.y; gl_Position = projectionMatrix * viewMatrix * w; }`,
-    fragmentShader: `varying vec2 vUv; uniform float uTime;
+    vertexShader: `attribute vec2 ends; varying vec2 vUv; varying vec2 vEnds; void main(){ vUv = uv; vEnds = ends; gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `varying vec2 vUv; varying vec2 vEnds; uniform float uTime;
       float h(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
       float n(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
         return mix(mix(h(i), h(i + vec2(1, 0)), f.x), mix(h(i + vec2(0, 1)), h(i + vec2(1, 1)), f.x), f.y); }
@@ -141,7 +172,7 @@ function fallMaterial(uniforms) {
         vec3 col = mix(vec3(0.35, 0.62, 0.78), vec3(0.93, 0.98, 1.0), smoothstep(0.35, 0.8, s));
         float foam = smoothstep(0.25, 0.0, vUv.y);
         col = mix(col, vec3(1.0), foam * 0.8);
-        float edge = smoothstep(0.0, 0.08, vUv.x) * smoothstep(1.0, 0.92, vUv.x);
+        float edge = mix(1.0, smoothstep(0.0, 0.1, vUv.x), vEnds.x) * mix(1.0, smoothstep(1.0, 0.9, vUv.x), vEnds.y);   // fade only the free ends of a run of sheets
         gl_FragColor = vec4(col, (0.72 + 0.25 * s) * edge);
         #include <colorspace_fragment>
       }`,
@@ -177,7 +208,7 @@ export function createTileView(scene, grid, kit, dressing) {
   const uniforms = {
     tGrass: { value: texture('terrain_grass') }, tDirt: { value: texture('terrain_dirt') }, tSand: { value: texture('terrain_sand') },
     tRock: { value: texture('kit_rock') }, tSoil: { value: texture('kit_soil') }, tSplat: { value: splatTexture(grid) },
-    uSize: { value: new THREE.Vector2(grid.width, grid.depth) }, uGrid: { value: 0 }, uTime: { value: 0 },
+    uSize: { value: new THREE.Vector2(grid.width, grid.depth) }, uGrid: { value: 0 }, uTime: { value: 0 }, tAO: { value: occlusionTexture(grid, dressing) },
   };
   const ground = groundMaterial(grid, uniforms), walls = wallMaterial(uniforms), water = waterMaterial(uniforms);
   const stats = { tops: 0, walls: 0, water: 0, pieces: 0, instances: 0, pieceTris: 0, ms: 0 };
@@ -221,8 +252,11 @@ export function createTileView(scene, grid, kit, dressing) {
 
   // waterfalls: a bent sheet from the upper water down to the lower water on each fall edge, and foam where it lands
   const fallMat = fallMaterial(uniforms), foamMat = foamMaterial(uniforms);
+  const fallAt = new Set((dressing.falls ?? []).map((f) => `${f.ax},${f.az},${f.bx},${f.bz}`));
   for (const f of dressing.falls ?? []) {
     const ax = f.ax, az = f.az, bx = f.bx, bz = f.bz, out = 0.45;
+    const dx = bx - ax, dz = bz - az;
+    const ends = [fallAt.has(`${ax - dx},${az - dz},${ax},${az}`) ? 0 : 1, fallAt.has(`${bx},${bz},${bx + dx},${bz + dz}`) ? 0 : 1];
     const pos = [], uv = [];
     const rows = [[0, f.top + 0.02, 1], [0.12, f.top - 0.15, 0.9], [out * 0.7, (f.top + f.bottom) / 2, 0.45], [out, f.bottom, 0]];
     for (const [o, y, v] of rows) {
@@ -232,6 +266,7 @@ export function createTileView(scene, grid, kit, dressing) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    g.setAttribute('ends', new THREE.Float32BufferAttribute(Array.from({ length: 8 }, () => ends).flat(), 2));
     g.setIndex([0, 2, 1, 1, 2, 3, 2, 4, 3, 3, 4, 5, 4, 6, 5, 5, 6, 7]);
     const sheet = new THREE.Mesh(g, fallMat);
     sheet.renderOrder = 3;
@@ -256,11 +291,24 @@ export function createTileView(scene, grid, kit, dressing) {
     for (const { geometry, material } of prims) {
       if (!tuned.has(material)) {
         tuned.add(material);
-        if (material.alphaTest > 0 || material.transparent) {
-          // foliage cards: alpha cut-out, both sides drawn, and both sides lit with the authored (outward / upward) normal instead of flipping it
-          material.alphaTest = 0.45; material.transparent = false; material.side = THREE.DoubleSide;
-          material.onBeforeCompile = (sh) => { sh.fragmentShader = sh.fragmentShader.replace('#include <normal_fragment_begin>', THREE.ShaderChunk.normal_fragment_begin.replace('gl_FrontFacing ? 1.0 : - 1.0', '1.0')); };
-        }
+        const card = material.alphaTest > 0 || material.transparent;
+        if (card) { material.alphaTest = 0.45; material.transparent = false; material.side = THREE.DoubleSide; }
+        const sway = card ? 0.035 : /Leaves|Blossom/.test(material.name) ? 0.012 : 0;
+        if (card || sway) material.onBeforeCompile = (sh) => {
+          // foliage cards: both sides lit with the authored (outward / upward) normal instead of a flipped one
+          if (card) sh.fragmentShader = sh.fragmentShader.replace('#include <normal_fragment_begin>', THREE.ShaderChunk.normal_fragment_begin.replace('gl_FrontFacing ? 1.0 : - 1.0', '1.0'));
+          // wind: sway grows with height in the piece's own frame, phase from the instance position
+          sh.uniforms.uTime = uniforms.uTime;
+          sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nuniform float uTime;').replace('#include <begin_vertex>', `#include <begin_vertex>
+            #ifdef USE_INSTANCING
+              float ph = instanceMatrix[3][0] * 0.37 + instanceMatrix[3][2] * 0.53;
+            #else
+              float ph = 0.0;
+            #endif
+            float sw = max(transformed.y, 0.0) * ${sway.toFixed(3)};
+            transformed.x += sin(uTime * 1.7 + ph) * sw + sin(uTime * 4.3 + ph * 3.1 + transformed.z * 2.0) * sw * 0.3;
+            transformed.z += cos(uTime * 1.3 + ph * 1.3) * sw * 0.8;`);
+        };
       }
       const im = new THREE.InstancedMesh(geometry, material, list.length);
       list.forEach((e, i) => {

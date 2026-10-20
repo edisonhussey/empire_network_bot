@@ -1,8 +1,8 @@
 // Dressing a tile grid with kit pieces (pure data, no three.js): which piece goes where, from the grid, its edge classes and a seed.
-// Output: { [pieceName]: [{ x, y, z, ry, s, sy, tilt }] } in metres; the renderer turns every entry into one instance of that piece.
+// Output: { pieces: { [pieceName]: [{ x, y, z, ry, s, sx, sy, tilt }] }, edges, falls } in metres; the renderer turns every entry into one instance of that piece.
 //   x, z      position on the ground (pieces sit on the tile surface: y = tileHeightAt, never snapped to the 0.2 m grid)
 //   ry        rotation about +Y; a north-facing piece turned by ry faces (-sin ry, -cos ry), the FACING_ROTATION convention
-//   s, sy     uniform scale, and an extra vertical scale (cliff faces and banks are one unit tall: sy = the step they cover)
+//   s, sx, sy uniform scale, and extra width / height scales (cliff faces and banks are one unit tall: sy = the step they cover)
 //   tilt      optional [nx, ny, nz] ground normal to lean the piece onto (rocks, stones)
 //
 // Edge pieces (Cliff_*, Bank_*, Lip_Grass, Cliff_Corner) follow classifyEdges(); scatter pieces (trees, bushes, rocks, grass) follow

@@ -1,6 +1,6 @@
 # interactive_world: context and summary
 
-> **New base (2026-10-19):** fresh work goes in `core/`, ruled by `architecture/` (start with `architecture/README.md`). The terrain is now per-cell corner heights with reconstruction walls (`core/`, http://127.0.0.1:5174/core/). Everything below describes the previous map prototype in `src/`, kept for reference; `core/` does not import it.
+> **New base (2026-10-19):** fresh work goes in `core/`, ruled by `architecture/` (start with `architecture/README.md`). The terrain is now per-cell corner heights with reconstruction walls (`core/`, http://127.0.0.1:5174/core/). The 1 m tile terrain with the terrain kit and the shrine is at http://127.0.0.1:5174/core/tiles.html (`architecture/TILE_TERRAIN_ARCHITECTURE.md`). Everything below describes the previous map prototype in `src/`, kept for reference; `core/` does not import it.
 
 
 Read this first when resuming. It records what this prototype is for, the decisions already made, the contracts between modules, and what is

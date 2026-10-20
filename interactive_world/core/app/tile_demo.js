@@ -28,8 +28,13 @@ const stage = createStage(container, { center: new THREE.Vector3(W / 2, 2, D / 2
 
 // ---- daylight: warm sun from the south-west, blue sky fill, soft haze ------------------------------------------------------------------------------
 {
-  const sky = new THREE.Color('#a9c9e6');
-  stage.scene.background = sky;
+  const sky = new THREE.Color('#b3d0ea');
+  const c = document.createElement('canvas'); c.width = 4; c.height = 256;
+  const g = c.getContext('2d'), grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, '#5f97d1'); grad.addColorStop(0.55, '#a9cbe9'); grad.addColorStop(1, '#e8eef0');
+  g.fillStyle = grad; g.fillRect(0, 0, 4, 256);
+  const bg = new THREE.CanvasTexture(c); bg.colorSpace = THREE.SRGBColorSpace;
+  stage.scene.background = bg;
   stage.scene.fog = new THREE.Fog(sky, 90, 220);
   stage.scene.children.filter((o) => o.isHemisphereLight).forEach((h) => { h.color.set('#dcebff'); h.groundColor.set('#6b7442'); h.intensity = 1.25; });
   stage.sun.color.set('#fff0d8');

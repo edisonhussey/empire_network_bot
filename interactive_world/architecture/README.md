@@ -5,8 +5,9 @@ This folder holds the rules for the **new base** in `interactive_world/core/`. R
 | Document | What it fixes |
 |---|---|
 | [TERRAIN_CELL_ARCHITECTURE.md](TERRAIN_CELL_ARCHITECTURE.md) | the terrain: per-cell corner heights, triangulation, reconstruction walls, chunks, generation, validation |
+| [TILE_TERRAIN_ARCHITECTURE.md](TILE_TERRAIN_ARCHITECTURE.md) | the 1 m tile terrain: 0.2 m levels, the five tile shapes, edge classes, dressing with the terrain kit, the example scene |
 | [ASSET_GLB_PROTOCOL.md](ASSET_GLB_PROTOCOL.md) | building GLBs: frame (front = north = −Z), origin, footprint in cells, Blender export, placement and facing |
-| [renders/](renders/) | reference renders of terrain prototype 1 |
+| [renders/](renders/) | reference renders of terrain prototype 1 and the tile scene (`tiles_*.png`) |
 
 ## Ground rules for `core/`
 
@@ -23,12 +24,14 @@ This folder holds the rules for the **new base** in `interactive_world/core/`. R
 ```
 core/
   index.html            the terrain prototype page (http://127.0.0.1:5174/core/)
+  tiles.html            the tile terrain scene (http://127.0.0.1:5174/core/tiles.html)
   math/                 rng.js (mulberry32, hash2), noise.js (value noise, fbm, smoothstep)
   terrain/              grid.js, surface.js, mesh_top.js, mesh_connectors.js, chunks.js, generate.js
+  tiles/                tile_grid.js, tile_shapes.js, tile_edges.js, tile_mesh.js, dress.js, scene_example.js (1 m tiles, no three.js)
   placement/            footprint.js (placeOnCells, facing N/E/S/W, footprintLevel)
-  render/               stage.js, terrain_view.js, asset_view.js (building GLBs), compass.js (N/E/S/W letters + rose)
-  app/                  terrain_demo.js (bootstrap, panel, views, hover, the shrine on the middle pad)
-  tests/                terrain.test.mjs, placement.test.mjs   (node core/tests/<file>)
+  render/               stage.js, terrain_view.js, tile_view.js (tiles + kit pieces), asset_view.js (building GLBs), compass.js (N/E/S/W letters + rose)
+  app/                  terrain_demo.js (5 m cells + shrine), tile_demo.js (tile scene + shrine on the plateau)
+  tests/                terrain.test.mjs, placement.test.mjs, tiles.test.mjs   (node core/tests/<file>)
 ```
 
 The static server is `interactive_world/serve.mjs` (`node serve.mjs 5174`).

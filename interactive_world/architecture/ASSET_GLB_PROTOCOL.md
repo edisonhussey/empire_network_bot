@@ -61,3 +61,7 @@ node assets/development/scripts/glb_check.mjs assets/development/fire_shrine.glb
 It prints triangles, materials and the bounding box in the three.js frame, and fails unless the base is at y = 0, the box fits the footprint, and the named front node lies on the −Z side. Then open http://127.0.0.1:5174/core/?view=shrine&footprint=1 and use the **N E S W** buttons; the compass rose (bottom right) and the N/E/S/W letters at the map edges show where north is.
 
 `node core/tests/placement.test.mjs` covers the facing table, the swapped rect for E/W, and that the rotated footprint corners stay inside the rect.
+
+## 5. Kit pieces (terrain dressing)
+
+The terrain kit (`assets/development/terrain_kit.glb`, [TILE_TERRAIN_ARCHITECTURE.md](TILE_TERRAIN_ARCHITECTURE.md) section 6) follows the same frame with three differences: pieces are smaller than a cell and are placed by `core/tiles/dress.js`, not on a cell footprint; many pieces live in one GLB, each as one node at the origin; and edge pieces (cliff faces, banks, grass lips, path steps) face north standing on the edge line `y = 0` (Blender) with the high ground behind them, one unit tall where the game scales them to the step (`scale_y` extra). Check with `node assets/development/scripts/kit_check.mjs`.
