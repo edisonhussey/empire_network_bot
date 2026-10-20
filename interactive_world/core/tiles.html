@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tile Terrain Scene</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #a9c9e6; font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  #app { position: fixed; inset: 0; }
+  #panel { position: fixed; top: 12px; left: 12px; width: 330px; padding: 10px 12px; background: rgba(32, 33, 35, .86); color: #e6e6e6; border-radius: 10px; }
+  #panel[hidden] { display: none; }
+  #panel h1 { margin: 0 0 6px; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: #bdbdbd; }
+  #panel .row { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; align-items: center; }
+  #panel button { background: rgba(255, 255, 255, .08); color: #eee; border: 1px solid rgba(255, 255, 255, .16); border-radius: 6px; padding: 3px 9px; font: inherit; cursor: pointer; }
+  #panel button.on { background: #e6e6e6; color: #222; }
+  #panel input { width: 64px; background: rgba(255, 255, 255, .1); color: #eee; border: 1px solid rgba(255, 255, 255, .16); border-radius: 6px; padding: 3px 6px; font: inherit; }
+  #panel .box { margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, .14); font-size: 12px; }
+  #panel code { font-size: 12px; color: #fff; }
+  #panel .dim { color: #9a9a9a; }
+  .compass-rose { position: fixed; right: 16px; bottom: 16px; pointer-events: none; }
+  .compass-rose[hidden] { display: none; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="panel">
+  <h1>Tile terrain · 1 m tiles, 0.2 m steps</h1>
+  <div class="row"><button data-view="hero">Hero</button><button data-view="shrine">Shrine</button><button data-view="falls">Waterfall</button><button data-view="ramp">Slope path</button><button data-view="rise">Rocky rise</button><button data-view="top">Top grid</button><button data-view="wide">Wide</button></div>
+  <div class="row"><button data-t="grid">1 m grid</button><button data-t="props">Pieces</button><button data-t="wire">Wireframe</button><button data-t="shadows">Shadows</button><button data-t="compass">Compass</button><button data-t="footprint">Footprint</button></div>
+  <div class="box" data-asset><span class="dim">loading the kit…</span></div>
+  <div class="box" data-cell></div>
+  <div class="box dim" data-stats></div>
+  <div class="row dim"><a href="./" style="color:#9fc3ff">5 m cell prototype</a></div>
+</div>
+<script type="importmap">{ "imports": { "three": "../vendor/three/three.module.js", "three/addons/": "../vendor/three/jsm/" } }</script>
+<script type="module" src="app/tile_demo.js"></script>
+</body>
+</html>

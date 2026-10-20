@@ -25,12 +25,11 @@ function letterSprite(text, size) {
 /**
  * @param {THREE.Scene} scene
  * @param {HTMLElement} container  the page element the rose is drawn in
- * @param {{ width: number, depth: number, height?: number }} map  world size in metres
+ * @param {{ width: number, depth: number, height?: number, pad?: number, size?: number }} map  world size in metres; letters stand `pad` m outside the edges, `size` m tall
  */
-export function createCompass(scene, container, { width, depth, height = 6 }) {
+export function createCompass(scene, container, { width, depth, height = 6, pad = 18, size = 16 }) {
   const group = new THREE.Group();
   group.name = 'compass';
-  const pad = 18, size = 16;
   const at = { N: [width / 2, -pad], S: [width / 2, depth + pad], E: [width + pad, depth / 2], W: [-pad, depth / 2] };
   for (const [k, [x, z]] of Object.entries(at)) {
     const s = letterSprite(k, size);
