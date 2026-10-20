@@ -1,8 +1,8 @@
 # Tile terrain architecture (1 m tiles, 0.2 m steps)
 
-The fine terrain layer after the "Quantized Heightmap Terrain" guide: a 1 m logical grid whose corner heights are whole 0.2 m levels, rendered as a smooth, dressed world. It follows the same rules as the 5 m cell terrain ([TERRAIN_CELL_ARCHITECTURE.md](TERRAIN_CELL_ARCHITECTURE.md)): every tile owns its four corners, neighbours may disagree, and walls fill the gaps. A 5 m cell is 5 × 5 tiles.
+The fine terrain layer after the "Quantized Heightmap Terrain" guide and the "Quantized 1×1 Terrain System" sheet: a 1 m logical grid whose corner heights are whole 0.2 m levels, rendered as a smooth, dressed world. It follows the same rules as the 5 m cell terrain ([TERRAIN_CELL_ARCHITECTURE.md](TERRAIN_CELL_ARCHITECTURE.md)): every tile owns its four corners, neighbours may disagree, and walls fill the gaps. A 5 m cell is 5 × 5 tiles.
 
-Status: **prototype, validated** on a 48 × 40 example island (`core/tiles.html`). Six node tests pass (`node core/tests/tiles.test.mjs`); the kit passes `node assets/development/scripts/kit_check.mjs`. Renders: `renders/tiles_*.png`.
+Status: **prototype, validated** on a 48 × 40 example island (`core/tiles.html`). Seven node tests pass (`node core/tests/tiles.test.mjs`); the kit passes `node assets/development/scripts/kit_check.mjs`. Renders: `renders/tiles_*.png`.
 
 ---
 
@@ -31,9 +31,13 @@ Subtract the lowest corner and each corner is 0 or 1. Up to rotation there are e
 | `ramp` | `[1,0,0,1]` | rises one step to the north | 4 |
 | `saddle` | `[1,0,1,0]` | two opposite corners raised | 2 |
 
+These are the sheet's five shapes (the sheet writes its corners in its own order, e.g. one low corner as `[1,1,1,0]`; up to rotation they are the same). Blender render of all five with their rotations: `assets/development/previews/terrain_kit_tile_shapes.png`.
+
 * `classify(corners)` → `{ shape, rotation, base }`. Rotation `r` = quarter turns counter-clockwise seen from above = three.js `rotation.y = r·π/2`, the same table as `FACING_ROTATION` (`r` 0 N, 1 W, 2 S, 3 E). One quarter turn moves corner `k` to `(k + 3) % 4`.
 * **Surface rule:** the top is the **bilinear** patch through the four corners, sampled on 4 × 4 sub-quads (32 triangles per tile). `tileHeightAt(grid, x, z)` and `tileNormalAt` use the same bilinear formula; the drawn triangles deviate from it by at most 3 mm (tested). Props stand on `tileHeightAt`.
 * The tile meshes are authored in Blender (`Tile_*` in `terrain_kit.glb`) from the same canonical table; `kit_check.mjs` fails if any tile vertex is off the bilinear patch.
+
+**Inside a region every edge joins** (the sheet's rule: at most one step across any edge). The example scene builds one vertex field of whole levels per region (rolling ground plus named small forms: a ridge, diamond mounds that meet diagonally in saddle tiles, a swale), limited so every vertex is within one level of its eight neighbours; all tiles of the region share those corners. Risers and cliffs only appear where regions meet (tested).
 
 ## 3. Edges (`core/tiles/tile_edges.js`)
 
@@ -80,7 +84,7 @@ Materials: 8 (terrain, rock, soil, bark, three tiling leaf textures, one foliage
 
 ## 7. Rendering (`core/render/tile_view.js`)
 
-* Ground shader: grass / dirt / sand textures in world space (4 m repeat, a second scale against tiling), blended by a per-tile splat texture (path, sand, bed) with linear filtering and noise so path edges are soft; a 2-texel-per-metre occlusion texture darkens cliff feet and the ground under crowns; optional 1 m grid lines.
+* Ground shader: sloped tiles show worn earth through the grass (by the surface normal, as on the sheet's tiles); grass / dirt / sand textures in world space (4 m repeat, a second scale against tiling), blended by a per-tile splat texture (path, sand, bed) with linear filtering and noise so path edges are soft; a 2-texel-per-metre occlusion texture darkens cliff feet and the ground under crowns; optional 1 m grid lines.
 * Walls: world-projected rock or soil by the `soil` attribute, darker towards the bottom of the island.
 * Water: transparent, animated ripple normals, shallow/deep colour and a foam line from the splat's water channel. Waterfalls: bent animated sheets with free-end fading and foam on the pool.
 * Pieces: one `InstancedMesh` per piece primitive (about 35 meshes for ~4,500 instances); foliage cards are alpha-tested, double-sided, lit with their authored normals, and sway in the wind.
@@ -101,4 +105,4 @@ A building footprint on tiles is `placeOnCells({ cx, cz, w, d, facing, cellSize:
 
 ## 10. Run it
 
-`node serve.mjs 5174`, open http://127.0.0.1:5174/core/tiles.html (`?view=hero|shrine|falls|ramp|rise|top|wide&grid=1&props=0&wire=1&hover=tx,tz&ui=0`). Screenshots: `node --experimental-websocket tools/shot.mjs out.png "<url>"`.
+`node serve.mjs 5174`, open http://127.0.0.1:5174/core/tiles.html (`?view=hero|shrine|falls|ramp|rise|forms|top|wide&grid=1&props=0&wire=1&hover=tx,tz&ui=0`). Screenshots: `node --experimental-websocket tools/shot.mjs out.png "<url>"`.

@@ -1,7 +1,7 @@
 // The tile terrain page (core/tiles.html): the example scene on 1 m tiles with 0.2 m steps, dressed with the terrain kit
 // (assets/development/terrain_kit.glb), the Fire-Kingdom Shrine on the plateau pad, a N/E/S/W compass, and a hover readout per tile.
 // URL options for scripted renders:
-//   core/tiles.html?view=hero|shrine|falls|ramp|rise|top|wide&grid=1&props=0&wire=1&shadows=0&compass=0&footprint=1&ui=0&seed=3&hover=tx,tz
+//   core/tiles.html?view=hero|shrine|falls|ramp|rise|forms|top|wide&grid=1&props=0&wire=1&shadows=0&compass=0&footprint=1&ui=0&seed=3&hover=tx,tz
 import * as THREE from 'three';
 import { createStage } from '../render/stage.js';
 import { createCompass } from '../render/compass.js';
@@ -60,6 +60,7 @@ const VIEWS = {
   falls: () => at(feature('waterfall'), 9, 6, 13, 0.5),
   ramp: () => at(feature('lower ramp'), 13, 9, 12, 0.5),
   rise: () => at(feature('rocky rise'), -14, 9, 16),
+  forms: () => at(feature('ridge and saddles'), -9, 8, 11),
 };
 function setView(name) {
   const v = (VIEWS[name] ?? VIEWS.hero)();

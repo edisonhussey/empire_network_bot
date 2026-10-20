@@ -84,10 +84,10 @@ function groundMaterial(grid, uniforms) {
   const m = new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 });
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, uniforms);
-    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vWorld;')
-      .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vWorld;\nvarying vec3 vNormalW;')
+      .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvNormalW = normalize(mat3(modelMatrix) * objectNormal);');
     sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>
-      varying vec3 vWorld;
+      varying vec3 vWorld; varying vec3 vNormalW;
       uniform sampler2D tGrass, tDirt, tSand, tSplat, tAO; uniform vec2 uSize; uniform float uGrid;`)
       .replace('#include <map_fragment>', `
       vec2 wuv = vWorld.xz / 4.0;
@@ -100,6 +100,10 @@ function groundMaterial(grid, uniforms) {
       float path = smoothstep(0.32, 0.62, sp.r + nz * 0.55);
       float sandW = smoothstep(0.30, 0.70, sp.g + nz * 0.5);
       float bed = smoothstep(0.2, 0.6, sp.b);
+      // sloped tiles show worn earth through the grass, as on the 1x1 tile sheet (one step over one metre is about 11 degrees)
+      float slope = 1.0 - normalize(vNormalW).y;
+      float earth = smoothstep(0.004, 0.022, slope + nz * 0.012) * 0.75;
+      grass = mix(grass, dirt * vec3(0.92, 0.88, 0.82), earth);
       vec3 col = mix(grass, sand, sandW);
       col = mix(col, dirt, path);
       col = mix(col, sand * vec3(0.62, 0.66, 0.62), bed);
