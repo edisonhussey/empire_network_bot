@@ -85,6 +85,23 @@ export function moveBlock(entries, index, direction) {
     .sort((a, b) => a.commander_start - b.commander_start);
 }
 
+/// How many commanders are reserved for support. This one number decides the mode:
+/// above zero the bot is a hybrid and support is on; zero is a plain attack bot. There
+/// is no separate "support on" switch to forget.
+export function supportCommanders(entries) {
+  return entries
+    .filter((entry) => entry.kind === "support" || entry.support)
+    .reduce((sum, entry) => sum + count(entry), 0);
+}
+
+/// What a saved attack bot does about support, from its own record (`allocations`,
+/// `support_bot_id`): `{ hybrid, reserved }`. Older bots that name a support object
+/// but reserve nothing count as plain attack bots, the same rule the service applies on save.
+export function modeSupport(mode) {
+  const reserved = supportCommanders(mode?.allocations || []);
+  return { hybrid: reserved > 0 && mode?.support_bot_id != null, reserved };
+}
+
 /// Segments for the bar under the list: each range, and the unused numbers between
 /// them, in number order.
 export function barSegments(ranges) {

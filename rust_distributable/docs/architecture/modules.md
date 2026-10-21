@@ -5,6 +5,7 @@ One concern, one owner. If a rule exists in two places, one of them is a bug.
 | Layer | Owns | Must not |
 | --- | --- | --- |
 | `crates/empire-game` | Static game data (the complete unit and rule tables generated from `data/tables/`, plus the older troop/tool/kingdom tables), attack encoding | Do I/O, touch SQLite, or know about the network |
+| `crates/empire-socket` | The one place that opens the game WebSocket: TLS, the page's upgrade headers and the `permessage-deflate` offer, and inflating the server's compressed frames (`deflate.rs` pure framing, `stream.rs` the wrapper, `lib.rs` `game_request` / `connect`). Used by the daemon (sessions and relay), `empire-login` and `empire-hunt` | Contain game rules or decode packets; the header values live in `empire-core/src/ws_handshake.rs` |
 | `crates/empire-core` | Domain rules, pacing, planning, licence, SQLite `store` (**single source of truth**) | Open sockets or know about HTTP |
 | `crates/empire-daemon` | Axum API (`lib.rs`, `plans.rs`, `station.rs`, `dev_shared.rs`), one game session per account (`sessions.rs`, `direct/`), `relay.rs` | Invent rules; it applies the ones in `empire-core` |
 | `desktop/src-tauri` | Window and service lifecycle only | Contain business logic |

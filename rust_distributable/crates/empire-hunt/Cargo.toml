@@ -15,4 +15,5 @@ empire-game = { path = "../empire-game" }
 futures-util.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+empire-socket = { path = "../empire-socket" }
 tokio-tungstenite.workspace = true

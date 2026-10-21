@@ -7,10 +7,7 @@ use empire_core::{
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{Message, client::IntoClientRequest, http::header::ORIGIN},
-};
+use tokio_tungstenite::tungstenite::Message;
 
 struct LoginConfig {
     endpoint: String,
@@ -62,11 +59,8 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn prove_login(config: LoginConfig) -> anyhow::Result<()> {
-    let mut request = config.endpoint.as_str().into_client_request()?;
-    request
-        .headers_mut()
-        .insert(ORIGIN, "https://empire.goodgamestudios.com".parse()?);
-    let (socket, response) = connect_async(request)
+    // The page's headers and the deflate offer, and the inflating wrapper: see `empire-socket`.
+    let (socket, response) = empire_socket::connect(empire_socket::game_request(&config.endpoint)?)
         .await
         .context("failed to connect game WebSocket")?;
     println!("SOCKET_OK http_status={}", response.status());

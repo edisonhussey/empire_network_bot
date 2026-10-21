@@ -11,3 +11,15 @@
 .inject-bar select{font:inherit;color:inherit;background:#172330;border:1px solid #344455;border-radius:7px;padding:8px}
 .inject-bar small{padding-top:9px;color:#73899b;white-space:nowrap}
 .inject-bar small.ok{color:#30cf8d}
+
+.hs-pills{display:flex;flex-wrap:wrap;gap:6px;padding:10px 12px;border-bottom:1px solid #273c4b}
+.hs-pill{padding:3px 9px;border-radius:99px;background:#1c2c38;border:1px solid #31485a;color:#b9d9ea;font-size:11px}
+.hs-pill.ok{background:#12372b;border-color:#1f7a58;color:#7be0b5}
+.hs-pill.no{background:#3a2326;border-color:#8a3b44;color:#f0a0a8}
+.hs-block{margin:0;border-radius:0;font:11px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;max-height:340px;overflow:auto}
+.hs-note{padding:10px 12px;color:#8aa1b3;font-size:11px;line-height:1.5}
+.hs-req{border-top:1px solid #273c4b}
+.hs-req summary{display:grid;grid-template-columns:58px 48px 40px 1fr;gap:8px;align-items:center;padding:7px 12px;cursor:pointer;font-size:11px}
+.hs-url{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#bdd6e7}
+.hs-status{color:#8aa1b3}
+.hs-body{padding:0 12px 8px}.hs-body small{color:#73899b}.hs-body pre{margin:4px 0 0;padding:8px;max-height:180px;overflow:auto}

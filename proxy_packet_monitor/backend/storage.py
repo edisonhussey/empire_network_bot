@@ -18,6 +18,33 @@ CREATE TABLE events(seq INTEGER PRIMARY KEY, received_at REAL NOT NULL, type TEX
 CREATE INDEX event_type ON events(type, seq);"""
 
 
+# Created on demand, so sessions recorded without the handshake box (and older ones) simply have no such table.
+HANDSHAKE_TABLE = """CREATE TABLE IF NOT EXISTS handshakes(id INTEGER PRIMARY KEY AUTOINCREMENT, before_seq INTEGER NOT NULL,
+ captured_at REAL NOT NULL, record TEXT NOT NULL)"""
+
+
+def list_handshakes(conn: sqlite3.Connection) -> list[dict]:
+    try:
+        rows = conn.execute("SELECT id,before_seq,captured_at,record FROM handshakes ORDER BY before_seq,id").fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [{"id": row[0], "before_seq": row[1], "captured_at": row[2], "record": json.loads(row[3])} for row in rows]
+
+
+def is_login(kind: str, raw: str) -> bool:
+    return kind == "LOGIN" or "action='login'" in raw or 'action="login"' in raw
+
+
+def handshake_for(conn: sqlite3.Connection, seq: int) -> dict | None:
+    """The handshake of the connection a LOGIN event belongs to: the newest one recorded before that event."""
+    try:
+        row = conn.execute("SELECT id,before_seq,record FROM handshakes WHERE before_seq < ? ORDER BY before_seq DESC, id DESC LIMIT 1",
+                           (seq,)).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return None if row is None else {"id": row[0], "before_seq": row[1], "record": json.loads(row[2])}
+
+
 def db_path(root: Path, session_id: str) -> Path:
     if not session_id or any(c not in "0123456789abcdef" for c in session_id):
         raise ValueError("invalid session id")
@@ -80,6 +107,15 @@ class Recorder:
             self.seq += 1
             self.queue.put(("event", self.session_id, self.seq, received_at, raw, direction))
 
+    def handshake(self, record: dict) -> bool:
+        """Attach a connection handshake to the session being recorded. `before_seq` is how many events were
+        already recorded, so the LOGIN that follows (and no earlier one) is matched to it. False when not recording."""
+        with self.lock:
+            if not self.active:
+                return False
+            self.queue.put(("handshake", self.session_id, self.seq, record))
+            return True
+
     def close(self) -> None:
         self.stop()
         self.queue.put(("quit",))
@@ -109,6 +145,12 @@ class Recorder:
                     count += 1
                     if count % 100 == 0:
                         conn.commit()
+                elif op == "handshake" and conn:
+                    _, _, before_seq, record = item
+                    conn.execute(HANDSHAKE_TABLE)
+                    conn.execute("INSERT INTO handshakes(before_seq,captured_at,record) VALUES (?,?,?)",
+                                 (before_seq, record.get("captured_at") or time.time(), json.dumps(record, ensure_ascii=False)))
+                    conn.commit()
                 elif op == "stop" and conn:
                     set_meta(conn, ended_at=item[2], event_count=count)
                     conn.commit()
@@ -179,11 +221,22 @@ def events(root: Path, session_id: str, types: list[str], query: str, limit: int
 
 def raw_lines(root: Path, session_id: str, types: list[str], query: str) -> list[str]:
     """The raw text of every event the filter shows, in order, one string per event. A line break inside a frame (rare:
-    some XML frames) is written as the two characters `\\n`, so one event is always exactly one line."""
+    some XML frames) is written as the two characters `\\n`, so one event is always exactly one line.
+
+    A LOGIN event whose connection has a recorded handshake is preceded by one extra line, `# HANDSHAKE <json>`
+    (once per handshake), so an export carries the upgrade headers next to the login they belong to."""
     with closing(sqlite3.connect(db_path(root, session_id))) as conn:
         clause, params = _filter(types, query)
-        rows = conn.execute("SELECT raw FROM events" + clause + " ORDER BY seq", params).fetchall()
-    return [row[0].replace("\r\n", "\\n").replace("\n", "\\n").replace("\r", "\\n") for row in rows]
+        rows = conn.execute("SELECT seq,type,raw FROM events" + clause + " ORDER BY seq", params).fetchall()
+        lines, shown = [], set()
+        for seq, kind, raw in rows:
+            if is_login(kind, raw):
+                found = handshake_for(conn, seq)
+                if found and found["id"] not in shown:
+                    shown.add(found["id"])
+                    lines.append("# HANDSHAKE " + json.dumps(found["record"], ensure_ascii=False, separators=(",", ":")))
+            lines.append(raw.replace("\r\n", "\\n").replace("\n", "\\n").replace("\r", "\\n"))
+    return lines
 
 
 def export_raw(root: Path, session_id: str, types: list[str], query: str, destination: Path) -> int:
@@ -193,7 +246,7 @@ def export_raw(root: Path, session_id: str, types: list[str], query: str, destin
     temp = destination.with_suffix(destination.suffix + ".tmp")
     temp.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
     temp.replace(destination)
-    return len(lines)
+    return sum(1 for line in lines if not line.startswith("# HANDSHAKE "))
 
 
 def event(root: Path, session_id: str, seq: int) -> dict:
@@ -204,6 +257,10 @@ def event(root: Path, session_id: str, seq: int) -> dict:
             raise FileNotFoundError(seq)
         result = dict(row)
         result["decoded"] = json.loads(result["decoded"])
+        if is_login(result["type"], result["raw"]):
+            found = handshake_for(conn, seq)
+            if found:
+                result["handshake"] = found["record"]
         return result
 
 
@@ -213,7 +270,8 @@ def export_session(root: Path, session_id: str, destination: Path) -> None:
         info = metadata(conn)
         temp = destination.with_suffix(destination.suffix + ".tmp")
         with temp.open("w", encoding="utf-8") as file:
-            file.write('{"metadata":' + json.dumps(info, ensure_ascii=False) + ',"events":[')
+            file.write('{"metadata":' + json.dumps(info, ensure_ascii=False)
+                       + ',"handshakes":' + json.dumps(list_handshakes(conn), ensure_ascii=False) + ',"events":[')
             for index, row in enumerate(conn.execute("SELECT " + event_columns(conn) + " FROM events ORDER BY seq")):
                 record = dict(row)
                 record["decoded"] = json.loads(record["decoded"])

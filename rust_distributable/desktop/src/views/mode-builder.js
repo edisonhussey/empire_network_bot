@@ -1,5 +1,5 @@
 import { element } from "../dom.js";
-import { commanderRanges, followPrevious, moveBlock, needed, problems, toRequest, withRange } from "./commander-ranges.js";
+import { commanderRanges, followPrevious, moveBlock, needed, problems, supportCommanders, toRequest, withRange } from "./commander-ranges.js";
 
 /// The attack bot builder: lay tasks (and commanders kept for support) out along the
 /// commander numbers.
@@ -10,8 +10,10 @@ import { commanderRanges, followPrevious, moveBlock, needed, problems, toRequest
 /// its neighbour, or take it off. A new block follows the one before until its numbers
 /// are edited. Numbers may be skipped, and a task and the support object may alternate
 /// (support 1-9, a task at 10, support 11-20); a commander can never belong to two
-/// blocks. A bot carries at most one kind of support, chosen once; its blocks are the
-/// commanders kept for it, and no attack ever uses them.
+/// blocks. Support is not a setting: a bot that reserves commanders for it (their count
+/// is not zero) is a hybrid and support is on; one that reserves none is a plain attack
+/// bot. Reserving the first block reveals the one choice still needed, where the troops
+/// wait; no attack ever uses the reserved commanders.
 ///
 /// All the arithmetic is in commander-ranges.js; this draws it and reports the entries.
 /// `getLibrary()` supplies the saved tasks and support objects, `kingdomLabel(id)`
@@ -24,9 +26,12 @@ export function createModeBuilder({ getLibrary, kingdomLabel }) {
 
   const task = (id) => getLibrary().tasks.find((value) => value.task_id === id);
   const supports = () => getLibrary().station_bots || [];
+  const reserved = () => supportCommanders(entries);
+  /// Where support waits, or `null`. Only meaningful while commanders are reserved: a
+  /// leftover choice never switches support on by itself.
   const supportId = () => {
     const value = $("#mode-support")?.value;
-    return value ? Number(value) : null;
+    return reserved() > 0 && value ? Number(value) : null;
   };
   const supportName = () => supports().find((bot) => bot.station_bot_id === supportId())?.name || "Support";
 
@@ -91,6 +96,7 @@ export function createModeBuilder({ getLibrary, kingdomLabel }) {
     const board = $("#mode-tasks");
     if (!board) return;
     board.replaceChildren();
+    showDestination();
     const note = $("#commander-warning");
     if (!entries.length) {
       board.append(element("p", "board-empty", "Add a task, or reserve commanders for support, to begin."));
@@ -126,13 +132,23 @@ export function createModeBuilder({ getLibrary, kingdomLabel }) {
     }
     board.append(grid, selectionPanel(ranges));
     const used = ranges.reduce((sum, range) => sum + range.count, 0);
-    const reserved = ranges.filter((range) => range.kind === "support").reduce((sum, range) => sum + range.count, 0);
+    const kept = ranges.filter((range) => range.kind === "support").reduce((sum, range) => sum + range.count, 0);
     note.classList.toggle("range-conflict", bad.length > 0);
     if (bad.length) note.textContent = "Two blocks share a commander. A commander can belong to one block only; change the numbers.";
     else {
-      const parts = [`${used - reserved} for attacks`, ...(reserved ? [`${reserved} kept for support`] : [])];
+      const parts = [`${used - kept} for attacks`, ...(kept ? [`${kept} kept for support · hybrid, support on`] : [])];
       note.textContent = `${parts.join(" · ")} · numbers 1–${total}${total > used ? `; ${total - used} left unused` : ""}`;
     }
+  }
+
+  /// The "where support waits" choice shows only while commanders are reserved. With
+  /// exactly one saved support it is picked for the user.
+  function showDestination() {
+    const label = $("#support-destination");
+    const select = $("#mode-support");
+    if (!label || !select) return;
+    label.hidden = reserved() === 0;
+    if (!select.value && supports().length === 1) select.value = String(supports()[0].station_bot_id);
   }
 
   /// The editor for the clicked block, under the board.
@@ -175,13 +191,13 @@ export function createModeBuilder({ getLibrary, kingdomLabel }) {
       return row;
     }));
     if (!tasks.length) pool.append(element("p", "empty-copy", "Save a task first, then place it here."));
-    // The support choice: one per bot, from the saved support objects.
+    // Where support waits, from the saved support objects. Only asked once commanders are reserved.
     const select = $("#mode-support");
     if (select) {
       const chosen = select.value;
-      select.replaceChildren(new Option("None — no support", ""), ...supports().map((bot) => new Option(bot.name, String(bot.station_bot_id))));
+      select.replaceChildren(new Option(supports().length ? "Choose where support waits" : "No support saved yet", ""), ...supports().map((bot) => new Option(bot.name, String(bot.station_bot_id))));
       if (supports().some((bot) => String(bot.station_bot_id) === chosen)) select.value = chosen;
-      $("#add-support-range").disabled = !select.value;
+      showDestination();
     }
   }
 
@@ -195,19 +211,12 @@ export function createModeBuilder({ getLibrary, kingdomLabel }) {
   }
 
   function addSupport() {
-    if (!supportId()) return;
     counter += 1;
     entries.push({ uid: counter, kind: "support", task_id: "", commander_count: 1, commander_start: null });
     selected = counter;
     renderBoard();
   }
 
-  $("#mode-support")?.addEventListener("change", () => {
-    // Dropping the support drops the blocks kept for it.
-    if (!supportId()) { entries = entries.filter((entry) => entry.kind !== "support"); selected = null; }
-    $("#add-support-range").disabled = !supportId();
-    renderBoard();
-  });
   $("#add-support-range")?.addEventListener("click", addSupport);
 
   return {
@@ -220,14 +229,17 @@ export function createModeBuilder({ getLibrary, kingdomLabel }) {
     },
     /// The slots to send, in board order.
     allocations: () => toRequest(entries),
-    /// The support object chosen, or `null`.
+    /// Where support waits, or `null` when no commanders are reserved (a plain attack bot).
     supportId,
+    /// How many commanders are reserved for support; above zero the bot is a hybrid.
+    reserved,
     /// The current entries with their starts, for exporting.
     entries: () => entries,
     /// Why this cannot be saved yet, or `null`.
     problem() {
       if (!entries.length) return "Add at least one task.";
       if (!entries.some((entry) => entry.kind === "task")) return "Add at least one task: support alone does not attack.";
+      if (reserved() > 0 && !supportId()) return supports().length ? "Choose where support waits for the commanders you reserved." : "Create a support first (Station → Create support), then choose where it waits.";
       return problems(commanderRanges(entries)).length ? "Two blocks share a commander." : null;
     },
   };

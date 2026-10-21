@@ -18,6 +18,7 @@ sys.path.insert(0, str(BASE))
 from backend.protocol import Decoder, matches_game_url
 from backend.storage import Recorder
 from backend.login_capture import DEFAULT_HOSTS, LoginCapture
+from backend.handshake_capture import HandshakeCapture
 from backend.auto_support import AutoSupport, SupportNotSent, packet as support_packet
 from backend.injector import InjectChannel
 from mitmproxy import ctx
@@ -49,6 +50,9 @@ class PacketMonitor:
         self.capture = LoginCapture(DATA / "login_data", DATA / "login_capture.json",
                                     os.environ.get("PPM_CAPTURE_HOSTS") or DEFAULT_HOSTS)
         self.capture_reported = None
+        self.handshake = HandshakeCapture(DATA / "handshake_capture.json", DATA / "handshake_latest.json")
+        self.pending_handshake = None      # the current game socket's record, for a recording started after it opened
+        self.attached_handshakes = set()   # (session id, captured_at) already stored, so one is never stored twice
         self.injector = InjectChannel(DATA)
         self.incoming_queue = SimpleQueue()
         self.incoming_worker = Thread(target=self._send_incoming, daemon=True)
@@ -75,7 +79,7 @@ class PacketMonitor:
         body = {"recording": self.recorder.active, "session_id": self.recorder.session_id if self.recorder.active else None,
                 "connected": self.connected, "endpoint": self.endpoint,
                 "last_websocket_url": self.last_websocket_url, "capture": self.capture.stats(),
-                "updated_at": time.time()}
+                "handshake": self.handshake.stats(), "updated_at": time.time()}
         self.capture_reported = (self.capture.saved, self.capture.ws_seq)
         temporary = STATUS.with_suffix(".tmp")
         temporary.write_text(json.dumps(body), encoding="utf-8")
@@ -113,6 +117,7 @@ class PacketMonitor:
                             self.recorder.start()
                         elif body.get("action") == "stop":
                             self.recorder.stop()
+                        self._attach_handshake()
                         self._status()
             except (OSError, ValueError) as exc:
                 print(f"packet monitor control error: {exc!r}", flush=True)
@@ -122,15 +127,31 @@ class PacketMonitor:
                 self._status()
             await asyncio.sleep(0.05)
 
+    def _attach_handshake(self):
+        """Store the current socket's handshake in the session being recorded (once per session)."""
+        record = self.pending_handshake
+        if record is None or not self.connected or not self.recorder.active:
+            return
+        key = (self.recorder.session_id, record["captured_at"])
+        if key not in self.attached_handshakes and self.recorder.handshake(record):
+            self.attached_handshakes.add(key)
+
     def websocket_start(self, flow: http.HTTPFlow):
         self.last_websocket_url = flow.request.url
         if matches_game_url(flow.request.url):
             self.capture.on_websocket(flow.request.url)
+            if self.handshake.enabled():
+                try:
+                    self.pending_handshake = self.handshake.snapshot(flow, time.time())
+                except Exception as exc:  # recording the handshake must never break the game connection
+                    self.pending_handshake = None
+                    print(f"handshake capture failed: {exc!r}", flush=True)
             if self.active_flow is not None and self.active_flow is not flow:
                 self.auto_support.connection_lost()
             self.connected = True
             self.endpoint = flow.request.url
             self.active_flow = flow
+            self._attach_handshake()
         self._status()
 
     def request(self, flow: http.HTTPFlow):
@@ -142,6 +163,11 @@ class PacketMonitor:
 
     def response(self, flow: http.HTTPFlow):
         """Login data: keep the game's own downloads while the page's checkbox is on."""
+        if self.handshake.enabled():
+            try:
+                self.handshake.note_http(flow, time.time())
+            except Exception as exc:
+                print(f"handshake note failed: {exc!r}", flush=True)
         reply = flow.response
         if reply is None or not self.capture.enabled():
             return
@@ -187,6 +213,7 @@ class PacketMonitor:
             self.connected = False
             self.active_flow = None
             self.server_header = None
+            self.pending_handshake = None
             self._status()
 
     @staticmethod

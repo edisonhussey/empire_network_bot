@@ -9,10 +9,12 @@ in [`../../architecture/network_requests.md`](../../architecture/network_request
 The 2026-10-02 20:45:20 Ventrilo capture begins with a new game WebSocket. The
 observed order was:
 
-1. Client sends the XML `verChk` system frame. Server returns `apiOK`.
+1. Client opens the socket (the upgrade **must offer `permessage-deflate`**, else `400`; see [problem 19](../../problems/19.md)), sends the XML `verChk` system frame (plain text) and the server returns `apiOK` as a compressed binary frame.
    A direct WebSocket opened without the game-page `Origin` still received HTTP
    status 101, but did not advance to `apiOK`. The successful direct connection
-   supplied `Origin: https://empire.goodgamestudios.com`. Incoming protocol
+   supplied `Origin: https://empire.goodgamestudios.com`; since the 2026-10-21 update the browser sends
+   `Origin: https://empire-html5.goodgamestudios.com` plus browser headers, and the client now does the same
+   (`empire-core/src/ws_handshake.rs`, [problem 17](../../problems/17.md)). Incoming protocol
    frames must be accepted as either WebSocket text or UTF-8 binary messages.
 2. Client sends the XML `login` system frame with zone `EmpireEx_21` and a value
    derived from the active client version and language.

@@ -13,6 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
+empire-socket = { path = "../empire-socket" }
 tokio-tungstenite.workspace = true
 tower-http.workspace = true
 tracing.workspace = true

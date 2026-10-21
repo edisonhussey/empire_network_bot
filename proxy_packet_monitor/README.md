@@ -46,6 +46,8 @@ A recording in progress is a `.partial` file that is committed only every 100 ev
 
 **Include images** (checkbox beside Download login data, off by default). Also keeps the pictures the game loads (png, jpg, gif, webp, svg) with the other login downloads, under `files/<host>/<path>`; audio, video and fonts are never kept. Needs Download login data on, and a hard reload of the game so it fetches the pictures again. The header shows the megabytes saved so far. Pictures load as they are used, so one login saves what that login showed; sort them into the project with `utils/scripts/organize_game_data.py` (in `rust_distributable`).
 
+**Record full handshake** (checkbox in the toolbar, off by default). While it is on and a recording is running, each time the game opens its WebSocket the proxy stores the upgrade request and response with every header in wire order and case (so `Sec-WebSocket-Extensions` / `permessage-deflate`, offered and accepted, is visible), the TLS version and cipher on both proxy legs, and the game-host requests made in the 90 seconds before the socket (config, maintenance, token calls; images, audio, fonts and CSS skipped). It is shown at the top of that connection's **LOGIN** event (a hint appears if none was recorded) and is also written to `web_data/handshake_latest.json`. Raw exports get a `# HANDSHAKE {...}` line before the LOGIN, and JSON exports a `handshakes` list. Cookie / Set-Cookie / Authorization values and password- or token-like JSON fields are hidden (cookie names are kept). Tick it, start recording, then load the game; restart the proxy once so it loads the new code. Only the web dashboard addon (`backend/incoming_addon.py`) has it, not the compiled desktop.
+
 ## Optional compiled desktop
 
 From the repository root:

@@ -29,12 +29,9 @@ use futures_util::{
 };
 use serde_json::Value;
 use tokio::time::{Instant, sleep_until};
-use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, connect_async,
-    tungstenite::{Message, client::IntoClientRequest, http::header::ORIGIN},
-};
+use tokio_tungstenite::tungstenite::Message;
 
-type Link = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+type Link = empire_socket::GameSocket;
 type Sink = SplitSink<Link, Message>;
 type Stream = SplitStream<Link>;
 
@@ -177,11 +174,7 @@ async fn run(config: Config) -> anyhow::Result<()> {
         .await
         .ok();
 
-    let mut request = config.endpoint.as_str().into_client_request()?;
-    request
-        .headers_mut()
-        .insert(ORIGIN, "https://empire.goodgamestudios.com".parse()?);
-    let (socket, _) = connect_async(request)
+    let (socket, _) = empire_socket::connect(empire_socket::game_request(&config.endpoint)?)
         .await
         .context("failed to connect the game WebSocket")?;
     let (mut sink, mut stream) = socket.split();

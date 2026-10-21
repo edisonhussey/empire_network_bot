@@ -76,10 +76,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{RwLock, mpsc};
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{Message, client::IntoClientRequest, http::header::ORIGIN},
-};
+use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
 use crate::licence::LicenceGate;
@@ -440,11 +437,9 @@ async fn run_inner(
             now_ms(),
         )
         .await?;
-    let mut websocket_request = request.endpoint.as_str().into_client_request()?;
-    websocket_request
-        .headers_mut()
-        .insert(ORIGIN, "https://empire.goodgamestudios.com".parse()?);
-    let (socket, _) = connect_async(websocket_request).await?;
+    // The page's headers and the deflate offer, and the inflating wrapper (the server answers 400 to a socket that does not
+    // offer compression): both live in `empire-socket`.
+    let (socket, _) = empire_socket::connect(empire_socket::game_request(&request.endpoint)?).await?;
     log_event(store, &account_id, "connection.connected", &request.endpoint).await;
     let (mut sink, mut stream) = socket.split();
     let (injection_tx, mut injection_rx) = channel();

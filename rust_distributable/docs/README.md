@@ -22,6 +22,7 @@ it, and everything it knows lives in a local SQLite database. This folder is the
 crates/empire-game      static game data (troops, tools, kingdoms, travel costs) and the attack encoder
 crates/empire-core      rules, pacing, planning, licence, SQLite store (the single source of truth)
 crates/empire-daemon    the local API and one game session per account
+crates/empire-socket    opens the game WebSocket (upgrade headers, deflate offer, inflating compressed frames) for everything that talks to the game
 crates/empire-login     a standalone login proof (no daemon, database or window)
 crates/empire-hunt      the command-line hunter
 crates/empire-license-admin   the administrator's token issuer

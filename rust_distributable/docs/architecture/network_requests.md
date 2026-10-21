@@ -47,8 +47,10 @@ detect the header by shape rather than by position.
   are not escaped, so parse by splitting on `%` with a field limit, not by
   splitting on braces.
 
-Transport: `wss://ep-live-us1-game.goodgamestudios.com/` with the header
-`Origin: https://empire.goodgamestudios.com`.
+Transport: `wss://ep-live-us1-game.goodgamestudios.com/` with the browser's upgrade headers, `Origin: https://empire-html5.goodgamestudios.com`
+among them (values in `empire-core/src/ws_handshake.rs`; before 2026-10-21 the Origin was `https://empire.goodgamestudios.com`, which is still the `REF` inside `lli`).
+**The upgrade must offer `Sec-WebSocket-Extensions: permessage-deflate`**: without it the server answers `400 Bad Request` whatever the Origin. After the upgrade the server
+sends its messages compressed (RSV1, raw deflate, binary frames); the client may send plain text frames. All of this is done by `crates/empire-socket` ([problem 19](../problems/19.md)).
 
 There is also a `<body action='...'>` **system frame** used during login only
 (`apiOK`, `joinOK`). It is not `%xt%`-framed; treat it as an opaque trigger.

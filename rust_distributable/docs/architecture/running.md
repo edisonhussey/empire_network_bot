@@ -26,12 +26,18 @@ npm run tauri dev
 It starts the daemon itself and keeps its data in the platform folder above. Do not run the stand-alone daemon on the same
 port at the same time.
 
+On start the window compares the running service's `api_version` (`GET /v1/health`) with its own and replaces a service that is older, whether that is the
+app's own `--service` process or a stand-alone `empire-daemon` ([problem 19](../problems/19.md)). A stale stand-alone daemon (for example one started by a process monitor from
+an old `target/release` build) otherwise answers every newer route with `404` and fails on the migrated database. Rebuild it after any change: `cargo build --release -p empire-daemon`.
+
 ## The stand-alone daemon (network tests without the window)
 
 ```sh
 cd rust_distributable
 cargo run -p empire-daemon
 ```
+
+Transport check against the live game, no credentials (expects `HTTP 101`, `permessage-deflate` and `apiOK`): `cargo run -p empire-socket --example verchk`.
 
 * API: `127.0.0.1:47821` (override `EMPIRE_BIND`), logging `RUST_LOG`, data folder `EMPIRE_DATA_DIR`.
 * Useful endpoints:

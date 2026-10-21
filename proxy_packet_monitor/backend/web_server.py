@@ -59,6 +59,7 @@ class Service:
         self.support_config_path = self.data / "auto_support.json"
         self.support_status_path = self.data / "auto_support_status.json"
         self.capture_path = self.data / "login_capture.json"
+        self.handshake_path = self.data / "handshake_capture.json"
         self.injector = InjectChannel(self.data)
         self.proxy = None
         # The global recording key listens only while the proxy runs (started and stopped with it).
@@ -108,6 +109,20 @@ class Service:
         temporary = self.capture_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(state), encoding="utf-8")
         temporary.replace(self.capture_path)
+        return state
+
+    def handshake_enabled(self):
+        try:
+            return bool(json.loads(self.handshake_path.read_text(encoding="utf-8")).get("enabled"))
+        except (OSError, ValueError, AttributeError):
+            return False
+
+    def set_handshake(self, enabled):
+        """The "Record full handshake" box. The proxy re-reads this file, so no restart is needed."""
+        state = {"enabled": bool(enabled)}
+        temporary = self.handshake_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(state), encoding="utf-8")
+        temporary.replace(self.handshake_path)
         return state
 
     def export_raw(self, session_id, types, query):
@@ -199,6 +214,8 @@ class Service:
                 "last_websocket_matches_game": matches_game_url(addon["last_websocket_url"]) if running and addon.get("last_websocket_url") else None,
                 "capture_enabled": self.capture_enabled(), "capture_images": self.capture_images(),
                 "capture": addon.get("capture") if running else None,
+                "handshake_enabled": self.handshake_enabled(),
+                "handshake": addon.get("handshake") if running else None,
                 "shortcut": self.hotkey.shortcut or self.config["shortcut"], "shortcut_active": running and self.hotkey.active,
                 "shortcut_error": self.hotkey.error,
                 "proxy_port": self.config["proxy_port"], "data_dir": str(self.data)}
@@ -297,6 +314,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/recording/stop": result = self.service.control("stop")
             elif path == "/api/inject": result = self.service.inject(body.get("text"), body.get("to_client"))
             elif path == "/api/capture/config": result = self.service.set_capture(body.get("enabled"), body.get("images"))
+            elif path == "/api/handshake/config": result = self.service.set_handshake(body.get("enabled"))
             elif path.startswith("/api/sessions/") and path.endswith("/export-raw"):
                 result = self.service.export_raw(path.split("/")[3], body.get("types"), body.get("q"))
             elif path == "/api/incoming/config": result = self.service.incoming.configure(body)

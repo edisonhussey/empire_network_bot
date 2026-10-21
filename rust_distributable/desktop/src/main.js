@@ -9,7 +9,7 @@ import { createDevelopment } from "./views/development.js";
 import { createOverview } from "./views/overview.js";
 import { createPvp } from "./views/pvp.js";
 import { attackDetails, modeDetails, recruitBotDetails, recruitmentDetails, renderSections, stationBotDetails, taskDetails } from "./views/preset-details.js";
-import { commanderRanges } from "./views/commander-ranges.js";
+import { commanderRanges, modeSupport } from "./views/commander-ranges.js";
 import { createModeBuilder } from "./views/mode-builder.js";
 import { createSupportBots } from "./views/support-bots.js";
 import { createTroops } from "./views/troops.js";
@@ -975,7 +975,7 @@ if (!connectedAccounts.length) { emptyAccounts(); renderModes(); return; }
     else if (currentRecruit) recruitSelect.value = currentRecruit.recruit_bot_id;
     // Support: none, or one support object (a destination per kingdom).
     const currentStation = library.account_station_bots.find((value) => value.account_id.toLowerCase() === account.account_id.toLowerCase());
-    const stationLabel = document.createElement("label"); stationLabel.textContent = "Support (optional)";
+    const stationLabel = document.createElement("label"); stationLabel.textContent = "Support only (when no attack bot is chosen)";
     const stationSelect = document.createElement("select");
     const noStation = element("option", "", "None — no support"); noStation.value = ""; stationSelect.append(noStation);
     stationSelect.append(...library.station_bots.map((bot) => {
@@ -986,17 +986,28 @@ if (!connectedAccounts.length) { emptyAccounts(); renderModes(); return; }
     if (pendingStation.has(account.account_id)) stationSelect.value = pendingStation.get(account.account_id);
     else if (currentStation) stationSelect.value = currentStation.station_bot_id;
     const stationNote = element("p", "recruit-estimate");
+    const supportWhere = (bot) => bot.kingdoms.map((kingdom) => `${kingdomName(fallbackKingdoms.find((value) => value.id === kingdom.kingdom_id)?.name || `kingdom ${kingdom.kingdom_id}`)} ${kingdom.x}:${kingdom.y}`).join(", ");
+    // The chosen attack bot decides support by itself: commanders reserved for it make the bot a
+    // hybrid with support on. The separate choice below exists only for an account with no attack bot.
+    const chosenAttackBot = () => library.modes.find((value) => String(value.mode_id) === attackSelect.value);
+    const stationChoice = () => (attackSelect.value ? "" : stationSelect.value);
     const describeStation = () => {
+      const mode = chosenAttackBot();
+      stationLabel.hidden = stationSelect.hidden = Boolean(mode);
+      if (mode) {
+        const { hybrid, reserved } = modeSupport(mode);
+        const bot = library.station_bots.find((value) => value.station_bot_id === mode.support_bot_id);
+        stationNote.textContent = hybrid && bot
+          ? `Hybrid: ${reserved} commander${reserved === 1 ? "" : "s"} kept for support. Troops of an attacked castle go to ${supportWhere(bot)}; a castle in any other kingdom is not stationed.`
+          : "Attacks only: this bot keeps no commanders for support, so no troops are moved when a castle is attacked. Reserve commanders in the attack bot to make it a hybrid.";
+        return;
+      }
       const bot = library.station_bots.find((value) => String(value.station_bot_id) === stationSelect.value);
       stationNote.textContent = bot
-        ? `Troops of an attacked castle go to ${bot.kingdoms.map((kingdom) => `${kingdomName(fallbackKingdoms.find((value) => value.id === kingdom.kingdom_id)?.name || `kingdom ${kingdom.kingdom_id}`)} ${kingdom.x}:${kingdom.y}`).join(", ")}; a castle in any other kingdom is not stationed.`
+        ? `Troops of an attacked castle go to ${supportWhere(bot)}; a castle in any other kingdom is not stationed.`
         : "No troops are moved when a castle is attacked.";
-      // The support an attack bot carries wins over this choice while that bot runs.
-      const assigned = library.account_modes.find((value) => value.account_id.toLowerCase() === account.account_id.toLowerCase());
-      const carried = assigned && library.modes.find((value) => value.mode_id === assigned.mode_id)?.support_bot_id;
-      const carriedName = carried && library.station_bots.find((value) => value.station_bot_id === carried)?.name;
-      if (carriedName) stationNote.textContent += ` While this account's attack bot runs, its own support (${carriedName}) is used instead, with its commanders kept free.`;
     };
+    attackSelect.addEventListener("change", describeStation);
     stationSelect.addEventListener("change", describeStation);
     describeStation();
     const recruitEstimate = element("p", "recruit-estimate");
@@ -1012,28 +1023,28 @@ if (!connectedAccounts.length) { emptyAccounts(); renderModes(); return; }
     const controls = element("div", "bot-start-actions");
     const start = actionButton(running ? "Bot running" : "Start bot", async () => {
       try {
-        await api("/plans/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: account.account_id, mode_id: attackSelect.value ? Number(attackSelect.value) : null, recruit_bot_id: recruitSelect.value ? Number(recruitSelect.value) : null, station_bot_id: stationSelect.value ? Number(stationSelect.value) : null, running: true }) });
+        await api("/plans/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: account.account_id, mode_id: attackSelect.value ? Number(attackSelect.value) : null, recruit_bot_id: recruitSelect.value ? Number(recruitSelect.value) : null, station_bot_id: stationChoice() ? Number(stationChoice()) : null, running: true }) });
         await loadLibrary(); await refreshAccounts(); await refreshDashboard();
       } catch (error) { connectionResult.textContent = error.message; }
     });
     // Each account has its own licence, so its own tier: a free one can sign in and be
     // watched but not run automation. The service refuses it too; this says why.
     const canAutomate = !isConnected || (direct.features || []).some((feature) => feature === "*" || feature === "automation");
-    const nothingChosen = () => !attackSelect.value && !recruitSelect.value && !stationSelect.value;
+    const nothingChosen = () => !attackSelect.value && !recruitSelect.value && !stationChoice();
     start.disabled = !isReady || running || !canAutomate;
     const refreshStart = () => { start.disabled = !isReady || running || !canAutomate || nothingChosen(); };
     for (const select of [attackSelect, recruitSelect, stationSelect]) select.addEventListener("change", refreshStart);
     refreshStart();
     const stop = actionButton("End bot", async () => {
       try {
-        await api("/plans/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: account.account_id, mode_id: attackSelect.value ? Number(attackSelect.value) : null, recruit_bot_id: recruitSelect.value ? Number(recruitSelect.value) : null, station_bot_id: stationSelect.value ? Number(stationSelect.value) : null, running: false }) });
+        await api("/plans/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: account.account_id, mode_id: attackSelect.value ? Number(attackSelect.value) : null, recruit_bot_id: recruitSelect.value ? Number(recruitSelect.value) : null, station_bot_id: stationChoice() ? Number(stationChoice()) : null, running: false }) });
         await loadLibrary(); await refreshAccounts(); await refreshDashboard();
       } catch (error) { connectionResult.textContent = error.message; }
     }, true);
     stop.disabled = !running;
     attackSelect.disabled = running; recruitSelect.disabled = running; stationSelect.disabled = running;
     controls.append(start, stop, summary);
-    assignment.append(attackLabel, attackSelect, recruitLabel, recruitSelect, recruitEstimate, stationSelect, stationLabel, stationNote, controls);
+    assignment.append(attackLabel, attackSelect, recruitLabel, recruitSelect, recruitEstimate, stationLabel, stationSelect, stationNote, controls);
     if (!isReady && !running) assignment.append(element("p", "empty-copy", "Start the connection in step 1 to run automation."));
     if (!library.modes.length && !library.recruit_bots.length && !library.station_bots.length) assignment.append(element("p", "empty-copy", "Create an attack, recruit or support bot before starting automation."));
     if (!canAutomate) assignment.append(element("p", "empty-copy", `This account's licence (${direct.tier || "free"} tier) does not include automation.`));

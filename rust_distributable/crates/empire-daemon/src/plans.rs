@@ -529,6 +529,17 @@ pub async fn create_task(
     Ok((StatusCode::CREATED, Json(CreatedId { id })))
 }
 
+/// Support is on exactly when commanders are reserved for it. A bot that reserves some is a
+/// hybrid and must say where support waits; one that reserves none is a plain attack bot, and
+/// any support object the form still carried is dropped rather than half-activating support.
+fn support_from_reserved(has_reserved: bool, chosen: Option<i64>) -> Result<Option<i64>, &'static str> {
+    match (has_reserved, chosen) {
+        (false, _) => Ok(None),
+        (true, Some(support_bot_id)) => Ok(Some(support_bot_id)),
+        (true, None) => Err("choose where support waits for the commanders reserved for it"),
+    }
+}
+
 pub async fn create_mode(
     State(state): State<AppState>,
     Json(draft): Json<ModeDraft>,
@@ -536,14 +547,19 @@ pub async fn create_mode(
     require_plans(&state).await?;
     draft.validate().map_err(ApiError::bad_request)?;
     let allocations = draft.normalized_allocations();
-    if let Some(support_id) = draft.support_bot_id
+    let support_bot_id = support_from_reserved(
+        allocations.iter().any(|slot| slot.support),
+        draft.support_bot_id,
+    )
+    .map_err(|message| ApiError::bad_request(message))?;
+    if let Some(support_id) = support_bot_id
         && !state.store.station_bots().await.map_err(ApiError::internal)?.iter().any(|bot| bot.station_bot_id == support_id)
     {
         return Err(ApiError::bad_request("that support does not exist"));
     }
     let mode_id = state
         .store
-        .create_mode_with_support(draft.name.trim(), &allocations, draft.support_bot_id, now_ms())
+        .create_mode_with_support(draft.name.trim(), &allocations, support_bot_id, now_ms())
         .await
         .map_err(ApiError::bad_request)?;
     Ok((StatusCode::CREATED, Json(CreatedMode { mode_id })))
@@ -660,4 +676,25 @@ async fn require_plans(state: &AppState) -> Result<(), ApiError> {
         .await
         .map(|_| ())
         .map_err(ApiError::forbidden)
+}
+
+#[cfg(test)]
+mod support_rule_tests {
+    use super::support_from_reserved;
+
+    #[test]
+    fn reserved_commanders_switch_support_on() {
+        assert_eq!(support_from_reserved(true, Some(4)), Ok(Some(4)));
+    }
+
+    #[test]
+    fn a_support_object_without_reserved_commanders_is_dropped() {
+        assert_eq!(support_from_reserved(false, Some(4)), Ok(None));
+        assert_eq!(support_from_reserved(false, None), Ok(None));
+    }
+
+    #[test]
+    fn reserved_commanders_without_a_destination_are_refused() {
+        assert!(support_from_reserved(true, None).is_err());
+    }
 }

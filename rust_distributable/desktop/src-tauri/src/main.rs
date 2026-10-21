@@ -118,7 +118,22 @@ fn service_is_compatible() -> bool {
     response.starts_with("HTTP/1.1 200") && response.contains(&expected)
 }
 
-/// Stop only a process conclusively identified as our legacy macOS service.
+/// Is this command line one of our own services, and so safe to replace? Either this app's `--service` mode, or the
+/// standalone `empire-daemon` binary (what `cargo build` produces and what a process monitor starts). The standalone one
+/// matters: a stale `empire-daemon` left running kept the port with an old API, the window got 404s and database errors from
+/// it, and without this it was never recognised as ours, so it was never replaced (docs/problems/19.md).
+fn is_our_service(command: &str) -> bool {
+    if command.contains("empire-desktop") && command.contains(SERVICE_FLAG) {
+        return true;
+    }
+    command
+        .split_whitespace()
+        .next()
+        .and_then(|program| std::path::Path::new(program).file_name())
+        .is_some_and(|name| name == "empire-daemon")
+}
+
+/// Stop only a process conclusively identified as one of our own services (see [`is_our_service`]).
 /// The current service predates versioned health responses, so one guarded
 /// process lookup is needed to make the first upgrade self-healing.
 #[cfg(target_os = "macos")]
@@ -137,7 +152,7 @@ fn stop_legacy_service() -> bool {
             continue;
         };
         let command = String::from_utf8_lossy(&command.stdout);
-        if command.contains("empire-desktop") && command.contains(SERVICE_FLAG) {
+        if is_our_service(&command) {
             return Command::new("kill")
                 .args(["-TERM", pid])
                 .status()
@@ -169,4 +184,28 @@ fn spawn_service() -> std::io::Result<()> {
         command.process_group(0);
     }
     command.spawn().map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_our_service;
+
+    #[test]
+    fn the_apps_own_service_mode_is_ours() {
+        assert!(is_our_service("/Applications/OpenAuto.app/Contents/MacOS/empire-desktop --service"));
+    }
+
+    #[test]
+    fn the_standalone_daemon_binary_is_ours_wherever_it_lives() {
+        assert!(is_our_service("/Users/someone/project/rust_distributable/target/release/empire-daemon"));
+        assert!(is_our_service("./target/release/empire-daemon --verbose"));
+    }
+
+    #[test]
+    fn the_window_and_unrelated_programs_are_not_services() {
+        assert!(!is_our_service("/Applications/OpenAuto.app/Contents/MacOS/empire-desktop"), "the window must never be killed as a service");
+        assert!(!is_our_service("/usr/bin/python3 -m http.server 47821"));
+        assert!(!is_our_service("/Users/someone/empire-daemon-notes/editor"), "only the program's own file name counts");
+        assert!(!is_our_service(""));
+    }
 }

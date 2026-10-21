@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { barSegments, commanderRanges, followPrevious, moveBlock, needed, problems, toRequest, withRange } from "./commander-ranges.js";
+import { barSegments, commanderRanges, followPrevious, modeSupport, moveBlock, needed, problems, supportCommanders, toRequest, withRange } from "./commander-ranges.js";
 
 const entry = (task_id, commander_count, commander_start = null) => ({ task_id, commander_count, commander_start });
 const spans = (entries) => commanderRanges(entries).map((range) => [range.first, range.last]);
@@ -78,4 +78,19 @@ test("moving at either end changes nothing, and moving works on support blocks t
   assert.equal(moveBlock(list, 1, 1), list);
   const moved = moveBlock([sup(2), entry("a", 1)], 1, -1);
   assert.deepEqual(moved.map((e) => [e.kind || "task", e.commander_start, e.commander_count]), [["task", 1, 1], ["support", 2, 2]]);
+});
+
+test("support is on exactly when commanders are reserved for it", () => {
+  assert.equal(supportCommanders([entry("a", 3)]), 0);
+  assert.equal(supportCommanders([entry("a", 3), sup(2), sup(4, 20)]), 6, "every reserved range counts, wherever it sits");
+  assert.equal(supportCommanders([{ task_id: "", commander_count: 2, support: true }]), 2, "saved records mark support with a flag");
+});
+
+test("a saved bot is a hybrid only with reserved commanders and a support object", () => {
+  const tasks = [{ task_id: "a", commander_count: 3 }];
+  const reserved = [...tasks, { task_id: "", commander_count: 2, support: true }];
+  assert.deepEqual(modeSupport({ allocations: reserved, support_bot_id: 7 }), { hybrid: true, reserved: 2 });
+  assert.deepEqual(modeSupport({ allocations: tasks, support_bot_id: 7 }), { hybrid: false, reserved: 0 }, "a support object alone does not switch support on");
+  assert.deepEqual(modeSupport({ allocations: reserved, support_bot_id: null }), { hybrid: false, reserved: 2 });
+  assert.deepEqual(modeSupport(undefined), { hybrid: false, reserved: 0 });
 });

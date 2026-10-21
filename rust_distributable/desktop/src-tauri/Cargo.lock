@@ -929,6 +929,7 @@ dependencies = [
  "anyhow",
  "axum",
  "empire-core",
+ "empire-socket",
  "futures-util",
  "serde",
  "serde_json",
@@ -943,7 +944,7 @@ dependencies = [
 
 [[package]]
 name = "empire-desktop"
-version = "0.1.69"
+version = "0.1.71"
 dependencies = [
  "empire-daemon",
  "tauri",
@@ -957,6 +958,18 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "empire-socket"
+version = "0.1.0"
+dependencies = [
+ "empire-core",
+ "flate2",
+ "native-tls",
+ "tokio",
+ "tokio-native-tls",
+ "tokio-tungstenite",
 ]
 
 [[package]]

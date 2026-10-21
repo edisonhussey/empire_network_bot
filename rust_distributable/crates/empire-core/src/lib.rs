@@ -28,7 +28,9 @@ pub mod session;
 #[cfg(feature = "application")]
 pub mod station;
 pub mod timing;
+#[cfg(feature = "application")]
 pub mod transfer;
+pub mod ws_handshake;
 #[cfg(feature = "application")]
 pub mod targeting;
 #[cfg(feature = "application")]

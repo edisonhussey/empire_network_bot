@@ -13,7 +13,7 @@ use empire_core::{
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::sync::{RwLock, mpsc};
-use tokio_tungstenite::{connect_async, tungstenite::Message as UpstreamMessage};
+use tokio_tungstenite::tungstenite::Message as UpstreamMessage;
 use tracing::{info, warn};
 
 use crate::licence::LicenceGate;
@@ -29,7 +29,11 @@ pub async fn run(
         warn!(%error, "relay rejected by application token");
         return;
     }
-    let Ok((upstream, _response)) = connect_async(&upstream_url).await else {
+    let Ok(upstream_request) = empire_socket::game_request(&upstream_url) else {
+        warn!(%upstream_url, "upstream websocket URL is not valid");
+        return;
+    };
+    let Ok((upstream, _response)) = empire_socket::connect(upstream_request).await else {
         warn!(%upstream_url, "upstream websocket connection failed");
         return;
     };
