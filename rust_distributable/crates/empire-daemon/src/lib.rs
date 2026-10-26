@@ -53,6 +53,9 @@ struct AppState {
 struct Health {
     status: &'static str,
     api_version: u16,
+    /// The game client version this build sends in `vck`, so the window can replace a service
+    /// built before a game update even when the API did not change (docs/problems/20.md).
+    client_version: &'static str,
     service_pid: u32,
     licence_active: bool,
     transport_connected: bool,
@@ -190,6 +193,8 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:47821";
 /// 55: the Chat tab: `GET /v1/chat` lists the alliance messages an account's session has heard
 /// (`acm`, stored per account, newest 2,000).
 pub const API_VERSION: u16 = 55;
+/// Reported by `/v1/health` beside [`API_VERSION`]; the window replaces a service that sends another one.
+pub use empire_core::session::CLIENT_VERSION;
 
 /// Is something already listening on the service port?
 ///
@@ -441,6 +446,7 @@ async fn health(State(state): State<AppState>) -> Json<Health> {
     Json(Health {
         status: "ok",
         api_version: API_VERSION,
+        client_version: CLIENT_VERSION,
         service_pid: std::process::id(),
         licence_active,
         transport_connected: !state.sessions.connected_accounts().await.is_empty()

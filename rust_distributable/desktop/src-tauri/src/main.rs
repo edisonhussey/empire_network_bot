@@ -114,8 +114,11 @@ fn service_is_compatible() -> bool {
     let response = String::from_utf8_lossy(&response);
     // Same constant the service reports, so the window and the service cannot
     // drift apart: anything that is not this build gets replaced.
+    // The client version too: a service built before a game update has the same API but sends a
+    // `vck` the server refuses (docs/problems/20.md).
     let expected = format!("\"api_version\":{}", empire_daemon::API_VERSION);
-    response.starts_with("HTTP/1.1 200") && response.contains(&expected)
+    let client = format!("\"client_version\":\"{}\"", empire_daemon::CLIENT_VERSION);
+    response.starts_with("HTTP/1.1 200") && response.contains(&expected) && response.contains(&client)
 }
 
 /// Is this command line one of our own services, and so safe to replace? Either this app's `--service` mode, or the
