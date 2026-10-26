@@ -4,10 +4,10 @@ use serde_json::{Value, json};
 use crate::protocol::{PacketError, encode_client_xt, parse_xt_packet};
 
 pub const DEFAULT_SERVER_HEADER: &str = "EmpireEx_21";
-/// The web client's version as it sends it in `vck`: the game bundle's `1.171.8` with each
+/// The web client's version as it sends it in `vck`: the game bundle's `1.171.9` with each
 /// part padded to three digits. The server hangs up on a version it no longer accepts.
-/// Live client seen 2026-10-21: sends `1171008`, the server answers `6.1177.2 / 43.0.0`.
-pub const CLIENT_VERSION: &str = "1171008";
+/// Bundle seen 2026-10-26 reports `1.171.9`; the server refused `1171008` with build `6.1177.3`.
+pub const CLIENT_VERSION: &str = "1171009";
 
 #[derive(Clone, Deserialize)]
 pub struct LoginCredentials {

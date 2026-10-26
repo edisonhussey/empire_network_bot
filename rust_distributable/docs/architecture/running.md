@@ -38,6 +38,7 @@ cargo run -p empire-daemon
 ```
 
 Transport check against the live game, no credentials (expects `HTTP 101`, `permessage-deflate` and `apiOK`): `cargo run -p empire-socket --example verchk`.
+Client-version check, no credentials (runs the handshake to the `vck` reply and stops; expects `ACCEPTED`): `cargo run -p empire-socket --example vck -- [url] [server header]`. See [problem 20](../problems/20.md).
 
 * API: `127.0.0.1:47821` (override `EMPIRE_BIND`), logging `RUST_LOG`, data folder `EMPIRE_DATA_DIR`.
 * Useful endpoints:
