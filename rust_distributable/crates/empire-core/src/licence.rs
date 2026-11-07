@@ -86,6 +86,28 @@ pub fn verify_token(
     now_epoch_seconds: i64,
     highest_seen_epoch_seconds: Option<i64>,
 ) -> Result<LicenceClaims, LicenceError> {
+    let claims = signed_claims(token, keyring)?;
+    if highest_seen_epoch_seconds.is_some_and(|highest| {
+        now_epoch_seconds.saturating_add(CLOCK_ROLLBACK_TOLERANCE_SECONDS) < highest
+    }) {
+        return Err(LicenceError::ClockRollback);
+    }
+    if now_epoch_seconds < claims.not_before {
+        return Err(LicenceError::NotActive);
+    }
+    if now_epoch_seconds >= claims.expires_at {
+        return Err(LicenceError::Expired);
+    }
+    Ok(claims)
+}
+
+/// The claims of a token whose signature and fields check out, whatever the time.
+/// Used to read what an expired licence was issued for (its server and main castle)
+/// when a new one replaces it; never as permission to run anything.
+pub fn signed_claims(
+    token: &str,
+    keyring: &[TrustedPublicKey],
+) -> Result<LicenceClaims, LicenceError> {
     let mut parts = token.trim().split('.');
     if parts.next() != Some(TOKEN_PREFIX) {
         return Err(LicenceError::Format);
@@ -128,17 +150,6 @@ pub fn verify_token(
         return Err(LicenceError::Claims(
             "inconsistent required fields".to_owned(),
         ));
-    }
-    if highest_seen_epoch_seconds.is_some_and(|highest| {
-        now_epoch_seconds.saturating_add(CLOCK_ROLLBACK_TOLERANCE_SECONDS) < highest
-    }) {
-        return Err(LicenceError::ClockRollback);
-    }
-    if now_epoch_seconds < claims.not_before {
-        return Err(LicenceError::NotActive);
-    }
-    if now_epoch_seconds >= claims.expires_at {
-        return Err(LicenceError::Expired);
     }
     Ok(claims)
 }

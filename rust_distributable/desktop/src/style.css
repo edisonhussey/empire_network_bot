@@ -130,6 +130,15 @@ nav button.active::before { content: ""; position: absolute; left: 0; top: 6px; 
 .licence-button:hover:not(:disabled) { background: transparent; color: var(--ink); }
 .licence-button span { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-2); }
 .licence-button b { font-weight: 400; color: var(--ink-2); }
+.licence-details { display: grid; gap: 8px; margin: 18px 0 26px; }
+.licence-row { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+.licence-row span { color: var(--ink-3); }
+.licence-row b { font-weight: 400; text-align: right; }
+.licence-drop { display: grid; gap: 6px; place-items: center; text-align: center; padding: 34px 16px; border: 1px dashed var(--line); cursor: pointer; }
+.licence-drop.dragging, .licence-drop:hover { border-color: var(--ink-2); }
+.licence-drop span { color: var(--ink-3); font-size: 13px; }
+.licence-paste { display: flex; gap: 10px; margin-top: 14px; }
+.licence-paste input { flex: 1; min-width: 0; }
 .plan-badge { display: block; width: max-content; margin-top: 5px; color: var(--ok); font: 500 10px/1 var(--sans); letter-spacing: .16em; text-transform: uppercase; }
 /* The two indicators that matter, always visible and always accurate: whether a
    socket is open, and whether a bot is actually driving it. */

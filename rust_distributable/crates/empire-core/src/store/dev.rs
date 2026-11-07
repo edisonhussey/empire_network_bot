@@ -9,6 +9,22 @@ use sqlx::Row;
 
 use super::{Store, canonical_account_id};
 
+/// The map view's one query. A constant so that a test can ask SQLite how it will run
+/// it and fail if the ledger lookup ever stops using `attack_ledger_target_idx`.
+pub(super) const MAP_TOWERS_SQL: &str = "SELECT x, y, level,
+                    MAX(reserved_until_ms, server_free_at_ms, COALESCE((
+                        SELECT MAX(CASE WHEN a.landed_at_ms IS NOT NULL
+                                        THEN MIN(a.landed_at_ms + 10800000, a.sent_at_ms + 14400000)
+                                        ELSE a.sent_at_ms + 14400000 END) + 300000
+                        FROM attack_ledger a
+                        WHERE a.account_id = rbc_target.account_id
+                          AND a.kingdom_id = rbc_target.kingdom_id
+                          AND a.x = rbc_target.x AND a.y = rbc_target.y
+                          AND rbc_target.kingdom_id != 10
+                    ), 0)) AS ready_at_ms
+             FROM rbc_target
+             WHERE account_id = ? AND kingdom_id = ?";
+
 /// A tower as the map draws it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MapTower {
@@ -101,38 +117,30 @@ pub struct AccountWorld {
 impl Store {
     /// The name and world of one account, from its profile.
     pub async fn account_world(&self, account_id: &str) -> Result<Option<AccountWorld>, sqlx::Error> {
-        let row = sqlx::query("SELECT player_name, endpoint FROM account_profile WHERE lower(account_id) = lower(?)")
+        let row = sqlx::query("SELECT player_name, endpoint FROM account_profile WHERE account_id = ?")
             .bind(canonical_account_id(account_id))
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.reader())
             .await?;
         Ok(row.map(|row| AccountWorld { player_name: row.get("player_name"), endpoint: row.get("endpoint") }))
     }
 
     /// Every learned tower of one kingdom with the time it is next ready.
+    ///
+    /// The account is compared as stored (`canonical_account_id`), never through
+    /// `lower(column)`: a function over the column makes SQLite ignore the index,
+    /// and this query looks the ledger up once per tower. With 4,000 towers and
+    /// 150,000 ledger rows that was 121 s; with `attack_ledger_target_idx` it is
+    /// a seek per tower (`docs/problems/22.md`).
     pub async fn map_towers(
         &self,
         account_id: &str,
         kingdom_id: i64,
     ) -> Result<Vec<MapTower>, sqlx::Error> {
-        let rows = sqlx::query(
-            "SELECT x, y, level,
-                    MAX(reserved_until_ms, server_free_at_ms, COALESCE((
-                        SELECT MAX(CASE WHEN a.landed_at_ms IS NOT NULL
-                                        THEN MIN(a.landed_at_ms + 10800000, a.sent_at_ms + 14400000)
-                                        ELSE a.sent_at_ms + 14400000 END) + 300000
-                        FROM attack_ledger a
-                        WHERE lower(a.account_id) = lower(rbc_target.account_id)
-                          AND a.kingdom_id = rbc_target.kingdom_id
-                          AND a.x = rbc_target.x AND a.y = rbc_target.y
-                          AND rbc_target.kingdom_id != 10
-                    ), 0)) AS ready_at_ms
-             FROM rbc_target
-             WHERE lower(account_id) = lower(?) AND kingdom_id = ?",
-        )
-        .bind(canonical_account_id(account_id))
-        .bind(kingdom_id)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query(MAP_TOWERS_SQL)
+            .bind(canonical_account_id(account_id))
+            .bind(kingdom_id)
+            .fetch_all(self.reader())
+            .await?;
         Ok(rows
             .into_iter()
             .map(|row| MapTower {
@@ -153,13 +161,13 @@ impl Store {
     ) -> Result<Option<(i64, i64)>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT x, y FROM owned_castle
-             WHERE lower(account_id) = lower(?) AND kingdom_id = ?
+             WHERE account_id = ? AND kingdom_id = ?
                AND ((kingdom_id = 0 AND area_type = 1) OR (kingdom_id <> 0 AND area_type = 12))
              ORDER BY castle_id LIMIT 1",
         )
         .bind(canonical_account_id(account_id))
         .bind(kingdom_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reader())
         .await?;
         Ok(row.map(|row| (row.get("x"), row.get("y"))))
     }
@@ -186,7 +194,7 @@ impl Store {
         .bind(kingdom_id)
         .bind(since_ms)
         .bind(limit.clamp(1, 500))
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows
             .into_iter()

@@ -273,6 +273,9 @@ fn login_lock_key(account_id: &str) -> String {
 fn connection_was_lost(error: &anyhow::Error) -> bool {
     error.downcast_ref::<ConnectionLost>().is_some()
         || error.downcast_ref::<tokio_tungstenite::tungstenite::Error>().is_some()
+        // The store's one connection was busy too long: nothing is wrong with the
+        // account or the link, and a fresh session gets the connection back.
+        || matches!(error.downcast_ref::<sqlx::Error>(), Some(sqlx::Error::PoolTimedOut))
 }
 
 /// The server sends something every few seconds while a session is alive; a
@@ -519,7 +522,9 @@ async fn run_inner(
     // known; the fill below then walks that rectangle from the database.
     let mut fortress_discovery: Option<FortressDiscovery> = None;
     // The licence this account's session runs under, chosen at login.
-    let mut session_licence: Option<String> = None;
+    // The game account this session is licensed as (server, player); its licence is
+    // looked up again at every check, so a replaced licence takes over.
+    let mut session_licence: Option<(&'static str, i64)> = None;
     let mut active_scan_kingdom = None;
     let mut rbc_scan_origins =
         permanent_scan_origins(&account_id, store.owned_castles().await?.as_slice());
@@ -584,7 +589,7 @@ async fn run_inner(
                                 return Err(error);
                             }
                         };
-                        session_licence = Some(claims.license_id.clone());
+                        session_licence = Some((server_name, identity.player_id));
                         {
                             let mut current = status.write().await;
                             current.tier = Some(claims.tier.clone());
@@ -829,8 +834,8 @@ async fn run_inner(
                 sink.send(Message::Text(packet.into())).await?;
             }
             _ = entitlement_check.tick() => {
-                if let Some(license_id) = session_licence.as_deref() {
-                    licence.require_licence(license_id, "game_network").await?;
+                if let Some((server, player_id)) = session_licence {
+                    licence.require_for_player(server, player_id, "game_network").await?;
                 } else {
                     licence.require_bootstrap("game_network").await?;
                 }
@@ -1240,7 +1245,7 @@ async fn run_inner(
     Ok(())
 }
 
-fn trusted_server_name(endpoint: &str, server_header: &str) -> Option<&'static str> {
+pub(crate) fn trusted_server_name(endpoint: &str, server_header: &str) -> Option<&'static str> {
     match (endpoint, server_header) {
         (US1_ENDPOINT, US1_SERVER_HEADER) => Some("US1"),
         (WORLD2_ENDPOINT, WORLD2_SERVER_HEADER) => Some("WORLD2"),

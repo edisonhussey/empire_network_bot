@@ -136,7 +136,7 @@ impl Store {
         let row = sqlx::query(&format!("SELECT {COLUMNS} FROM kingdom_transfer WHERE account_id = ? AND job_id = ?"))
             .bind(canonical_account_id(account_id))
             .bind(job_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.reader())
             .await?;
         Ok(row.map(row_to_transfer))
     }
@@ -148,7 +148,7 @@ impl Store {
         ))
         .bind(canonical_account_id(account_id))
         .bind(limit.clamp(1, 200))
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows.into_iter().map(row_to_transfer).collect())
     }
@@ -163,7 +163,7 @@ impl Store {
         .bind(TRANSFER_QUEUED)
         .bind(TRANSFER_SENT)
         .bind(TRANSFER_TRAVELLING)
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows.into_iter().map(row_to_transfer).collect())
     }
@@ -193,7 +193,7 @@ impl Store {
         )
         .bind(canonical_account_id(account_id))
         .bind(castle_id)
-        .fetch_one(&self.pool)
+        .fetch_one(self.reader())
         .await
     }
 

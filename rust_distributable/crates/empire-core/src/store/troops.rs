@@ -207,7 +207,7 @@ impl Store {
         )
         .bind(account_id)
         .bind(march_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reader())
         .await?
         else {
             return Ok(());

@@ -88,7 +88,7 @@ impl Store {
         )
         .bind(canonical_account_id(account_id))
         .bind(limit.clamp(1, CHAT_KEEP))
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows
             .into_iter()

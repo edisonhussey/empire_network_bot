@@ -133,7 +133,7 @@ impl Store {
              FROM account_alliance WHERE account_id = ?",
         )
         .bind(canonical_account_id(account_id))
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reader())
         .await?;
         Ok(row.map(|row| AllianceIdentity {
             player_id: row.get("player_id"),
@@ -147,7 +147,7 @@ impl Store {
     /// when nothing is connected.
     pub async fn latest_alliance_account(&self) -> Result<Option<String>, sqlx::Error> {
         sqlx::query_scalar("SELECT account_id FROM account_alliance ORDER BY updated_at_ms DESC LIMIT 1")
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.reader())
             .await
     }
 
@@ -161,7 +161,7 @@ impl Store {
             "SELECT kingdom_id, x, y FROM owned_castle WHERE lower(account_id) = lower(?)",
         )
         .bind(canonical_account_id(account_id))
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows
             .into_iter()
@@ -318,7 +318,7 @@ impl Store {
             .push_bind(limit + 1);
         let mut rows = sql
             .build()
-            .fetch_all(&self.pool)
+            .fetch_all(self.reader())
             .await?
             .iter()
             .map(pvp_row)
@@ -346,7 +346,7 @@ impl Store {
             .push(" GROUP BY direction, state ORDER BY direction, state");
         Ok(sql
             .build()
-            .fetch_all(&self.pool)
+            .fetch_all(self.reader())
             .await?
             .iter()
             .filter_map(|row| {

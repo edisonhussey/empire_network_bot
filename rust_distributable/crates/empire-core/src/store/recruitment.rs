@@ -91,7 +91,7 @@ impl Store {
     pub async fn recruitments(&self) -> Result<Vec<RecruitmentTemplate>, sqlx::Error> {
         let rows = sqlx::query("SELECT recruitment_id, name, troop_id, quantity, slot_count,
             ask_alliance_help, lane_id, skill_id FROM recruitment_template ORDER BY updated_at_ms DESC")
-            .fetch_all(&self.pool).await?;
+            .fetch_all(self.reader()).await?;
         Ok(rows
             .into_iter()
             .map(|row| RecruitmentTemplate {
@@ -162,13 +162,13 @@ impl Store {
         let bots = sqlx::query(
             "SELECT recruit_bot_id, name, algorithm FROM recruit_bot ORDER BY updated_at_ms DESC",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         let mut result = Vec::with_capacity(bots.len());
         for bot in bots {
             let id: i64 = bot.get("recruit_bot_id");
             let rows = sqlx::query("SELECT account_id, castle_id, recruitment_id, position FROM recruit_bot_castle WHERE recruit_bot_id = ? ORDER BY position")
-                .bind(id).fetch_all(&self.pool).await?;
+                .bind(id).fetch_all(self.reader()).await?;
             result.push(RecruitBot {
                 recruit_bot_id: id,
                 name: bot.get("name"),
@@ -218,7 +218,7 @@ impl Store {
 
     pub async fn owned_castles(&self) -> Result<Vec<OwnedCastleRecord>, sqlx::Error> {
         let rows = sqlx::query("SELECT lower(account_id) account_id, castle_id, kingdom_id, area_type, x, y, name FROM owned_castle ORDER BY account_id, kingdom_id, area_type, name")
-            .fetch_all(&self.pool).await?;
+            .fetch_all(self.reader()).await?;
         Ok(rows
             .into_iter()
             .map(|row| OwnedCastleRecord {
@@ -254,7 +254,7 @@ impl Store {
     }
 
     pub async fn account_recruit_bots(&self) -> Result<Vec<AccountRecruitBot>, sqlx::Error> {
-        let rows = sqlx::query("SELECT account_id, recruit_bot_id, running, updated_at_ms FROM account_recruit_bot ORDER BY updated_at_ms DESC").fetch_all(&self.pool).await?;
+        let rows = sqlx::query("SELECT account_id, recruit_bot_id, running, updated_at_ms FROM account_recruit_bot ORDER BY updated_at_ms DESC").fetch_all(self.reader()).await?;
         Ok(rows
             .into_iter()
             .map(|row| AccountRecruitBot {
@@ -277,7 +277,7 @@ impl Store {
                     last_status
              FROM recruit_castle_state ORDER BY lower(account_id), castle_id",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows
             .into_iter()
@@ -312,7 +312,7 @@ impl Store {
             JOIN owned_castle c ON lower(c.account_id) = lower(rbc.account_id) AND c.castle_id = rbc.castle_id
             LEFT JOIN recruit_castle_state rcs ON lower(rcs.account_id) = lower(rbc.account_id) AND rcs.castle_id = rbc.castle_id
             WHERE lower(arb.account_id) = lower(?) AND arb.running = 1 ORDER BY rbc.position")
-            .bind(&account_id).fetch_all(&self.pool).await?;
+            .bind(&account_id).fetch_all(self.reader()).await?;
         Ok(rows
             .into_iter()
             .map(|row| ActiveRecruitment {

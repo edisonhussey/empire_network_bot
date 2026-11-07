@@ -4,6 +4,7 @@
 export function expiryLabel(epoch) {
   if (!epoch) return "Token required";
   const remaining = Math.max(0, epoch * 1000 - Date.now());
+  if (remaining === 0) return "expired";
   const days = Math.floor(remaining / 86400000);
   const hours = Math.floor((remaining % 86400000) / 3600000);
   return days > 0 ? `${days}d ${hours}h remaining` : `${hours}h remaining`;

@@ -5,7 +5,7 @@ use empire_core::{
     account::AccountIdentity,
     licence::{
         LicenceClaims, LicenceError, TrustedPublicKey, embedded_keyring, require_feature,
-        verify_token,
+        signed_claims, verify_token,
     },
     store::{LicenceActivation, Store, StoredLicence},
 };
@@ -55,6 +55,23 @@ pub struct LicenceStatus {
     /// Every installed licence. The fields above describe the primary one (an
     /// activated, valid licence first) so older window code keeps working.
     pub licences: Vec<LicenceSummary>,
+}
+
+/// The licence one game account runs under, as the Licence tab shows it.
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountLicence {
+    pub license_id: String,
+    pub subject: String,
+    pub valid: bool,
+    pub reason: Option<String>,
+    /// `activated` when bound to this account's player, `unactivated` while it waits
+    /// for the account's first login.
+    pub stage: &'static str,
+    pub tier: Option<String>,
+    pub features: Vec<String>,
+    pub revision: i64,
+    pub expires_at: i64,
+    pub remaining_seconds: i64,
 }
 
 struct Checked {
@@ -238,25 +255,34 @@ impl LicenceGate {
             .await?
         {
             let item = checked
-                .into_iter()
+                .iter()
                 .find(|item| item.stored.license_id == activation.license_id)
                 .context("the licence bound to this game account was removed")?;
-            let claims = item
-                .claims
-                .map_err(|error| anyhow::anyhow!("the licence for this game account is unusable: {error}"))?;
-            require_feature(&claims, "game_network")?;
-            return Ok(claims);
-        }
-        for item in &checked {
-            let Ok(claims) = &item.claims else { continue };
-            if !claims.permits("game_network")
-                || claims.server.to_ascii_uppercase() != server
-                || claims.bootstrap_x != identity.main_castle_x
-                || claims.bootstrap_y != identity.main_castle_y
-                || self.store.licence_activation(&claims.license_id).await?.is_some()
-            {
-                continue;
+            match &item.claims {
+                Ok(claims) => {
+                    require_feature(claims, "game_network")?;
+                    return Ok(claims.clone());
+                }
+                // Unusable (usually expired): a valid, unbound licence issued for this
+                // account takes over, as if it had been dropped on the Licence tab.
+                Err(error) => {
+                    let Some(claims) = self.unbound_match(&checked, &server, identity).await? else {
+                        bail!("the licence for this game account is unusable: {error}")
+                    };
+                    let activation = LicenceActivation {
+                        license_id: claims.license_id.clone(),
+                        server: server.clone(),
+                        player_id: identity.player_id,
+                        activated_at: now_epoch(),
+                    };
+                    self.store
+                        .rebind_account_licence(&activation, now_epoch().saturating_mul(1_000))
+                        .await?;
+                    return Ok(claims);
+                }
             }
+        }
+        if let Some(claims) = self.unbound_match(&checked, &server, identity).await? {
             let activation = LicenceActivation {
                 license_id: claims.license_id.clone(),
                 server: server.clone(),
@@ -274,7 +300,7 @@ impl LicenceGate {
             if stored.server != activation.server || stored.player_id != activation.player_id {
                 bail!("licence activation is already bound to another account")
             }
-            return Ok(claims.clone());
+            return Ok(claims);
         }
         bail!(
             "no licence for this game account: server {server}, player {}, main castle ({}, {}). \
@@ -284,6 +310,146 @@ impl LicenceGate {
             identity.main_castle_x,
             identity.main_castle_y
         )
+    }
+
+    /// The licence of one game account: the one bound to its player, else an unbound
+    /// one issued for its server and one of its main castles (bound at its next login).
+    pub async fn for_account(
+        &self,
+        server: &str,
+        player_id: Option<i64>,
+        main_castles: &[(i64, i64)],
+    ) -> anyhow::Result<Option<AccountLicence>> {
+        let server = server.trim().to_ascii_uppercase();
+        let checked = self.checked().await?;
+        let bound = match player_id {
+            Some(player_id) => self.store.licence_activation_for_player(&server, player_id).await?,
+            None => None,
+        };
+        if let Some(activation) = bound {
+            return Ok(checked
+                .iter()
+                .find(|item| item.stored.license_id == activation.license_id)
+                .map(|item| account_licence(item, "activated")));
+        }
+        let activations = self.store.licence_activations().await?;
+        Ok(checked
+            .iter()
+            .filter(|item| !activations.iter().any(|activation| activation.license_id == item.stored.license_id))
+            .find(|item| {
+                signed_claims(&item.stored.token, &self.keys).is_ok_and(|claims| {
+                    claims.server.eq_ignore_ascii_case(&server)
+                        && main_castles.contains(&(claims.bootstrap_x, claims.bootstrap_y))
+                })
+            })
+            .map(|item| account_licence(item, "unactivated")))
+    }
+
+    /// Install `token` as this game account's licence, replacing the one it has.
+    ///
+    /// The token must be valid now, for the account's server, and issued for the
+    /// account: its main castle is one of the account's main castles, or the same one
+    /// the licence it replaces was issued for (a castle can move after binding). A
+    /// licence already bound to another player is refused, so one licence still
+    /// serves one account. With the player known, the new licence is bound at once
+    /// and the old one is removed; a live session picks it up at its next check.
+    pub async fn replace_for_account(
+        &self,
+        server: &str,
+        player_id: Option<i64>,
+        main_castles: &[(i64, i64)],
+        token: &str,
+    ) -> anyhow::Result<AccountLicence> {
+        let server = server.trim().to_ascii_uppercase();
+        let now = now_epoch();
+        let claims = verify_token(token, &self.keys, now, None)?;
+        if !claims.server.eq_ignore_ascii_case(&server) {
+            bail!("this licence is for {}, but the account plays on {server}", claims.server.to_ascii_uppercase())
+        }
+        require_feature(&claims, "game_network")?;
+        let current = match player_id {
+            Some(player_id) => self.store.licence_activation_for_player(&server, player_id).await?,
+            None => None,
+        };
+        if let Some(bound) = self.store.licence_activation(&claims.license_id).await?
+            && Some(bound.player_id) != player_id
+        {
+            bail!("licence {} is already bound to another game account (player {})", claims.license_id, bound.player_id)
+        }
+        let castle = (claims.bootstrap_x, claims.bootstrap_y);
+        let replaced_castle = match &current {
+            Some(activation) => self
+                .store
+                .licences()
+                .await?
+                .into_iter()
+                .find(|item| item.license_id == activation.license_id)
+                .and_then(|item| signed_claims(&item.token, &self.keys).ok())
+                .map(|old| (old.bootstrap_x, old.bootstrap_y)),
+            None => None,
+        };
+        if !main_castles.contains(&castle) && replaced_castle != Some(castle) {
+            bail!(
+                "this licence was issued for the main castle at ({}, {}), which is not this account's",
+                castle.0,
+                castle.1
+            )
+        }
+        // Same id: an ordinary renewal (higher revision), the binding stays.
+        self.activate(token).await?;
+        if let Some(player_id) = player_id
+            && current.as_ref().is_none_or(|activation| activation.license_id != claims.license_id)
+        {
+            let activation = LicenceActivation {
+                license_id: claims.license_id.clone(),
+                server: server.clone(),
+                player_id,
+                activated_at: now,
+            };
+            self.store
+                .rebind_account_licence(&activation, now.saturating_mul(1_000))
+                .await?;
+        }
+        self.for_account(&server, player_id, &[castle])
+            .await?
+            .context("the new licence was saved but could not be read back")
+    }
+
+    /// A live session's periodic check: the licence bound to its own player now,
+    /// so a licence replaced from the Licence tab takes over without a new login.
+    pub async fn require_for_player(
+        &self,
+        server: &str,
+        player_id: i64,
+        feature: &str,
+    ) -> anyhow::Result<LicenceClaims> {
+        let activation = self
+            .store
+            .licence_activation_for_player(&server.trim().to_ascii_uppercase(), player_id)
+            .await?
+            .context("the licence for this game account was removed")?;
+        self.require_licence(&activation.license_id, feature).await
+    }
+
+    /// A valid licence, bound to nobody, whose signed server and main castle are this account's.
+    async fn unbound_match(
+        &self,
+        checked: &[Checked],
+        server: &str,
+        identity: &AccountIdentity,
+    ) -> anyhow::Result<Option<LicenceClaims>> {
+        for item in checked {
+            let Ok(claims) = &item.claims else { continue };
+            if claims.permits("game_network")
+                && claims.server.eq_ignore_ascii_case(server)
+                && claims.bootstrap_x == identity.main_castle_x
+                && claims.bootstrap_y == identity.main_castle_y
+                && self.store.licence_activation(&claims.license_id).await?.is_none()
+            {
+                return Ok(Some(claims.clone()));
+            }
+        }
+        Ok(None)
     }
 
     async fn checked(&self) -> anyhow::Result<Vec<Checked>> {
@@ -336,6 +502,22 @@ fn summarise(item: &Checked, activations: &[LicenceActivation]) -> LicenceSummar
             .map(|claims| (claims.bootstrap_x, claims.bootstrap_y)),
         bound_server: activation.map(|value| value.server.clone()),
         bound_player_id: activation.map(|value| value.player_id),
+    }
+}
+
+fn account_licence(item: &Checked, stage: &'static str) -> AccountLicence {
+    let claims = item.claims.as_ref().ok();
+    AccountLicence {
+        license_id: item.stored.license_id.clone(),
+        subject: item.stored.subject.clone(),
+        valid: claims.is_some(),
+        reason: item.claims.as_ref().err().map(ToString::to_string),
+        stage,
+        tier: claims.map(|claims| claims.tier.clone()),
+        features: claims.map(|claims| claims.features.clone()).unwrap_or_default(),
+        revision: item.stored.revision,
+        expires_at: item.stored.expires_at,
+        remaining_seconds: item.stored.expires_at.saturating_sub(now_epoch()).max(0),
     }
 }
 
@@ -520,6 +702,78 @@ mod tests {
         let status = gate.status().await;
         assert_eq!(status.licences.len(), 2);
         assert_eq!(status.licences.iter().find(|item| item.license_id == "a").unwrap().stage, "unactivated");
+    }
+
+    /// 7 Nov: both stage-0 licences expired, and a new licence id could never take over an
+    /// account that was already bound. Dropping one on the account now replaces it.
+    #[tokio::test]
+    async fn a_new_licence_replaces_the_one_an_account_has() {
+        let (gate, signing) = test_gate().await;
+        let now = now_epoch();
+        gate.activate(&token_for(&signing, now, "ventrilo-old", "Ventrilo", "US1", 509, 405, 1)).await.unwrap();
+        let ventrilo = identity(16_862_926, 509, 405);
+        gate.bind_or_validate("US1", &ventrilo).await.unwrap();
+        let castles = [(509, 405)];
+
+        let replaced = gate
+            .replace_for_account("US1", Some(ventrilo.player_id), &castles, &token_for(&signing, now, "ventrilo-new", "Ventrilo", "US1", 509, 405, 1))
+            .await
+            .unwrap();
+        assert_eq!((replaced.license_id.as_str(), replaced.stage), ("ventrilo-new", "activated"));
+        // The old licence is gone, and both the login and a live session use the new one.
+        assert_eq!(gate.status().await.licences.len(), 1);
+        assert_eq!(gate.bind_or_validate("US1", &ventrilo).await.unwrap().license_id, "ventrilo-new");
+        assert_eq!(gate.require_for_player("US1", ventrilo.player_id, "game_network").await.unwrap().license_id, "ventrilo-new");
+        let shown = gate.for_account("US1", Some(ventrilo.player_id), &castles).await.unwrap().unwrap();
+        assert_eq!(shown.license_id, "ventrilo-new");
+    }
+
+    /// The activation screen (every licence expired) only installs a token; the login then
+    /// moves the account from its expired licence to the valid one issued for it.
+    #[tokio::test]
+    async fn a_login_moves_an_account_off_an_expired_licence() {
+        let (gate, signing) = test_gate().await;
+        let now = now_epoch();
+        let expired = token_for(&signing, now - 2 * 86_400, "old", "Ventrilo", "US1", 509, 405, 1);
+        gate.store
+            .save_licence(
+                &StoredLicence { token: expired, license_id: "old".to_owned(), subject: "Ventrilo".to_owned(), revision: 1, expires_at: now - 86_400, highest_seen_at: now },
+                now * 1_000,
+            )
+            .await
+            .unwrap();
+        let ventrilo = identity(16_862_926, 509, 405);
+        gate.store
+            .bind_licence(&LicenceActivation { license_id: "old".to_owned(), server: "US1".to_owned(), player_id: ventrilo.player_id, activated_at: now - 86_400 }, now * 1_000)
+            .await
+            .unwrap();
+        assert!(gate.bind_or_validate("US1", &ventrilo).await.unwrap_err().to_string().contains("expired"));
+        gate.activate(&token_for(&signing, now, "new", "Ventrilo", "US1", 509, 405, 1)).await.unwrap();
+        assert_eq!(gate.bind_or_validate("US1", &ventrilo).await.unwrap().license_id, "new");
+        assert_eq!(gate.status().await.licences.len(), 1, "the expired licence is removed");
+        // The tab can read what the expired licence was issued for, so a move elsewhere still works.
+        assert!(signed_claims(&token_for(&signing, now - 2 * 86_400, "x", "X", "US1", 1, 1, 1), &gate.keys).is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_licence_for_another_account_is_refused_on_the_licence_tab() {
+        let (gate, signing) = test_gate().await;
+        let now = now_epoch();
+        gate.activate(&token_for(&signing, now, "pingpoko", "Pingpoko", "WORLD2", 552, 522, 1)).await.unwrap();
+        gate.bind_or_validate("WORLD2", &identity(411_818, 552, 522)).await.unwrap();
+        let castles = [(509, 405)];
+        let replace = |token: String| {
+            let gate = gate.clone();
+            async move { gate.replace_for_account("US1", Some(16_862_926), &castles, &token).await.unwrap_err().to_string() }
+        };
+        assert!(replace(token_for(&signing, now, "x", "X", "WORLD2", 509, 405, 1)).await.contains("plays on US1"));
+        assert!(replace(token_for(&signing, now, "x", "X", "US1", 1, 2, 1)).await.contains("(1, 2)"));
+        // Bound to pingpoko already: one licence still serves one account.
+        assert!(replace(token_for(&signing, now, "pingpoko", "Pingpoko", "US1", 509, 405, 2)).await.contains("already bound"));
+        assert!(replace("OA2.not.a-token".to_owned()).await.contains("licence"));
+        // Never logged in: the licence is installed and waits for the first login.
+        let waiting = gate.replace_for_account("US1", None, &castles, &token_for(&signing, now, "fresh", "Fresh", "US1", 509, 405, 1)).await.unwrap();
+        assert_eq!(waiting.stage, "unactivated");
     }
 
     #[tokio::test]

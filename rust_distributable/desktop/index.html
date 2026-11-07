@@ -73,7 +73,7 @@
           <button data-view="logs"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-logs"/></svg></span>Logs</button>
           <button data-view="pvp"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-logs"/></svg></span>PVP</button>
           <button data-view="development"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-dashboard"/></svg></span>Development</button>
-          <button data-view="support"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-accounts"/></svg></span>Support</button>
+          <button data-view="licence"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-accounts"/></svg></span>Licence</button>
         </nav>
         <div class="side-footer">
           <button id="add-credits" class="licence-button"><span>OpenAuto plan</span><b id="licence-expiry">Checking…</b></button>
@@ -341,8 +341,16 @@
           </div>
         </section>
 
-        <section id="view-support" class="view" hidden>
-          <section class="welcome-card"><div class="welcome-copy"><p class="eyebrow">OpenAuto</p><h2>Support</h2></div></section>
+        <section id="view-licence" class="view" hidden>
+          <section class="card licence-card">
+            <div class="card-title"><div><p class="eyebrow">Licence</p><h2 id="licence-account">This account</h2></div></div>
+            <p id="licence-state" class="dev-note">Loading…</p>
+            <div id="licence-details" class="licence-details"></div>
+            <label id="licence-drop" class="licence-drop" for="licence-file"><b>Drop a licence here</b><span>A .token file, or click to choose one. If it is valid for this account, it replaces the current licence.</span><input id="licence-file" type="file" accept=".token,.txt,text/plain" hidden /></label>
+            <form id="licence-paste" class="licence-paste"><input id="licence-paste-token" placeholder="Or paste a token (OA2.…)" spellcheck="false" autocomplete="off" required /><button class="secondary-action" type="submit">Replace</button></form>
+            <output id="licence-drop-result" role="status"></output>
+            <p class="dev-note">Each game account has its own licence. A licence is checked for this account's server and main castle and is never shared with another account.</p>
+          </section>
         </section>
       </main>
     </div>

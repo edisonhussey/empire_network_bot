@@ -120,7 +120,7 @@ impl Store {
         )
         .bind(canonical_account_id(account_id))
         .bind(limit.clamp(1, 1_000))
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows
             .into_iter()
@@ -144,7 +144,7 @@ impl Store {
         )
         .bind(canonical_account_id(account_id))
         .bind(limit.clamp(1, 10_000))
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows
             .into_iter()
@@ -248,7 +248,7 @@ impl Store {
         .bind(castle_id)
         .bind(unit_id)
         .bind(now_ms - HOUR_MS)
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         let (Some(first), Some(last)) = (rows.first(), rows.last()) else {
             return Ok(None);

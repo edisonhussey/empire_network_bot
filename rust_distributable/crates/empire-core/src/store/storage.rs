@@ -63,7 +63,7 @@ impl Store {
         let mut tables = Vec::with_capacity(schema::DATA_TABLES.len());
         for table in schema::DATA_TABLES {
             let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
-                .fetch_one(&self.pool)
+                .fetch_one(self.reader())
                 .await?;
             tables.push(TableFootprint {
                 table: (*table).to_owned(),
@@ -84,7 +84,7 @@ impl Store {
             wal_bytes,
             shm_bytes,
             tables,
-            schema_version: schema::version(&self.pool).await?,
+            schema_version: schema::version(self.reader()).await?,
         })
     }
 

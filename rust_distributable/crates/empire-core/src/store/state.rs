@@ -92,7 +92,7 @@ impl Store {
              FROM account_navigation WHERE account_id = ?",
         )
         .bind(&account_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reader())
         .await?;
         Ok(row.map(|row| NavigationState {
             account_id: row.get("account_id"),
@@ -174,7 +174,7 @@ impl Store {
         )
         .bind(&account_id)
         .bind(castle_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows
             .into_iter()
@@ -202,7 +202,7 @@ impl Store {
              FROM recruit_castle_state WHERE account_id = ? ORDER BY castle_id",
         )
         .bind(&account_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows.into_iter().map(row_to_recruit_state).collect())
     }

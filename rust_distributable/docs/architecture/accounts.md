@@ -42,8 +42,9 @@ table keyed by `account_id` were already per account.
 
 Each game account has its own licence: a signed token for one server and one main castle,
 bound permanently to one player the first time that account signs in. Any number can be
-installed side by side, each with its own tier and features (Control Panel > add a licence,
-or the licence prompt). A session records the tier and features of *its own* licence, and
+installed side by side, each with its own tier and features. The **Licence** tab shows the licence
+of the account in view and takes a new one by drop, file or paste; if it is valid for that account
+it replaces the old one ([problem 21](../problems/21.md)). A session records the tier and features of *its own* licence, and
 that is what is checked:
 
 * A bot starts only for an account whose own licence includes `automation`. A free account
@@ -52,7 +53,9 @@ that is what is checked:
   and says why.
 * Presets (attacks, tasks, attack bots, recruitments, recruit bots, support bots) are one
   shared library in the database, usable by any account.
-* A licence for one account expiring ends only that account's session.
+* A licence for one account expiring ends only that account's session. A live session re-checks the
+  licence bound to its own player, so a licence replaced on the Licence tab takes over without a new login.
+* The sidebar's plan line and Pro badge are the account in view's own licence ("Expired", "No licence" or the time left).
 
 A single token covering several accounts would need a new token schema and the issuing
 tool; it is not implemented. Several tokens, one per account, is.

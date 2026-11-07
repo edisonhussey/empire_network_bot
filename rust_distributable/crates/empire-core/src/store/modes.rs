@@ -328,7 +328,7 @@ impl Store {
                     target_kingdom_id, target_x, target_y, travel_mode, hbw, source_kind
              FROM task_runtime ORDER BY task_id",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows
             .into_iter()
@@ -414,7 +414,7 @@ impl Store {
              ORDER BY position",
         )
         .bind(mode_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows
             .into_iter()
@@ -431,7 +431,7 @@ impl Store {
     pub async fn modes_using_support(&self, support_bot_id: i64) -> Result<Vec<String>, sqlx::Error> {
         sqlx::query_scalar("SELECT name FROM automation_mode WHERE support_bot_id = ? ORDER BY name")
             .bind(support_bot_id)
-            .fetch_all(&self.pool)
+            .fetch_all(self.reader())
             .await
     }
 
@@ -440,7 +440,7 @@ impl Store {
             "SELECT m.mode_id, m.name, m.support_bot_id FROM automation_mode m
              ORDER BY m.name COLLATE NOCASE",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         let mut result = Vec::with_capacity(modes.len());
         for mode in modes {
@@ -519,7 +519,7 @@ impl Store {
         let rows = sqlx::query(
             "SELECT account_id, mode_id, running FROM account_mode ORDER BY account_id",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows
             .into_iter()
@@ -586,7 +586,7 @@ impl Store {
              ORDER BY mt.position, t.priority, t.name COLLATE NOCASE",
         )
         .bind(&account_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         if rows.is_empty() {
             return Ok(Vec::new());
@@ -681,7 +681,7 @@ impl Store {
             "SELECT running FROM account_mode WHERE lower(account_id) = lower(?)",
         )
         .bind(&account_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reader())
         .await?;
         Ok(running.is_some_and(|value| value != 0))
     }
@@ -700,7 +700,7 @@ impl Store {
                AND m.support_bot_id IS NOT NULL",
         )
         .bind(&account_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reader())
         .await?;
         let Some(row) = row else { return Ok(None) };
         let mode_id: i64 = row.get("mode_id");

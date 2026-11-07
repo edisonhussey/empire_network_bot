@@ -104,7 +104,8 @@ impl Store {
                 landed_at_ms = excluded.landed_at_ms,
                 result_at_ms = excluded.result_at_ms",
         )
-        .bind(&march.account_id)
+        // Identity is case-insensitive; see `canonical_account_id`.
+        .bind(canonical_account_id(&march.account_id))
         .bind(march.march_id)
         .bind(march.kingdom_id)
         .bind(march.x)
@@ -240,7 +241,7 @@ impl Store {
         )
         .bind(&account_id)
         .bind(limit.max(1))
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows.into_iter().map(row_to_march).collect())
     }
@@ -257,7 +258,7 @@ impl Store {
         )
         .bind(MARCH_SENT)
         .bind(MARCH_RETURNING)
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows.into_iter().map(row_to_march).collect())
     }
@@ -437,7 +438,7 @@ impl Store {
             WHERE n.command = 'cat' AND json_extract(n.payload_json, '$.A.M.TA[0]') IN (1,4,12)
             ORDER BY n.observed_at_ms ASC LIMIT 5000",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         let mut repaired = 0;
         for row in rows {
@@ -471,7 +472,7 @@ impl Store {
              FROM commander_state WHERE account_id = ? ORDER BY lord_id",
         )
         .bind(&account_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows
             .into_iter()
@@ -498,7 +499,7 @@ impl Store {
              GROUP BY lord_id ORDER BY MIN(ordinal)",
         )
         .bind(&account_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows.into_iter().map(|row| row.get("lord_id")).collect())
     }
@@ -679,7 +680,7 @@ impl Store {
         .bind(hour_ago)
         .bind(account_id.as_deref())
         .bind(account_id.as_deref())
-        .fetch_one(&self.pool)
+        .fetch_one(self.reader())
         .await?;
 
         let first_at: Option<i64> = sqlx::query_scalar(
@@ -688,7 +689,7 @@ impl Store {
         )
         .bind(account_id.as_deref())
         .bind(account_id.as_deref())
-        .fetch_one(&self.pool)
+        .fetch_one(self.reader())
         .await?;
         let span = first_at.map_or(0, |first| now.saturating_sub(first));
         let bucket_ms = if span > 365 * DAY_MS {
@@ -715,7 +716,7 @@ impl Store {
         .bind(bucket_ms)
         .bind(account_id.as_deref())
         .bind(account_id.as_deref())
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         let bucket_values = ruby_rows
             .into_iter()
@@ -755,7 +756,7 @@ impl Store {
         .bind(bars_start)
         .bind(account_id.as_deref())
         .bind(account_id.as_deref())
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         // An event stamped at this very instant computes to one slot past the
         // end; it belongs in the last hour, so indexes clamp to the final slot.
@@ -777,7 +778,7 @@ impl Store {
         .bind(bars_start)
         .bind(account_id.as_deref())
         .bind(account_id.as_deref())
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         for row in result_rows {
             let Some(index) = slot(row.get("bucket")) else {
@@ -799,7 +800,7 @@ impl Store {
         .bind(now - DAY_MS)
         .bind(account_id.as_deref())
         .bind(account_id.as_deref())
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?
         .into_iter()
         .map(|row| ScanActivity {
@@ -829,7 +830,7 @@ impl Store {
         .bind(now - 60_000)
         .bind(account_id.as_deref())
         .bind(account_id.as_deref())
-        .fetch_one(&self.pool)
+        .fetch_one(self.reader())
         .await?;
         let fortress_probes_pending: i64 = sqlx::query_scalar(
             "SELECT COALESCE(SUM(scan.blocks_total - scan.blocks_done), 0)
@@ -841,7 +842,7 @@ impl Store {
         )
         .bind(account_id.as_deref())
         .bind(account_id.as_deref())
-        .fetch_one(&self.pool)
+        .fetch_one(self.reader())
         .await?;
 
         // The console under the countdown. Ordered by the server's own opening
@@ -863,7 +864,7 @@ impl Store {
         .bind(account_id.as_deref())
         .bind(account_id.as_deref())
         .bind(now - 60_000)
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?
         .into_iter()
         .map(|row| FortressUpcoming {
@@ -916,7 +917,7 @@ impl Store {
         .bind(MARCH_RETURNING)
         .bind(account_id.as_deref())
         .bind(account_id.as_deref())
-        .fetch_one(&self.pool)
+        .fetch_one(self.reader())
         .await?;
         // A commander has one durable availability record, regardless of how
         // many historical attacks are still missing a result. Keep the two
@@ -934,7 +935,7 @@ impl Store {
         .bind(now_ms())
         .bind(account_id.as_deref())
         .bind(account_id.as_deref())
-        .fetch_one(&self.pool)
+        .fetch_one(self.reader())
         .await?;
         let commanders_outbound: i64 = commander_counts.get("outbound_count");
         let commanders_returning: i64 = commander_counts.get("returning_count");
@@ -953,7 +954,7 @@ impl Store {
         .bind(MARCH_RETURNING)
         .bind(account_id.as_deref())
         .bind(account_id.as_deref())
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
 
         // Only a run that has checked in recently can have marches in the air.
@@ -970,7 +971,7 @@ impl Store {
 
         let account_row = if account_id.is_none() {
             sqlx::query("SELECT account_id FROM attack_ledger ORDER BY sent_at_ms DESC LIMIT 1")
-                .fetch_optional(&self.pool)
+                .fetch_optional(self.reader())
                 .await?
         } else {
             None
@@ -1011,7 +1012,7 @@ impl Store {
              FROM attack_ledger ORDER BY sent_at_ms DESC LIMIT ?",
         )
         .bind(limit.max(1))
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows.into_iter().map(row_to_march).collect())
     }

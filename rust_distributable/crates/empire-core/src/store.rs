@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, sqlite::SqlitePoolOptions};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 
 use crate::{
     RECENT_MESSAGE_LIMIT,
@@ -17,6 +17,7 @@ mod dev;
 mod dungeon;
 mod ledger;
 mod modes;
+mod pools;
 mod pvp;
 mod recruitment;
 mod schema;
@@ -27,6 +28,8 @@ mod telemetry;
 mod transfer;
 mod troops;
 
+#[cfg(test)]
+mod pools_tests;
 #[cfg(test)]
 mod tests;
 
@@ -174,7 +177,11 @@ pub struct RbcPick {
 
 #[derive(Clone)]
 pub struct Store {
+    /// The one writer connection: everything that changes data goes through it.
     pool: SqlitePool,
+    /// Read-only connections for queries that only read (see `pools.rs`). The
+    /// same pool as `pool` for a database with no file.
+    read_pool: SqlitePool,
     path: Option<PathBuf>,
 }
 
@@ -211,16 +218,21 @@ pub fn scan_refresh_after_ms(kingdom_id: i64, ax1: i64, ay1: i64) -> i64 {
 
 impl Store {
     pub async fn open(url: &str) -> Result<Self, sqlx::Error> {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(url)
-            .await?;
+        let path = database_path(url);
+        let pools = pools::open(url, path.is_some()).await?;
         let store = Self {
-            pool,
-            path: database_path(url),
+            pool: pools.writer,
+            read_pool: pools.reader,
+            path,
         };
         store.migrate().await?;
         Ok(store)
+    }
+
+    /// The pool for queries that only read. A slow read here can no longer hold
+    /// up a session's writes; see `pools.rs`.
+    fn reader(&self) -> &SqlitePool {
+        &self.read_pool
     }
 
     /// Path of the database file, when it is file-backed rather than in-memory.
@@ -425,7 +437,7 @@ impl Store {
         .bind(target.kingdom_id)
         .bind(target.x)
         .bind(target.y)
-        .fetch_one(&self.pool)
+        .fetch_one(self.reader())
         .await
     }
 
@@ -489,7 +501,7 @@ impl Store {
         .bind(level_min)
         .bind(level_max)
         .bind(level_max)
-        .fetch_one(&self.pool)
+        .fetch_one(self.reader())
         .await
     }
 
@@ -636,7 +648,7 @@ impl Store {
         .bind(kingdom_id)
         .bind(source_x)
         .bind(source_y)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reader())
         .await?;
         let Some(row) = row else {
             return Ok(None);
@@ -701,7 +713,7 @@ impl Store {
         .bind(bounds.1)
         .bind(bounds.2)
         .bind(bounds.3)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reader())
         .await?;
         Ok(scanned_at.is_some_and(|timestamp| {
             now_ms.saturating_sub(timestamp) < scan_refresh_after_ms(kingdom_id, bounds.0, bounds.1)
@@ -721,7 +733,7 @@ impl Store {
         )
         .bind(&account_id)
         .bind(kingdom_id)
-        .fetch_one(&self.pool)
+        .fetch_one(self.reader())
         .await?;
         Ok(count > 0)
     }
@@ -738,7 +750,7 @@ impl Store {
         )
         .bind(&account_id)
         .bind(kingdom_id)
-        .fetch_one(&self.pool)
+        .fetch_one(self.reader())
         .await?;
         Ok(count > 0)
     }
@@ -758,7 +770,7 @@ impl Store {
         )
         .bind(&account_id)
         .bind(kingdom_id)
-        .fetch_one(&self.pool)
+        .fetch_one(self.reader())
         .await?;
         let done = row.try_get::<i64, _>("done")?.max(0);
         let pending = row.try_get::<i64, _>("pending")?.max(0);
@@ -1089,7 +1101,7 @@ impl Store {
              ORDER BY task.kingdom_id",
         )
         .bind(&account_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows.into_iter().map(|row| row.get("kingdom_id")).collect())
     }
@@ -1220,7 +1232,7 @@ impl Store {
         .bind(account_id)
         .bind(kingdom_id)
         .bind(lattice_offset)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reader())
         .await
     }
 
@@ -1339,7 +1351,7 @@ impl Store {
         .bind(now_ms.saturating_sub(60_000))
         .bind(observed_since_ms)
         .bind(observed_since_ms)
-        .fetch_one(&self.pool)
+        .fetch_one(self.reader())
         .await?;
         Ok(count > 0)
     }
@@ -1560,7 +1572,7 @@ impl Store {
              GROUP BY lower(p.account_id)
              ORDER BY p.player_name COLLATE NOCASE",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         let mut accounts: Vec<AccountSummary> = rows
             .into_iter()
@@ -1604,7 +1616,7 @@ impl Store {
                  ORDER BY c.kingdom_id",
             )
             .bind(&account.account_id)
-            .fetch_all(&self.pool)
+            .fetch_all(self.reader())
             .await?;
             account.kingdom_health = rows
                 .into_iter()
@@ -1633,7 +1645,7 @@ impl Store {
             "SELECT token, license_id, subject, revision, expires_at, highest_seen_at
              FROM licence ORDER BY license_id",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows
             .into_iter()
@@ -1702,7 +1714,7 @@ impl Store {
              FROM licence_activation WHERE license_id = ?",
         )
         .bind(license_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reader())
         .await?;
         Ok(row.map(activation_from_row))
     }
@@ -1719,7 +1731,7 @@ impl Store {
         )
         .bind(server)
         .bind(player_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reader())
         .await?;
         Ok(row.map(activation_from_row))
     }
@@ -1728,7 +1740,7 @@ impl Store {
         let rows = sqlx::query(
             "SELECT license_id, server, player_id, activated_at FROM licence_activation",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows.into_iter().map(activation_from_row).collect())
     }
@@ -1755,6 +1767,47 @@ impl Store {
         Ok(result.rows_affected() == 1)
     }
 
+    /// Move one game account to a new licence: its old binding and the old licence
+    /// row go, and the new licence (already saved) is bound to the same player. The
+    /// one place a binding changes, so the unique (server, player) index still holds.
+    pub async fn rebind_account_licence(
+        &self,
+        activation: &LicenceActivation,
+        now_ms: i64,
+    ) -> Result<(), sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        let previous: Option<String> = sqlx::query_scalar(
+            "SELECT license_id FROM licence_activation WHERE server = ? AND player_id = ?",
+        )
+        .bind(&activation.server)
+        .bind(activation.player_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(previous) = previous.filter(|previous| *previous != activation.license_id) {
+            sqlx::query("DELETE FROM licence_activation WHERE license_id = ?")
+                .bind(&previous)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM licence WHERE license_id = ?")
+                .bind(&previous)
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query(
+            "INSERT OR IGNORE INTO licence_activation (
+                license_id, server, player_id, activated_at, updated_at_ms
+             ) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&activation.license_id)
+        .bind(&activation.server)
+        .bind(activation.player_id)
+        .bind(activation.activated_at)
+        .bind(now_ms)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await
+    }
+
     /// Write a small piece of cross-run state, such as the current run label.
     pub async fn set_app_state(
         &self,
@@ -1779,7 +1832,7 @@ impl Store {
     pub async fn app_state(&self, key: &str) -> Result<Option<Value>, sqlx::Error> {
         let row = sqlx::query("SELECT value_json FROM app_state WHERE key = ?")
             .bind(key)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.reader())
             .await?;
         match row {
             Some(row) => serde_json::from_str(row.get::<&str, _>("value_json"))
@@ -1863,7 +1916,7 @@ impl Store {
         )
         .bind(account_id.map(canonical_account_id))
         .bind(requested)
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         rows.into_iter()
             .map(|row| {

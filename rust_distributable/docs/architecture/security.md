@@ -42,5 +42,11 @@ coordinates match, or is refused with the server, player id and castle a licence
 would have to be issued for. Each live session re-checks its own licence every few
 seconds, so one account's expiry never stops another.
 
+A bound account can move to a **new** licence id only through `LicenceGate::replace_for_account`
+(the Licence tab, `POST /v1/licence/account`): the token must be valid now, for the account's server,
+issued for one of its main castles (or the castle the licence it replaces was issued for), and not
+bound to another player. The old binding and licence row are removed in one transaction
+(`Store::rebind_account_licence`), so the unique (server, player) index still holds.
+
 See [`../problems/2.md`](../problems/2.md) for the failure that led to this and
 [`../../admin/licence_admin.md`](../../admin/licence_admin.md) for issuing licences.

@@ -14,6 +14,7 @@ import { createModeBuilder } from "./views/mode-builder.js";
 import { createSupportBots } from "./views/support-bots.js";
 import { createTroops } from "./views/troops.js";
 import { createChat } from "./views/chat.js";
+import { createLicence } from "./views/licence.js";
 import { renderSparkBars } from "./views/spark-bars.js";
 const activation = $("#activation");
 const appShell = $("#app-shell");
@@ -123,17 +124,18 @@ async function renderLicenceList() {
 // refusal, instead of leaving the reason in a status line nobody is reading.
 let lastLicencePrompt = "";
 function promptForMissingLicence(error) {
-  if (!error || !error.startsWith("no licence for this game account") || error === lastLicencePrompt) return;
+  if (!error || error === lastLicencePrompt) return;
+  if (!error.startsWith("no licence for this game account") && !error.startsWith("the licence for this game account")) return;
   lastLicencePrompt = error;
-  showActivation(true, `${error}.`);
+  switchView("licence");
 }
 
 function showApplication(licence) {
   currentLicence = licence;
   activation.hidden = true;
   appShell.hidden = false;
-  $("#licence-expiry").textContent = expiryLabel(licence.expires_at);
-  $("#plan-badge").hidden = licence.tier !== "pro";
+  // The plan line and badge are the account in view's own licence, not the install's first one.
+  licenceTab.load();
   if (licence.stage === "unactivated") {
     switchView("initialize");
     $("#direct-result").textContent = "Access accepted. Initialize the matching account to activate this installation.";
@@ -182,7 +184,7 @@ const viewTitles = {
   "support-bots": ["Station", "Create support"],
   pvp: ["Intelligence", "PVP"],
   development: ["Diagnostics", "Development"],
-  support: ["Help", "Support"],
+  licence: ["Account", "Licence"],
 };
 
 const development = createDevelopment();
@@ -191,6 +193,8 @@ const overview = createOverview();
 const modeBuilder = createModeBuilder({ getLibrary: () => library, kingdomLabel: (id) => kingdomLabel(id) });
 const troops = createTroops();
 const chat = createChat();
+// The licence of the account in view; it also draws the sidebar plan line for that account.
+const licenceTab = createLicence({ onReplaced: () => refreshLicence() });
 // A support bot is stored only; which one an account runs is chosen in the Control Panel.
 const supportBots = createSupportBots({ getLibrary: () => library, reload: () => loadLibrary() });
 
@@ -210,6 +214,7 @@ function switchView(name) {
   if (name === "overview") overview.show(); else overview.hide();
   if (name === "troops") troops.show(); else troops.hide();
   if (name === "chat") chat.show(); else chat.hide();
+  if (name === "licence") licenceTab.show(); else licenceTab.hide();
 }
 
 function setNavGroup(group, open) {
@@ -1578,7 +1583,7 @@ $("#recruit-bot-form").addEventListener("submit", async (event) => {
 });
 
 $("#licence-form").addEventListener("submit", async (event) => { event.preventDefault(); $("#licence-result").textContent = "Checking your token…"; try { const licence = await api("/licence", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: $("#licence-token").value.trim() }) }); $("#licence-token").value = ""; showApplication(licence); announceWaitingLicences(licence); if (licence.stage === "unactivated") return; await loadLibrary(); await refreshAccounts(); await refresh(); } catch (error) { $("#licence-result").textContent = error.message; } });
-$("#add-credits").addEventListener("click", () => showActivation(true));
+$("#add-credits").addEventListener("click", () => switchView("licence"));
 $("#close-activation").addEventListener("click", () => { if (currentLicence?.active) activation.hidden = true; });
 $("#toggle-password").addEventListener("click", (event) => { const password = $("#password"); const showing = password.type === "text"; password.type = showing ? "password" : "text"; event.currentTarget.textContent = showing ? "Show" : "Hide"; });
 $("#direct-form").addEventListener("submit", async (event) => { event.preventDefault(); const button = $("#initialize"); const password = $("#password"); button.disabled = true; button.textContent = "Initializing…"; $("#direct-result").textContent = "OpenAuto is signing in, discovering the account, and preparing its initial map data."; const radius = Number($("#scan-radius").value) || 0; try { await api("/accounts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ server: $("#server").value, username: $("#player-name").value.trim(), password: password.value, portal_account_id: $("#portal-account-id").value.trim() || undefined, scan_radius: radius, kingdom_scans: kingdomScans(radius), reuse_existing_map: false }) }); password.value = ""; addingAccount = false; accountContext.setViewed($("#player-name").value.trim()); await refresh(); } catch (error) { password.value = ""; button.disabled = false; button.textContent = "Initialize account"; $("#direct-result").textContent = error.message; } });

@@ -1,3 +1,4 @@
+mod account_licence;
 mod chat;
 mod dev_shared;
 mod direct;
@@ -192,7 +193,13 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:47821";
 /// minute-skip items until they land.
 /// 55: the Chat tab: `GET /v1/chat` lists the alliance messages an account's session has heard
 /// (`acm`, stored per account, newest 2,000).
-pub const API_VERSION: u16 = 55;
+/// 56: the store reads on its own connections, so a slow view can no longer starve a session's
+/// writes (`pool timed out`), and the map view no longer searches the whole ledger once per
+/// tower (`docs/problems/22.md`). Nothing in the HTTP API changed; the number moves so that an
+/// older service still running from before the fix is replaced instead of reused.
+/// 57: the Licence tab: `GET`/`POST /v1/licence/account` reads and replaces the licence of one
+/// account (`account_licence.rs`).
+pub const API_VERSION: u16 = 57;
 /// Reported by `/v1/health` beside [`API_VERSION`]; the window replaces a service that sends another one.
 pub use empire_core::session::CLIENT_VERSION;
 
@@ -249,6 +256,10 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/v1/health", get(health))
         .route("/v1/licence", get(licence_status).post(activate_licence))
+        .route(
+            "/v1/licence/account",
+            get(account_licence::account_licence).post(account_licence::replace_account_licence),
+        )
         .route("/v1/messages", get(messages))
         .route("/v1/accounts", get(accounts).post(initialize_account))
         .route("/v1/hunt", get(hunt))

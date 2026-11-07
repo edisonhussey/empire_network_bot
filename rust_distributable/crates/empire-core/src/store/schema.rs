@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 27;
+pub const SCHEMA_VERSION: i64 = 28;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -862,8 +862,26 @@ pub const V27: Migration = &[
     "CREATE INDEX IF NOT EXISTS alliance_chat_recent_idx ON alliance_chat (account_id, id)",
 ];
 
+/// Speed for the map view (`docs/problems/22.md`).
+///
+/// `attack_ledger_target_idx` lets `map_towers` find the marches sent at one tower
+/// with an index seek. Before it, the ledger was searched once per tower and the
+/// map took up to two minutes on a long-running database.
+///
+/// The first statement is a safety net for the query change that goes with it:
+/// the hot queries now compare `account_id` as stored instead of through
+/// `lower(account_id)`, so any ledger row written with a different casing is
+/// brought into the canonical form. `OR IGNORE` leaves a row alone if its
+/// canonical twin already exists, rather than overwrite either.
+pub const V28: Migration = &[
+    "UPDATE OR IGNORE attack_ledger SET account_id = lower(account_id)
+       WHERE account_id <> lower(account_id)",
+    "CREATE INDEX IF NOT EXISTS attack_ledger_target_idx
+        ON attack_ledger (account_id, kingdom_id, x, y)",
+];
+
 pub const MIGRATIONS: &[Migration] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28,
 ];
 
 /// Every table that holds user data, for the storage report and full wipe.

@@ -213,6 +213,8 @@ fn only_lost_connections_are_retried() {
         WsError::Protocol(ProtocolError::ResetWithoutClosingHandshake).into();
     assert!(connection_was_lost(&reset));
     assert!(connection_was_lost(&ConnectionLost("silent".into()).into()));
+    assert!(connection_was_lost(&sqlx::Error::PoolTimedOut.into()));
+    assert!(!connection_was_lost(&sqlx::Error::PoolClosed.into()));
     assert!(!connection_was_lost(&anyhow::anyhow!("licence revoked")));
 }
 

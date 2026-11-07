@@ -138,7 +138,7 @@ impl Store {
         let bots = sqlx::query(
             "SELECT station_bot_id, name FROM station_bot ORDER BY updated_at_ms DESC, station_bot_id DESC",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         let mut result = Vec::with_capacity(bots.len());
         for bot in bots {
@@ -148,7 +148,7 @@ impl Store {
                  WHERE station_bot_id = ? ORDER BY kingdom_id",
             )
             .bind(id)
-            .fetch_all(&self.pool)
+            .fetch_all(self.reader())
             .await?;
             result.push(StationBot {
                 station_bot_id: id,
@@ -218,7 +218,7 @@ impl Store {
             "SELECT account_id, station_bot_id, running, updated_at_ms
              FROM account_station_bot ORDER BY updated_at_ms DESC",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows
             .into_iter()
@@ -250,7 +250,7 @@ impl Store {
              WHERE a.account_id = ? AND a.running = 1",
         )
         .bind(canonical_account_id(account_id))
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reader())
         .await?;
         match chosen {
             Some(bot_id) => self.load_station(bot_id).await,
@@ -261,14 +261,14 @@ impl Store {
     async fn load_station(&self, bot_id: i64) -> Result<Option<ActiveStation>, sqlx::Error> {
         let Some(bot) = sqlx::query("SELECT station_bot_id, name FROM station_bot WHERE station_bot_id = ?")
             .bind(bot_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.reader())
             .await?
         else {
             return Ok(None);
         };
         let rows = sqlx::query("SELECT kingdom_id, x, y FROM station_bot_kingdom WHERE station_bot_id = ?")
             .bind(bot_id)
-            .fetch_all(&self.pool)
+            .fetch_all(self.reader())
             .await?;
         Ok(Some(ActiveStation {
             station_bot_id: bot_id,
@@ -343,7 +343,7 @@ impl Store {
         )
         .bind(canonical_account_id(account_id))
         .bind(castle_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reader())
         .await?;
         Ok(row.map(|row| {
             let units = serde_json::from_str(row.get::<&str, _>("units_json")).unwrap_or_default();
@@ -361,12 +361,12 @@ impl Store {
                     i.observed_at_ms, i.units_json, i.food, i.mead, i.wood, i.stone
              FROM owned_castle o
              LEFT JOIN castle_inventory i
-               ON i.account_id = lower(o.account_id) AND i.castle_id = o.castle_id
-             WHERE lower(o.account_id) = lower(?)
+               ON i.account_id = o.account_id AND i.castle_id = o.castle_id
+             WHERE o.account_id = ?
              ORDER BY o.kingdom_id, o.castle_id",
         )
         .bind(canonical_account_id(account_id))
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows
             .into_iter()
@@ -481,7 +481,7 @@ impl Store {
         ))
         .bind(canonical_account_id(account_id))
         .bind(limit)
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows.iter().map(job_row).collect())
     }

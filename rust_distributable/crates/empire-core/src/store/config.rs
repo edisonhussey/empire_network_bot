@@ -107,7 +107,7 @@ impl Store {
         let rows = sqlx::query(
             "SELECT profile_id, name, payload_json, notes FROM attack_profile ORDER BY name COLLATE NOCASE",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         rows.into_iter()
             .map(|row| {
@@ -180,7 +180,7 @@ impl Store {
              FROM task_definition
              ORDER BY priority, name COLLATE NOCASE",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         Ok(rows
             .into_iter()
@@ -260,7 +260,7 @@ impl Store {
             "SELECT task_id, target_kind, filter_json
              FROM task_subscription ORDER BY task_id, position",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.reader())
         .await?;
         rows.into_iter()
             .map(|row| {

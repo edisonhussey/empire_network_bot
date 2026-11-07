@@ -28,7 +28,7 @@ impl Store {
         .bind(kingdom_id)
         .bind(x)
         .bind(y)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.reader())
         .await?;
         Ok(row
             .and_then(|row| row.get::<Option<i64>, _>("victory_count"))
