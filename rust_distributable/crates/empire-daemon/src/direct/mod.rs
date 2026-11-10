@@ -321,8 +321,12 @@ pub async fn run(
         current.account_id = Some(account_id.clone());
     }
     let mut attempt_request = request;
+    // Versions a server accepted after a game update outrank the built-in ones until a newer build ships.
+    version::apply_remembered(&store, &mut attempt_request.settings).await;
     let mut rng = Rng::from_entropy();
     let mut attempt = 0_u32;
+    // Refusals of the client version in a row; their own schedule, see `version.rs`.
+    let mut version_refusals = 0_u32;
     let final_error = loop {
         if attempt > 0 {
             log_event(&store, &account_id, "connection.retry", &format!("retry {attempt}")).await;
@@ -343,8 +347,35 @@ pub async fn run(
                     .map(|at| Duration::from_millis(now_ms().saturating_sub(at).max(0) as u64)),
             )
         };
+        if reached_ready {
+            version_refusals = 0;
+        }
         let error = match result {
             Err(error) if connection_was_lost(&error) => error,
+            Err(error) if version::is_refusal(&error) => {
+                version_refusals += 1;
+                let next = version::wait_for_next_attempt(
+                    &store,
+                    &account_id,
+                    &status,
+                    &mut attempt_request.settings,
+                    version_refusals,
+                    || empire_socket::client_release::fetch_handshake_versions(empire_core::client_release::CLIENT_ROOT),
+                    tokio::time::sleep,
+                )
+                .await;
+                match next {
+                    Ok(()) => {
+                        log_event(&store, &account_id, "connection.version_retry", &format!("attempt {version_refusals}")).await;
+                        continue;
+                    }
+                    Err(reason) => {
+                        let error = error.context(reason);
+                        log_event(&store, &account_id, "connection.failed", &format!("{error:#}")).await;
+                        break Some(error);
+                    }
+                }
+            }
             // A refused login, a licence problem, or any other failure is not
             // something a retry would fix.
             Err(error) => {
@@ -719,6 +750,11 @@ async fn run_inner(
                     {
                         log_event(store, &account_id, "connection.version_rejected", &refused.to_string()).await;
                         return Err(refused.into());
+                    }
+                    if let Some(packet) = parsed_packet.as_ref()
+                        && packet.command == "vck"
+                    {
+                        version::remember_accepted(store, &request.settings).await;
                     }
                     if let Some(packet) = parsed_packet.as_ref()
                         && packet.command == "lli"

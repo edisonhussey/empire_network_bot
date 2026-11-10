@@ -4,10 +4,16 @@ use serde_json::{Value, json};
 use crate::protocol::{PacketError, encode_client_xt, parse_xt_packet};
 
 pub const DEFAULT_SERVER_HEADER: &str = "EmpireEx_21";
-/// The web client's version as it sends it in `vck`: the game bundle's `1.171.9` with each
+/// The web client's version as it sends it in `vck`: the game bundle's `1.172.14` with each
 /// part padded to three digits. The server hangs up on a version it no longer accepts.
-/// Bundle seen 2026-10-26 reports `1.171.9`; the server refused `1171008` with build `6.1177.3`.
-pub const CLIENT_VERSION: &str = "1171009";
+/// Bundle seen 2026-11-10 reports `1.172.14`.
+pub const CLIENT_VERSION: &str = "1172014";
+/// The SmartFox API version the client sends in `verChk` (`<ver v='166' />` in the client's `ggs.dll`).
+pub const SMARTFOX_API_VERSION: &str = "166";
+
+fn default_smartfox_api_version() -> String {
+    SMARTFOX_API_VERSION.to_owned()
+}
 
 #[derive(Clone, Deserialize)]
 pub struct LoginCredentials {
@@ -45,6 +51,9 @@ const fn enabled_by_default() -> bool {
 pub struct SessionSettings {
     pub server_header: String,
     pub client_version: String,
+    /// Sent in `verChk`. Defaulted so settings saved before it existed still load.
+    #[serde(default = "default_smartfox_api_version")]
+    pub smartfox_api_version: String,
     pub language: String,
     pub platform_id: i64,
     pub connection_time: i64,
@@ -66,6 +75,7 @@ impl Default for SessionSettings {
         Self {
             server_header: DEFAULT_SERVER_HEADER.to_owned(),
             client_version: CLIENT_VERSION.to_owned(),
+            smartfox_api_version: default_smartfox_api_version(),
             language: "en".to_owned(),
             platform_id: 1,
             connection_time: 676,
@@ -231,7 +241,10 @@ impl SessionMachine {
 
     pub fn on_connected(&mut self) -> Vec<String> {
         self.phase = SessionPhase::SocketHandshake;
-        vec!["<msg t='sys'><body action='verChk' r='0'><ver v='166' /></body></msg>".to_owned()]
+        vec![format!(
+            "<msg t='sys'><body action='verChk' r='0'><ver v='{}' /></body></msg>",
+            self.settings.smartfox_api_version
+        )]
     }
 
     pub fn on_server_text(&mut self, text: &str) -> Result<Vec<String>, PacketError> {
@@ -541,6 +554,27 @@ mod tests {
         assert!(sent.is_empty(), "no lli goes to a server that refused the version");
         assert_eq!(session.phase(), SessionPhase::Failed);
         assert_eq!(SessionSettings::default().client_version, CLIENT_VERSION);
+    }
+
+    #[test]
+    fn derived_versions_go_into_every_handshake_field_that_carries_one() {
+        let settings = SessionSettings {
+            client_version: "1172003".to_owned(),
+            smartfox_api_version: "167".to_owned(),
+            ..SessionSettings::default()
+        };
+        let mut session = SessionMachine::new(machine().credentials, settings);
+        assert!(session.on_connected()[0].contains("<ver v='167' />"));
+        assert!(session.on_server_text("<body action='apiOK'>").unwrap()[0].contains("1172003%en%0"));
+        let vck = session.on_server_text("<body action='joinOK'>").unwrap();
+        assert!(vck[1].contains("%vck%1%1172003%web-html5%"));
+        // Settings saved before the verChk field existed load with the old value.
+        let old: SessionSettings = serde_json::from_value(serde_json::to_value(SessionSettings::default()).map(|mut value| {
+            value.as_object_mut().unwrap().remove("smartfox_api_version");
+            value
+        }).unwrap())
+        .unwrap();
+        assert_eq!(old.smartfox_api_version, SMARTFOX_API_VERSION);
     }
 
     #[test]

@@ -3,6 +3,7 @@
 #[cfg(feature = "application")]
 pub mod account;
 pub mod chat;
+pub mod client_release;
 #[cfg(feature = "application")]
 pub mod event;
 #[cfg(feature = "application")]

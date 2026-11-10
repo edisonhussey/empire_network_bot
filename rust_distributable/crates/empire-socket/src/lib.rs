@@ -9,6 +9,7 @@
 //!
 //! Callers keep using `tokio-tungstenite`'s `Message` and the `StreamExt` / `SinkExt` split exactly as before.
 
+pub mod client_release;
 mod deflate;
 mod stream;
 
