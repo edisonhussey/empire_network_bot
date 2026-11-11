@@ -76,3 +76,31 @@ async fn a_server_that_compresses_its_messages_is_read_as_plain_text() {
     assert!(matches!(second, Message::Binary(_)));
     let _ = server.await;
 }
+
+/// While the game's servers restart they answer the upgrade with an error page. The page's body must not be read as
+/// frames (it used to fail with `RSV2 or RSV3 set`, because `<` is 0x3C); the caller must see the HTTP status.
+#[tokio::test]
+async fn a_server_that_refuses_the_upgrade_reports_its_http_status() {
+    let (client_end, mut server_end) = duplex(64 * 1024);
+    let server = tokio::spawn(async move {
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            server_end.read_exact(&mut byte).await.unwrap();
+            head.push(byte[0]);
+        }
+        let body = "<html><body><h1>503 Service Unavailable</h1></body></html>";
+        let reply = format!("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+        server_end.write_all(reply.as_bytes()).await.unwrap();
+        server_end
+    });
+    let request = game_request("wss://example.test/").unwrap();
+    let Err(error) = client_async(request, InflatingStream::new(client_end)).await else {
+        panic!("the upgrade is refused");
+    };
+    match error {
+        tokio_tungstenite::tungstenite::Error::Http(response) => assert_eq!(response.status(), 503),
+        other => panic!("expected the HTTP status, got {other}"),
+    }
+    let _ = server.await;
+}

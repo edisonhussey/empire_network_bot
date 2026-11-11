@@ -1,8 +1,10 @@
 //! The server refusing the client version in its `vck` reply, and what the session does about it.
 //!
 //! The game ships a new web client every few weeks and the server then hangs up on the old version straight after
-//! the reply ([problem 10], [problem 20], [problem 23]). No credentials are sent after a refusal. The session then
-//! follows a fixed schedule, counted from each refusal:
+//! the reply ([problem 10], [problem 20], [problem 23]). No credentials are sent after a refusal. While the servers
+//! restart for an update the link also dies before `vck` is even reached (reset, or `RSV2 or RSV3 set` on the
+//! upgrade, [problem 24]). Any attempt that fails before the login is accepted counts as a handshake failure, and the
+//! session then follows a fixed schedule, counted from each failure:
 //!
 //! 1. 5 minutes later, the same versions again (the servers may still be restarting for the update);
 //! 2. 2 hours after that, the same versions again;
@@ -16,6 +18,7 @@
 //! [problem 10]: ../../../../docs/problems/10.md
 //! [problem 20]: ../../../../docs/problems/20.md
 //! [problem 23]: ../../../../docs/problems/23.md
+//! [problem 24]: ../../../../docs/problems/24.md
 
 use std::{future::Future, io, sync::Arc, time::Duration};
 
@@ -150,16 +153,16 @@ where
     let (delay, derived) = match plan(refusals) {
         Plan::Same(delay) => (delay, false),
         Plan::Derived(delay) => (delay, true),
-        Plan::Stop => return Err(format!("the game refused the client version {refusals} times")),
+        Plan::Stop => return Err(format!("the handshake failed {refusals} times")),
     };
     let total = VERSION_RETRY_DELAYS.len();
     let detail = format!(
-        "The game refused the client version; attempt {} of {total} in {}{}",
+        "The handshake failed (game update or restart?); attempt {} of {total} in {}{}",
         refusals,
         human(delay),
         if derived { ", only if the live client shows new versions" } else { "" }
     );
-    log_event(store, account_id, "connection.version_retry_scheduled", &detail).await;
+    log_event(store, account_id, "connection.handshake_retry_scheduled", &detail).await;
     {
         let mut current = status.write().await;
         current.connected = false;

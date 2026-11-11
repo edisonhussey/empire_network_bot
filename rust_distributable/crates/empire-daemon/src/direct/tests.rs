@@ -1231,3 +1231,20 @@ mod station_holds {
         assert_eq!(automation.cra_in_flight_source(), None);
     }
 }
+
+#[test]
+fn a_link_lost_before_the_login_is_a_handshake_failure_and_gets_the_staged_schedule() {
+    use tokio_tungstenite::tungstenite::Error as WsError;
+    let framing = || anyhow::Error::from(WsError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "WebSocket framing error: RSV2 or RSV3 set")));
+    let reset = || anyhow::Error::from(WsError::ConnectionClosed);
+    // 2026-11-11 12:35: the reconnect never got past the upgrade.
+    assert!(failed_in_handshake(&framing(), false));
+    assert!(failed_in_handshake(&reset(), false));
+    // 12:34: an established session dropped; that keeps the ordinary quick reconnect.
+    assert!(!failed_in_handshake(&reset(), true));
+    // A refused version is a handshake failure whatever happened before.
+    let refused = parse_xt_packet("%xt%vck%1%1%6.1177.3%43.0.0%").unwrap();
+    assert!(failed_in_handshake(&anyhow::Error::from(version::refusal(&refused, "1171008").unwrap()), true));
+    // The database being busy is not the handshake's fault.
+    assert!(!failed_in_handshake(&anyhow::Error::from(sqlx::Error::PoolTimedOut), false));
+}

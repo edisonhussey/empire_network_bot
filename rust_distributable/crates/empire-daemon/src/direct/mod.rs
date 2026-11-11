@@ -197,6 +197,9 @@ pub struct DirectStatus {
     /// accounts in one window can be on different tiers.
     pub tier: Option<String>,
     pub features: Vec<String>,
+    /// This attempt got through the handshake (`lli` accepted). Internal: decides which retry schedule a failure gets.
+    #[serde(skip)]
+    pub authenticated: bool,
 }
 
 impl Default for DirectStatus {
@@ -220,6 +223,7 @@ impl Default for DirectStatus {
             connected_at_ms: None,
             tier: None,
             features: Vec::new(),
+            authenticated: false,
         }
     }
 }
@@ -268,6 +272,15 @@ impl std::error::Error for LoginRejected {}
 
 fn login_lock_key(account_id: &str) -> String {
     format!("login.locked_until_ms.{account_id}")
+}
+
+/// A failure of the handshake itself: the server refused the client version, or the link was lost before the login
+/// was accepted. A database timeout is not the handshake's fault and keeps the ordinary reconnects.
+fn failed_in_handshake(error: &anyhow::Error, authenticated: bool) -> bool {
+    version::is_refusal(error)
+        || (!authenticated
+            && connection_was_lost(error)
+            && !matches!(error.downcast_ref::<sqlx::Error>(), Some(sqlx::Error::PoolTimedOut)))
 }
 
 fn connection_was_lost(error: &anyhow::Error) -> bool {
@@ -325,17 +338,18 @@ pub async fn run(
     version::apply_remembered(&store, &mut attempt_request.settings).await;
     let mut rng = Rng::from_entropy();
     let mut attempt = 0_u32;
-    // Refusals of the client version in a row; their own schedule, see `version.rs`.
-    let mut version_refusals = 0_u32;
+    // Attempts in a row that failed before the login was accepted; their own schedule, see `version.rs`.
+    let mut handshake_failures = 0_u32;
     let final_error = loop {
         if attempt > 0 {
             log_event(&store, &account_id, "connection.retry", &format!("retry {attempt}")).await;
         }
+        status.write().await.authenticated = false;
         let result = run_inner(attempt_request.clone(), &store, &active_transport, &status, &licence, &dev, &pace).await;
         *active_transport.write().await = None;
         // The session's own bookkeeping says how far this attempt got and how
         // long it lived; read it before it is overwritten below.
-        let (reached_ready, lived) = {
+        let (reached_ready, lived, authenticated) = {
             let current = status.read().await;
             (
                 matches!(
@@ -345,28 +359,34 @@ pub async fn run(
                 current
                     .connected_at_ms
                     .map(|at| Duration::from_millis(now_ms().saturating_sub(at).max(0) as u64)),
+                current.authenticated,
             )
         };
-        if reached_ready {
-            version_refusals = 0;
+        if authenticated {
+            handshake_failures = 0;
         }
         let error = match result {
-            Err(error) if connection_was_lost(&error) => error,
-            Err(error) if version::is_refusal(&error) => {
-                version_refusals += 1;
+            // Refused at `vck`, or the link died before the login was accepted (a reset or a broken upgrade while the
+            // servers restart for an update: 2026-11-10 and 2026-11-11, problem 24). Both get the staged schedule.
+            Err(error) if failed_in_handshake(&error, authenticated) => {
+                if !version::is_refusal(&error) {
+                    log_event(&store, &account_id, "connection.handshake_failed", &format!("{error:#}")).await;
+                }
+                handshake_failures += 1;
                 let next = version::wait_for_next_attempt(
                     &store,
                     &account_id,
                     &status,
                     &mut attempt_request.settings,
-                    version_refusals,
+                    handshake_failures,
                     || empire_socket::client_release::fetch_handshake_versions(empire_core::client_release::CLIENT_ROOT),
                     tokio::time::sleep,
                 )
                 .await;
                 match next {
                     Ok(()) => {
-                        log_event(&store, &account_id, "connection.version_retry", &format!("attempt {version_refusals}")).await;
+                        log_event(&store, &account_id, "connection.handshake_retry", &format!("attempt {handshake_failures}")).await;
+                        attempt_request.reuse_existing_map = true;
                         continue;
                     }
                     Err(reason) => {
@@ -376,6 +396,7 @@ pub async fn run(
                     }
                 }
             }
+            Err(error) if connection_was_lost(&error) => error,
             // A refused login, a licence problem, or any other failure is not
             // something a retry would fix.
             Err(error) => {
@@ -502,6 +523,7 @@ async fn run_inner(
         connected_at_ms: Some(now_ms()),
         tier: None,
         features: Vec::new(),
+        authenticated: false,
     };
     info!(endpoint = %request.endpoint, "direct game session connected");
 
@@ -626,6 +648,7 @@ async fn run_inner(
                             current.tier = Some(claims.tier.clone());
                             current.features = claims.features.clone();
                         }
+                        status.write().await.authenticated = true;
                         log_event(store, &account_id, "connection.login_ok", "authenticated").await;
                         let _ = store
                             .set_app_state(&login_lock_key(&account_id), &json!(0), now_ms())

@@ -2,6 +2,10 @@
 //!
 //! Reads pass through the upgrade response untouched (the library needs to read its status and headers), then everything after
 //! the blank line is WebSocket frames and goes through the [`Inflater`]. Writes pass straight through.
+//!
+//! Only a `101 Switching Protocols` answer is followed by frames. Any other answer (a 502/503 page while the game's
+//! servers restart) is passed through untouched, so the library reports the HTTP status. Inflating that page's body as
+//! frames used to fail with `RSV2 or RSV3 set` (`<` is 0x3C), which hid the real answer (problem 24).
 
 use std::{
     io,
@@ -14,9 +18,21 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use crate::deflate::Inflater;
 
 enum Phase {
-    /// Still inside the HTTP upgrade response; `tail` holds the last bytes seen, to find a blank line split across reads.
-    Headers { tail: Vec<u8> },
+    /// Still inside the HTTP upgrade response; `tail` holds the last bytes seen, to find a blank line split across reads,
+    /// and `status_line` the first bytes, to know whether frames follow.
+    Headers { tail: Vec<u8>, status_line: Vec<u8> },
     Frames,
+    /// The server did not switch protocols: everything is passed through as it came.
+    Raw,
+}
+
+const STATUS_PREFIX_LEN: usize = 12; // "HTTP/1.1 101"
+
+fn switches_protocols(status_line: &[u8]) -> bool {
+    status_line.len() >= STATUS_PREFIX_LEN
+        && status_line.starts_with(b"HTTP/1.")
+        && status_line[8] == b' '
+        && &status_line[9..12] == b"101"
 }
 
 pub struct InflatingStream<S> {
@@ -29,28 +45,36 @@ pub struct InflatingStream<S> {
 
 impl<S> InflatingStream<S> {
     pub fn new(inner: S) -> Self {
-        Self { inner, phase: Phase::Headers { tail: Vec::new() }, inflater: Inflater::new(), ready: Vec::new(), ready_at: 0 }
+        Self { inner, phase: Phase::Headers { tail: Vec::new(), status_line: Vec::new() }, inflater: Inflater::new(), ready: Vec::new(), ready_at: 0 }
     }
 
     /// Take freshly read bytes: headers pass through, frames are inflated into `self.ready`.
     fn absorb(&mut self, chunk: &[u8]) -> io::Result<()> {
-        let frames_from = match &mut self.phase {
-            Phase::Frames => Some(0),
-            Phase::Headers { tail } => {
+        let (frames_from, upgraded) = match &mut self.phase {
+            Phase::Frames => (Some(0), true),
+            Phase::Raw => (None, false),
+            Phase::Headers { tail, status_line } => {
+                let wanted = STATUS_PREFIX_LEN.saturating_sub(status_line.len()).min(chunk.len());
+                status_line.extend_from_slice(&chunk[..wanted]);
                 let mut seen = std::mem::take(tail);
                 let before = seen.len();
                 seen.extend_from_slice(chunk);
                 match seen.windows(4).position(|w| w == b"\r\n\r\n") {
-                    Some(at) => Some(at + 4 - before), // the blank line ends inside this chunk
+                    // the blank line ends inside this chunk
+                    Some(at) => (Some(at + 4 - before), switches_protocols(status_line)),
                     None => {
                         *tail = seen[seen.len().saturating_sub(3)..].to_vec();
-                        None
+                        (None, false)
                     }
                 }
             }
         };
         match frames_from {
             None => self.ready.extend_from_slice(chunk),
+            Some(_) if !upgraded => {
+                self.phase = Phase::Raw;
+                self.ready.extend_from_slice(chunk);
+            }
             Some(at) => {
                 self.ready.extend_from_slice(&chunk[..at]);
                 self.phase = Phase::Frames;
