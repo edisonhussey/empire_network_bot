@@ -4,7 +4,7 @@
 | --- | --- |
 | Direction | client to server, with a reply |
 | Evidence | captured, and used live by the bot |
-| Code | `empire-core/src/account.rs` (`rbc_targets`, `fortress_targets`), `empire-core/src/hunt.rs` (`gaa_packet`), `empire-daemon/src/direct/observe.rs` |
+| Code | `empire-core/src/storm.rs` (`forts_in_gaa`, Storm Islands), `empire-core/src/account.rs` (`rbc_targets`, `fortress_targets`), `empire-core/src/hunt.rs` (`gaa_packet`), `empire-daemon/src/direct/observe.rs` |
 
 ## Purpose
 
@@ -57,3 +57,27 @@ None saved as a file; see [`adi.md`](adi.md) for refusing a tower that is coolin
 ## Open questions
 
 Elements of the tower row beyond the ones listed.
+
+
+## Storm Islands (`KID` 4)
+
+Captured 2026-11-16 (us1, the browser opening the storm map, then attacking a level-60 fort). Windows are the usual
+13 x 13; the client read the castle's window first (`546:520`, castle at `557:531`) and the ring around it.
+
+Rows seen: type 12 (player castles, the account's own storm castle among them), 24 (storm objects owned by `-403`), 25
+(storm forts, owner `-1`) and 31 (`[31, x, y]`, decoration). A storm fort:
+
+```
+[25, 551, 542, 4, -1, 12, 0, 8, 0]
+ type x    y    ?  owner level-code cooldown ? cooldown
+```
+
+* Level code `AI[5]`: 7 or 12 = level 60, 8 or 13 = 70, 9 or 14 = 80, 10 = 40, 11 = 50 (from the earlier Python storm bot;
+  the captured attack on a code-12 fort was the level-60 fort the person chose).
+* Free only when `AI[6]` and `AI[8]` are both 0; a fort on cooldown carries the same number of seconds in both
+  (`[25,546,527,4,-1,10,34300,0,34300]`).
+* The `adi` reply for a fort carries its current row as `gaa.AI` (one row, not a list), so a fort taken since the scan is
+  visible before the attack: `{"KID":4,"HAWL":4,"SCID":4960,"gaa":{"AI":[25,551,542,4,-1,12,0,8,0]},...}`.
+
+The `cra` itself is the usual one with `KID` 4 and the storm castle as `SX`/`SY`. How the bot uses this:
+[`../architecture/storm-islands.md`](../architecture/storm-islands.md).

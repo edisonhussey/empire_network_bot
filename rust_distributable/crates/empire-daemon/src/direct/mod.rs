@@ -22,6 +22,8 @@ mod version;
 #[cfg(test)]
 mod station_tests;
 #[cfg(test)]
+mod storm_tests;
+#[cfg(test)]
 mod grouping_tests;
 #[cfg(test)]
 mod transfer_tests;

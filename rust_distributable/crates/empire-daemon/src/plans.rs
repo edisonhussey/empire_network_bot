@@ -483,6 +483,22 @@ pub async fn create_task(
             "berimond_camp",
             json!({"kingdom_id": kingdom_id, "algorithm": algorithm}),
         ),
+        Destination::StormLevelRange {
+            kingdom_id,
+            minimum,
+            maximum,
+        } => (
+            kingdom_id,
+            Some(minimum),
+            Some(maximum),
+            empire_core::planning::Coordinate {
+                kingdom_id,
+                x: 0,
+                y: 0,
+            },
+            "storm",
+            json!({"kingdom_id": kingdom_id, "level_min": minimum, "level_max": maximum, "algorithm": algorithm}),
+        ),
     };
     state
         .store

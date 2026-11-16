@@ -20,6 +20,7 @@ One concern, one owner. If a rule exists in two places, one of them is a bug.
 | `recruitment.rs` | Recruitment automation state machine |
 | `link.rs` | The session's transport: the daemon's own socket or a proxy link (injection mode), as one sink/stream |
 | `pause.rs` | Pause button and the one-minute human hold of injection mode |
+| `storm_tests.rs` | Storm Islands tasks in the attack bot (rules `empire-core/src/storm.rs`, store `store/storm.rs`) |
 | `refinery.rs` | The resource bot's refinery visit: `jca`, `crin`, `dcl`, staggered `crst`, `gaa` (rules in `empire-core/src/refinery.rs`, schedule in `store/resource.rs`) |
 | `fortress_discovery.rs` | Fortress boundary discovery walk and its pacing |
 | `base_scan.rs` | Outward map-scan pacing and pending-scan record |

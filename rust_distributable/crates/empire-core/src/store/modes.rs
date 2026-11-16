@@ -213,6 +213,22 @@ impl Store {
                     "berimond_camp",
                     json!({"kingdom_id": kingdom_id, "algorithm": algorithm}),
                 ),
+                Destination::StormLevelRange {
+                    kingdom_id,
+                    minimum,
+                    maximum,
+                } => (
+                    kingdom_id,
+                    Some(minimum),
+                    Some(maximum),
+                    crate::planning::Coordinate {
+                        kingdom_id,
+                        x: 0,
+                        y: 0,
+                    },
+                    "storm",
+                    json!({"kingdom_id": kingdom_id, "level_min": minimum, "level_max": maximum, "algorithm": algorithm}),
+                ),
             };
             sqlx::query(
                 "INSERT INTO task_definition (

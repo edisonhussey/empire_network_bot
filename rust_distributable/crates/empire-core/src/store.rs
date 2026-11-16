@@ -25,6 +25,7 @@ mod schema;
 mod state;
 mod station;
 mod storage;
+mod storm;
 mod telemetry;
 mod transfer;
 mod troops;

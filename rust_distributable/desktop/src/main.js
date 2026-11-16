@@ -332,6 +332,17 @@ function updateTargetKinds() {
   berimond.hidden = !berimondSupported;
   berimond.disabled = !berimondSupported;
   if (!berimondSupported && $("#target-kind").value === "berimond") $("#target-kind").value = "rbc";
+  // Storm Islands forts exist only in the Storm Islands (kingdom 4), and nothing else is farmed there.
+  const storm = $("#target-kind option[value='storm']");
+  const stormKingdom = kingdomId === 4;
+  storm.hidden = !stormKingdom;
+  storm.disabled = !stormKingdom;
+  const wasStorm = $("#target-kind").dataset.storm === "1";
+  if (stormKingdom) $("#target-kind").value = "storm";
+  else if ($("#target-kind").value === "storm") $("#target-kind").value = "rbc";
+  const isStorm = $("#target-kind").value === "storm";
+  if (isStorm && !wasStorm) { $("#target-level-min").value = "60"; $("#target-level-max").value = "80"; }
+  $("#target-kind").dataset.storm = isStorm ? "1" : "0";
   const isFortress = $("#target-kind").value === "fortress";
   const isBerimond = $("#target-kind").value === "berimond";
   const hasLevels = !(isFortress || isBerimond);
@@ -342,6 +353,7 @@ function updateTargetKinds() {
   let hint = "OpenAuto chooses a learned Robber Baron in this level range; no destination coordinate is required.";
   if (isFortress) hint = "OpenAuto chooses a learned fortress in this kingdom.";
   if (isBerimond) hint = "OpenAuto chooses a valid Berimond camp. (Kingdom 10 only)";
+  if (isStorm) hint = "Storm forts come and go: OpenAuto reads the map around your storm castle only when it needs a fort, attacks only forts seen in the last two minutes, and never hits the same fort twice. A fort that vanishes mid-attack is skipped, not an error.";
   $("#target-hint").textContent = hint;
   updateSourceCoordinates();
 }
@@ -552,7 +564,7 @@ function taskToDraft(task) {
     destination: targetKind === "fortress" ? {
       kind: "fortress", kingdom_id: task.kingdom_id,
     } : task.target_level_min !== null ? {
-      kind: targetKind === "fortress" ? "fortress_level_range" : "rbc_level_range", kingdom_id: task.kingdom_id,
+      kind: targetKind === "fortress" ? "fortress_level_range" : targetKind === "storm" ? "storm_level_range" : "rbc_level_range", kingdom_id: task.kingdom_id,
       minimum: task.target_level_min, maximum: task.target_level_max,
     } : {
       kind: "coordinate", kingdom_id: runtime.target_kingdom_id, x: runtime.target_x, y: runtime.target_y,
@@ -1599,7 +1611,7 @@ $("#attack-form").addEventListener("submit", async (event) => { event.preventDef
 $("#copy-attack").addEventListener("click", () => copyJson(attackDraft(), $("#attack-result")));
 $("#clear-attack").addEventListener("click", () => { attackWaves = Array.from({ length: 4 }, blankWave); activeWave = 0; $("#attack-name").value = ""; document.querySelectorAll("#wave-tabs button").forEach((button) => button.classList.toggle("selected", button.dataset.wave === "0")); $("#attack-result").textContent = "Attack cleared."; renderWave(); });
 
-$("#task-form").addEventListener("submit", async (event) => { event.preventDefault(); const kingdomId = Number($("#source-kid").value); const automatic = $("#use-main-castle").checked; const fortress = $("#target-kind").value === "fortress"; const destination = fortress ? { kind: "fortress", kingdom_id: kingdomId } : ($("#target-kind").value === "berimond" ? { kind: "berimond_camp", kingdom_id: kingdomId } : { kind: "rbc_level_range", kingdom_id: kingdomId, minimum: Number($("#target-level-min").value), maximum: Number($("#target-level-max").value) }); const draft = { name: $("#task-name").value.trim(), attack_profile_id: $("#task-attack").value, source: { kingdom_id: kingdomId, x: Number($("#source-x").value), y: Number($("#source-y").value) }, source_kind: automatic ? "main_castle" : "coordinate", destination, algorithm: $("#target-algorithm").value, travel: $("#travel").value, priority, commander_count: 1 }; try { await api("/plans/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(draft) }); $("#task-result").textContent = `Dynamic farming task saved with attack "${$("#task-attack").selectedOptions[0]?.textContent || "?"}".`; $("#task-name").value = ""; await loadLibrary(); } catch (error) { $("#task-result").textContent = error.message; } });
+$("#task-form").addEventListener("submit", async (event) => { event.preventDefault(); const kingdomId = Number($("#source-kid").value); const automatic = $("#use-main-castle").checked; const fortress = $("#target-kind").value === "fortress"; const destination = fortress ? { kind: "fortress", kingdom_id: kingdomId } : ($("#target-kind").value === "berimond" ? { kind: "berimond_camp", kingdom_id: kingdomId } : { kind: $("#target-kind").value === "storm" ? "storm_level_range" : "rbc_level_range", kingdom_id: kingdomId, minimum: Number($("#target-level-min").value), maximum: Number($("#target-level-max").value) }); const draft = { name: $("#task-name").value.trim(), attack_profile_id: $("#task-attack").value, source: { kingdom_id: kingdomId, x: Number($("#source-x").value), y: Number($("#source-y").value) }, source_kind: automatic ? "main_castle" : "coordinate", destination, algorithm: $("#target-algorithm").value, travel: $("#travel").value, priority, commander_count: 1 }; try { await api("/plans/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(draft) }); $("#task-result").textContent = `Dynamic farming task saved with attack "${$("#task-attack").selectedOptions[0]?.textContent || "?"}".`; $("#task-name").value = ""; await loadLibrary(); } catch (error) { $("#task-result").textContent = error.message; } });
 
 $("#mode-form").addEventListener("submit", async (event) => { event.preventDefault(); const problem = modeBuilder.problem(); if (problem) { $("#mode-result").textContent = problem; return; } try { await api("/plans/modes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: $("#mode-name").value.trim(), allocations: modeBuilder.allocations(), support_bot_id: modeBuilder.supportId() }) }); $("#mode-result").textContent = "Attack bot saved."; modeBuilder.clear(); $("#mode-name").value = ""; await loadLibrary(); await refreshAccounts(); } catch (error) { $("#mode-result").textContent = error.message; } });
 $("#copy-mode").addEventListener("click", () => copyJson(bundleForMode($("#mode-name").value.trim(), modeBuilder.entries()), $("#mode-result")));

@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 29;
+pub const SCHEMA_VERSION: i64 = 30;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -922,13 +922,32 @@ pub const V29: Migration = &[
     )",
 ];
 
+/// Storm Islands forts (`store/storm.rs`, `docs/architecture/storm-islands.md`): one row per fort position
+/// per account, replaced by every scan of its window; `attacked_at_ms` is this account's cooldown on it.
+/// Rows not seen for four hours are deleted on the next record, so the table stays a few hundred rows.
+pub const V30: Migration = &[
+    "CREATE TABLE IF NOT EXISTS storm_target (
+        account_id TEXT NOT NULL,
+        x INTEGER NOT NULL,
+        y INTEGER NOT NULL,
+        level INTEGER,
+        free INTEGER NOT NULL DEFAULT 0,
+        first_seen_ms INTEGER NOT NULL,
+        last_seen_ms INTEGER NOT NULL,
+        reserved_until_ms INTEGER NOT NULL DEFAULT 0,
+        attacked_at_ms INTEGER,
+        PRIMARY KEY (account_id, x, y)
+    )",
+];
+
 pub const MIGRATIONS: &[Migration] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30,
 ];
 
 /// Every table that holds user data, for the storage report and full wipe.
 /// Order matters for deletion: children before parents.
 pub const DATA_TABLES: &[&str] = &[
+    "storm_target",
     "refinery_state",
     "account_resource_bot",
     "resource_bot",

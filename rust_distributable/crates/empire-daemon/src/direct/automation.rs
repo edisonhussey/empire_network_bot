@@ -48,10 +48,18 @@ pub(super) enum AutomationPhase {
         lord_id: i64,
         deadline_ms: i64,
     },
+    /// Storm Islands: one map window read because a storm task had no fresh fort (`storm.rs`).
+    AwaitStormScan {
+        window: (i64, i64, i64, i64),
+        deadline_ms: i64,
+    },
 }
 
 pub(super) struct Automation {
     pub(super) phase: AutomationPhase,
+    /// Storm Islands scanning: the windows of the current pass around the storm castle, where the pass
+    /// is, and when the next window may be read. Scans happen only when a storm task needs a fort.
+    pub(super) storm_scan: StormScan,
     pub(super) cursor: usize,
     pub(super) last_cra_ms: Option<i64>,
     pub(super) last_heartbeat_ms: i64,
@@ -111,6 +119,29 @@ pub(super) struct Focus {
     pub(super) castle: (i64, i64),
 }
 
+#[derive(Debug, Default)]
+pub(super) struct StormScan {
+    pub(super) source: Option<(i64, i64)>,
+    pub(super) windows: Vec<(i64, i64)>,
+    pub(super) cursor: usize,
+    pub(super) due_ms: i64,
+}
+
+impl StormScan {
+    /// The next window to read around `source`, starting a new pass when one is done or the castle changed.
+    pub(super) fn next_window(&mut self, source: (i64, i64), rng: &mut Rng) -> (i64, i64, i64, i64) {
+        if self.source != Some(source) || self.cursor >= self.windows.len() {
+            self.source = Some(source);
+            self.windows = empire_core::storm::scan_windows(source, rng);
+            self.cursor = 0;
+        }
+        let (x, y) = self.windows[self.cursor];
+        self.cursor += 1;
+        let size = empire_core::storm::WINDOW - 1;
+        (x, y, x + size, y + size)
+    }
+}
+
 pub(super) fn attack_info_kind(task: &ActiveModeTask) -> hunt::AttackInfoKind {
     if task.target_kind == "fortress" {
         hunt::AttackInfoKind::Fortress
@@ -162,6 +193,8 @@ async fn release_unattacked(
 ) {
     let _ = if task.target_kind == "fortress" {
         store.release_fortress_target(account_id, target).await
+    } else if task.target_kind == "storm" {
+        store.release_storm_target(account_id, target).await
     } else {
         store.release_rbc_target(account_id, target).await
     };
@@ -218,6 +251,8 @@ const PENDING_COMMANDER_HOLD_MS: i64 = 5 * 60 * 1_000;
 /// other status (101 and 313 mean the army was not there) stops the mode: the
 /// server locked this account for 24 h after three of them in 40 s.
 const BENIGN_CRA_STATUSES: [&str; 3] = ["95", "93", "256"];
+/// Refusals that mean the castle could not supply the army; never tolerated, storm or not.
+const STORM_ARMY_STATUSES: [&str; 2] = ["101", "313"];
 
 /// The server talks every few seconds on a live session. Past this much quiet a
 /// timed-out request is blamed on the link, not on the tower it was about.
@@ -247,6 +282,7 @@ impl Automation {
             health: ResponseHealth::new(DEFAULT_TOLERANCE),
             last_verdict: None,
             selectors: HashMap::new(),
+            storm_scan: StormScan::default(),
             pending_pick: None,
             last_scan: None,
             focus: None,
@@ -302,7 +338,7 @@ impl Automation {
         let mut soonest: Option<i64> = None;
         for task in tasks
             .iter()
-            .filter(|task| task.kingdom_id == kingdom && task.target_kind != "fortress")
+            .filter(|task| task.kingdom_id == kingdom && !matches!(task.target_kind.as_str(), "fortress" | "storm"))
             .filter(|task| !self.castle_held(task))
         {
             let Some(target_ready) = store
@@ -385,6 +421,7 @@ impl Automation {
             AutomationPhase::AwaitAdi { .. } => "inspecting_target",
             AutomationPhase::ReadyCra { .. } => "pacing_attack",
             AutomationPhase::AwaitCra { .. } => "awaiting_attack_ack",
+            AutomationPhase::AwaitStormScan { .. } => "scanning_storm_islands",
         };
         let detail = match &self.stock_note {
             Some(note) => format!("{} | {note}", self.detail),
@@ -418,7 +455,7 @@ impl Automation {
             AutomationPhase::RefreshRbc { target, .. } | AutomationPhase::AwaitRbcRefresh { target, .. } => {
                 let _ = store.release_rbc_target(account_id, &target).await;
             }
-            AutomationPhase::AwaitCra { .. } | AutomationPhase::Idle { .. } => {}
+            AutomationPhase::AwaitCra { .. } | AutomationPhase::AwaitStormScan { .. } | AutomationPhase::Idle { .. } => {}
         }
         self.scheduler.clear_next();
         count_event(store, account_id, "sequence_interrupted", reason).await;
@@ -490,6 +527,13 @@ impl Automation {
         }
 
         match std::mem::replace(&mut self.phase, AutomationPhase::Idle { due_ms: now }) {
+            AutomationPhase::AwaitStormScan { deadline_ms, .. } if now >= deadline_ms => {
+                // A storm window that never answered says nothing about any fort: move on to the next one.
+                count_event(store, account_id, "storm_scan_timeout", "storm map window never answered").await;
+                self.storm_scan.due_ms = now + empire_core::storm::scan_wait_ms(&mut self.rng);
+                self.phase = AutomationPhase::Idle { due_ms: now + 1_000 };
+                return Ok(None);
+            }
             AutomationPhase::AwaitMap { deadline_ms, .. } if now >= deadline_ms => {
                 self.note_incident(store, account_id, Outcome::Timeout, "map window never answered", now).await;
                 self.record_operational_error(store, account_id, now, "a game request timed out").await;
@@ -517,6 +561,13 @@ impl Automation {
                 self.phase = AutomationPhase::Idle { due_ms: now + 2_000 };
                 return Ok(None);
             }
+            AutomationPhase::AwaitAdi { task, target, deadline_ms, .. } if now >= deadline_ms && task.target_kind == "storm" => {
+                // A storm fort that vanished can leave the inspection unanswered: not an error.
+                let _ = store.forget_storm_target(account_id, &target).await;
+                count_event(store, account_id, "storm_adi_timeout", "storm fort inspection never answered").await;
+                self.phase = AutomationPhase::Idle { due_ms: now + 5_000 };
+                return Ok(None);
+            }
             AutomationPhase::AwaitAdi { task, target, deadline_ms, .. } if now >= deadline_ms => {
                 count_event(store, account_id, "timeout_adi", "attack details never answered").await;
                 self.note_incident(store, account_id, Outcome::Timeout, "attack details never answered", now).await;
@@ -533,6 +584,13 @@ impl Automation {
                 self.phase = AutomationPhase::Idle {
                     due_ms: self.safety_pause_until_ms.max(now + 10_000),
                 };
+                return Ok(None);
+            }
+            AutomationPhase::AwaitCra { task, target, deadline_ms, .. } if now >= deadline_ms && task.target_kind == "storm" => {
+                // The attack may have left; this account will not pick the fort again either way.
+                let _ = store.mark_storm_attacked(account_id, &target, now).await;
+                count_event(store, account_id, "storm_cra_timeout", "storm attack never acknowledged").await;
+                self.phase = AutomationPhase::Idle { due_ms: now + 10_000 };
                 return Ok(None);
             }
             AutomationPhase::AwaitCra { task, target, deadline_ms, .. } if now >= deadline_ms => {
@@ -876,6 +934,79 @@ impl Automation {
             }
         }
 
+        // Storm Islands (`empire_core::storm`, `store/storm.rs`): forts come and go, so a task takes only a
+        // fort seen in the last two minutes, and reads one more map window around its castle only when it has
+        // none. Picks follow the grouping order like everything else. A scan waits its random 5.5-12.5 s, and
+        // while the client is in another kingdom it waits until no task there has a free commander, so storm
+        // work is batched rather than pulling the view back and forth.
+        let mut storm_scan_task: Option<usize> = None;
+        for index in order.iter().copied().filter(|index| tasks[*index].target_kind == "storm") {
+            let task = &tasks[index];
+            if free_commanders(&task.commander_lids, &states, now).is_empty() || self.castle_held(task) {
+                continue;
+            }
+            if let Some(target) = store
+                .reserve_storm_target(
+                    account_id,
+                    task.level_min,
+                    task.level_max,
+                    (task.source_x, task.source_y),
+                    now,
+                    now + TARGET_LEASE_MS,
+                )
+                .await?
+            {
+                self.cursor = (index + 1) % tasks.len();
+                let task = task.clone();
+                let navigation = store.navigation(account_id).await?;
+                if navigation.as_ref().is_some_and(|state| {
+                    state.map_mode && state.current_kingdom_id == Some(task.kingdom_id)
+                }) {
+                    self.phase = AutomationPhase::ReadyAdi { task, target, due_ms: now };
+                    return Ok(None);
+                }
+                let packet = tile_gaa_packet(server_header, task.kingdom_id, task.source_x, task.source_y)?;
+                self.detail = format!(
+                    "Opening the Storm Islands map before inspecting fort {}:{} (level {})",
+                    target.x,
+                    target.y,
+                    target.level.unwrap_or(0)
+                );
+                self.phase = AutomationPhase::AwaitMap { task, target, deadline_ms: now + REQUEST_TIMEOUT_MS };
+                return Ok(Some(packet));
+            }
+            storm_scan_task.get_or_insert(index);
+        }
+        let other_kingdom_busy = current_kingdom != Some(empire_core::storm::STORM_KINGDOM)
+            && tasks.iter().any(|task| {
+                task.target_kind != "storm"
+                    && Some(task.kingdom_id) == current_kingdom
+                    && !free_commanders(&task.commander_lids, &states, now).is_empty()
+            });
+        if let Some(index) = storm_scan_task
+            && now >= self.storm_scan.due_ms
+            && !other_kingdom_busy
+        {
+            let task = &tasks[index];
+            let (ax1, ay1, ax2, ay2) = self.storm_scan.next_window((task.source_x, task.source_y), &mut self.rng);
+            let packet = encode_client_xt(
+                server_header,
+                "gaa",
+                "1",
+                &json!({"KID": task.kingdom_id, "AX1": ax1, "AY1": ay1, "AX2": ax2, "AY2": ay2}),
+            )?;
+            self.detail = format!(
+                "Storm Islands: no fresh fort in levels {}-{}; reading map {ax1}:{ay1}",
+                task.level_min.unwrap_or(0),
+                task.level_max.unwrap_or(0)
+            );
+            self.phase = AutomationPhase::AwaitStormScan {
+                window: (ax1, ay1, ax2, ay2),
+                deadline_ms: now + REQUEST_TIMEOUT_MS,
+            };
+            return Ok(Some(packet));
+        }
+
         // Ordinary targets run only after every currently actionable fortress
         // and due fortress maintenance request has been considered.
         //
@@ -888,7 +1019,7 @@ impl Automation {
         for index in order
             .iter()
             .copied()
-            .filter(|index| tasks[*index].target_kind != "fortress")
+            .filter(|index| !matches!(tasks[*index].target_kind.as_str(), "fortress" | "storm"))
         {
             let task = &tasks[index];
             // About to try another kingdom: first see whether the current one is worth a
@@ -981,9 +1112,14 @@ impl Automation {
         if let Some(kingdom) = hold {
             notes.push(format!("staying in kingdom {kingdom} rather than switching"));
         }
+        if let Some(index) = storm_scan_task {
+            let due = self.storm_scan.due_ms.max(now);
+            wake = Some(wake.map_or(due, |earliest| earliest.min(due)));
+            notes.push(format!("{}: no fresh storm fort, next map read in {}", tasks[index].name, format_wait(due - now)));
+        }
         for task in tasks
             .iter()
-            .filter(|task| task.target_kind != "fortress")
+            .filter(|task| !matches!(task.target_kind.as_str(), "fortress" | "storm"))
             .filter(|task| hold.is_none_or(|kingdom| task.kingdom_id == kingdom))
         {
             let free = free_commanders(&task.commander_lids, &states, now).len();
@@ -1044,11 +1180,17 @@ impl Automation {
             if !expected_rejection {
                 return;
             }
+            let storm = matches!(&self.phase,
+                AutomationPhase::AwaitAdi { task, .. } | AutomationPhase::AwaitCra { task, .. } if task.target_kind == "storm");
             let (rejected_fortress, rejected_rbc) = match &self.phase {
                 AutomationPhase::AwaitAdi { task, target, .. }
                 | AutomationPhase::AwaitCra { task, target, .. } => {
                     if task.target_kind == "fortress" {
                         (Some(target.clone()), None)
+                    } else if task.target_kind == "storm" {
+                        // A storm fort that refuses was taken or vanished meanwhile: forget it, no error.
+                        let _ = store.forget_storm_target(account_id, target).await;
+                        (None, None)
                     } else {
                         (None, Some(target.clone()))
                     }
@@ -1093,7 +1235,10 @@ impl Automation {
                 };
                 let _ = store.set_commander_state(&state, now).await;
             }
-            if rejected_cra && !BENIGN_CRA_STATUSES.contains(&status) {
+            // Storm forts vanish all the time, so a refused storm attack is routine unless it is about the
+            // army itself (the castle could not supply it), which must still stop the bot.
+            let benign = BENIGN_CRA_STATUSES.contains(&status) || (storm && !STORM_ARMY_STATUSES.contains(&status));
+            if rejected_cra && !benign {
                 if let AutomationPhase::AwaitCra { task, target, .. } = &self.phase {
                     release_unattacked(store, account_id, task, target).await;
                 }
@@ -1148,6 +1293,22 @@ impl Automation {
 
         match packet.command.as_str() {
             "gaa" => {
+                // Storm Islands: every storm window updates what is known; the bot's own scan window also
+                // drops forts that are no longer in it.
+                if let Some(forts) = empire_core::storm::forts_in_gaa(&packet.payload) {
+                    let window = match &self.phase {
+                        AutomationPhase::AwaitStormScan { window, .. } => Some(*window),
+                        _ => None,
+                    };
+                    let vanished = store.record_storm_forts(account_id, window, &forts, now).await.unwrap_or(0);
+                    if window.is_some() {
+                        let free = forts.iter().filter(|fort| fort.free && fort.level.is_some()).count();
+                        self.detail = format!("Storm map read: {} forts, {free} free, {vanished} gone since last look", forts.len());
+                        self.storm_scan.due_ms = now + empire_core::storm::scan_wait_ms(&mut self.rng);
+                        self.phase = AutomationPhase::Idle { due_ms: now + 250 };
+                        return;
+                    }
+                }
                 if let AutomationPhase::AwaitFortressRefresh { target, .. } = &self.phase {
                     if packet.payload.get("KID").and_then(Value::as_i64) == Some(target.kingdom_id)
                     {
@@ -1258,6 +1419,22 @@ impl Automation {
                 ) else {
                     return;
                 };
+                // Storm: the reply carries the fort's current map entry. Taken or gone since the scan is
+                // routine: forget it and pick another, no incident.
+                if task.target_kind == "storm" {
+                    let still_free = packet
+                        .payload
+                        .pointer("/gaa/AI")
+                        .and_then(empire_core::storm::fort_from_entry)
+                        .is_some_and(|fort| fort.free && fort.x == target.x && fort.y == target.y);
+                    if !still_free {
+                        let _ = store.forget_storm_target(account_id, &target).await;
+                        count_event(store, account_id, "storm_fort_gone", "fort taken or gone before the attack").await;
+                        self.detail = format!("Storm fort {}:{} was taken or gone; picking another", target.x, target.y);
+                        self.phase = AutomationPhase::Idle { due_ms: now + 1_000 };
+                        return;
+                    }
+                }
                 if packet.payload.is_null() {
                     // Status 0 yet no payload: an answer that should have had
                     // content did not. (A refusal carries a status and is handled
@@ -1438,6 +1615,10 @@ impl Automation {
                             refresh_delay_ms,
                         )
                         .await;
+                } else if task.target_kind == "storm" {
+                    // This account's cooldown on the fort: it is never picked again.
+                    let _ = store.mark_storm_attacked(account_id, &target, now).await;
+                    log_event(store, account_id, "storm.attack", &format!("level {} fort {}:{} attacked (march {march_id})", target.level.unwrap_or(0), target.x, target.y)).await;
                 } else {
                     let _ = store.mark_target_attacked(account_id, &target, now).await;
                     if target.kingdom_id != 10 {

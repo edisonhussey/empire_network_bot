@@ -117,6 +117,12 @@ pub enum Destination {
     BerimondCamp {
         kingdom_id: i64,
     },
+    /// Storm Islands forts in a level range (`crate::storm`): found by scanning on demand.
+    StormLevelRange {
+        kingdom_id: i64,
+        minimum: i64,
+        maximum: i64,
+    },
 }
 
 impl Destination {
@@ -313,6 +319,8 @@ pub enum PlanError {
     LevelRange,
     #[error("source and target must be in the same kingdom")]
     CrossKingdom,
+    #[error("Storm Islands targets exist only in the Storm Islands kingdom")]
+    StormKingdom,
     #[error("fortress targets are currently available only in Sands, Ice and Fire")]
     FortressKingdom,
     #[error("a mode needs at least one task")]
@@ -357,6 +365,11 @@ impl TaskDraft {
             } => (kingdom_id, Some(minimum), Some(maximum), true),
             Destination::Fortress { kingdom_id } => (kingdom_id, None, None, true),
             Destination::BerimondCamp { kingdom_id } => (kingdom_id, None, None, false),
+            Destination::StormLevelRange {
+                kingdom_id,
+                minimum,
+                maximum,
+            } => (kingdom_id, Some(minimum), Some(maximum), false),
         };
         if kingdom_id != self.source.kingdom_id {
             return Err(PlanError::CrossKingdom);
@@ -369,6 +382,9 @@ impl TaskDraft {
         }
         if fortress && !matches!(kingdom_id, 1..=3) {
             return Err(PlanError::FortressKingdom);
+        }
+        if matches!(self.destination, Destination::StormLevelRange { .. }) && kingdom_id != crate::storm::STORM_KINGDOM {
+            return Err(PlanError::StormKingdom);
         }
         Ok(())
     }
