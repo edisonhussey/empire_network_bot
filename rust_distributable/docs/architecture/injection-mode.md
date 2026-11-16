@@ -1,4 +1,4 @@
-# Injection mode (design, not built yet)
+# Injection mode: the bot over the browser's socket
 
 Goal: **Start injection bot** runs the same engine as **Start bot**, but over the game socket of a browser that is already
 playing through proxy_packet_monitor, instead of a socket the daemon opens and logs into itself. One code base: every
@@ -42,11 +42,34 @@ browser ⇄ mitmproxy (proxy_packet_monitor addon) ⇄ game server
 * The daemon's sink writes `{"inject":…}` back; the addon sends it with `inject.websocket` (what the Inject box and
   **Test refine** already do).
 
-## Decisions to confirm
+## Decided (2026-11-16) and built
 
-1. **Account state at attach:** use what the daemon already stored for that account (it must have been initialized once in
-   direct mode), or require **Start injection bot** before logging in the browser so the engine sees the login itself.
-   Recommended: stored state, refreshed by watching the browser's own `gbd`/`dcl` when they pass.
-2. **Human and bot on one socket:** while the bot holds the connection (a recruit or refinery visit, an attack sequence),
-   the human's clicks can change the view under it. Recommended: the engine's existing context checks (castle/kingdom before
-   `bup`/`crst`) refuse and retry, and the UI says "bot is using the view" while it holds it.
+1. **Account state comes from the database.** The account must have logged in once with **Start bot**: that login stores its
+   identity (`app_state` `session.identity.<account>`), castles and commanders. Attaching reads them, binds the licence and
+   starts at `SandsReady`. Everything the browser's traffic carries (navigation, stock, commanders, marches) keeps updating
+   the same tables as in direct mode.
+2. **The person and the bot share the socket.** A view command the person sends (`jca`, `gaa`, `cra`, `adi`, `bup`, `crst`,
+   `kut`; `direct/pause.rs`) makes every bot step aside for **one minute**: a step in flight is abandoned as a failure (an
+   attack target not yet attacked goes back to the pool, an attack already sent keeps its lease), the session keeps
+   listening, and the bots resume from the live state when the minute is up.
+3. **Pause button** (both modes, Control Panel): the same, without the minute: bots stop sending until **Resume**, the socket
+   stays and every frame is still read. Nothing is cleared or rewritten.
+
+## How to run it
+
+1. Start the proxy in proxy_packet_monitor and play in the browser through it.
+2. Type the OpenAuto account name next to **Start injection bot** and press it (the account must exist in OpenAuto).
+3. In OpenAuto, the account shows "via proxy (injection bot)". Choose and start the bots in the Control Panel as usual.
+4. **Stop injection bot**, closing the game tab or stopping the proxy ends the session; the game is not touched.
+
+## Where the code is
+
+| Concern | File |
+| --- | --- |
+| The two transports behind one sink/stream | `crates/empire-daemon/src/direct/link.rs` |
+| Pause and the one-minute human hold | `crates/empire-daemon/src/direct/pause.rs`; `interrupt` on `Automation`, `RecruitmentAutomation`, `RefineryAutomation` |
+| The `/v1/attach` link and `POST /v1/direct/pause` | `crates/empire-daemon/src/attach.rs` |
+| Login skipped, heartbeat skipped, no reconnect, identity read | `crates/empire-daemon/src/direct/mod.rs` (`is_attached`) and `run` |
+| The proxy side (wsproto client, forward, inject) | `proxy_packet_monitor/backend/openauto_link.py`, `incoming_addon.py` |
+
+The direct path is unchanged apart from going through `link::direct` (the same socket, boxed).

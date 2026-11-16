@@ -55,6 +55,18 @@ impl RefineryAutomation {
         !matches!(self.phase, RefinePhase::Idle { .. })
     }
 
+    /// Abandon a visit in flight (pause, or the human changed the view). Crafts already acknowledged stay
+    /// started; the stored schedule is not moved, so the next pass re-reads the refinery and only fills
+    /// what is still free.
+    pub(super) fn interrupt(&mut self, now: i64, reason: &str) -> bool {
+        if !self.holds_transport() {
+            return false;
+        }
+        self.detail = format!("Refinery visit interrupted: {reason}");
+        self.phase = RefinePhase::Idle { due_ms: now + 2_000 };
+        true
+    }
+
     pub(super) async fn next_packet(&mut self, store: &Store, account_id: &str, server_header: &str) -> anyhow::Result<Option<String>> {
         let now = now_ms();
         if let Some(deadline) = self.deadline()

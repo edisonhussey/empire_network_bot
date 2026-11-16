@@ -397,6 +397,35 @@ impl Automation {
         !matches!(self.phase, AutomationPhase::Idle { .. })
     }
 
+    /// Abandon the sequence in flight as a failure (pause, or the human changed the view). Targets leased
+    /// for a sequence that never sent its attack go back to the pool. An attack already sent (`AwaitCra`)
+    /// keeps its lease and commander, as on a dropped link: it may have left. Not an operational error, so
+    /// it never trips the safety pause.
+    pub(super) async fn interrupt(&mut self, store: &Store, account_id: &str, now: i64, reason: &str) -> bool {
+        if !self.holds_transport() {
+            return false;
+        }
+        match std::mem::replace(&mut self.phase, AutomationPhase::Idle { due_ms: now + 2_000 }) {
+            AutomationPhase::AwaitMap { task, target, .. }
+            | AutomationPhase::ReadyAdi { task, target, .. }
+            | AutomationPhase::AwaitAdi { task, target, .. }
+            | AutomationPhase::ReadyCra { task, target, .. } => {
+                release_unattacked(store, account_id, &task, &target).await;
+            }
+            AutomationPhase::AwaitFortressRefresh { target, .. } => {
+                let _ = store.release_fortress_target(account_id, &target).await;
+            }
+            AutomationPhase::RefreshRbc { target, .. } | AutomationPhase::AwaitRbcRefresh { target, .. } => {
+                let _ = store.release_rbc_target(account_id, &target).await;
+            }
+            AutomationPhase::AwaitCra { .. } | AutomationPhase::Idle { .. } => {}
+        }
+        self.scheduler.clear_next();
+        count_event(store, account_id, "sequence_interrupted", reason).await;
+        self.detail = format!("Attack sequence abandoned: {reason}");
+        true
+    }
+
     pub(super) async fn next_packet(
         &mut self,
         store: &Store,

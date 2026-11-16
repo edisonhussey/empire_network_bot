@@ -931,7 +931,7 @@ if (!connectedAccounts.length) { emptyAccounts(); renderModes(); return; }
     const isReady = isConnected && direct.phase === "sands_ready";
     // Only the name, so a card is identifiable without repeating the profile
     // block that now lives in Initialize.
-    card.append(element("p", "account-caption", account.player_name));
+    card.append(element("p", "account-caption", `${account.player_name}${isConnected && direct.attached ? " · via proxy (injection bot)" : ""}`));
     // Step 1 — the socket. Kept separate from automation so it is obvious that
     // signing in and starting a bot are two different decisions.
     const connection = element("div", "account-connection-control");
@@ -1074,14 +1074,24 @@ if (!connectedAccounts.length) { emptyAccounts(); renderModes(); return; }
     }, true);
     stop.disabled = !running;
     attackSelect.disabled = running; recruitSelect.disabled = running; stationSelect.disabled = running; resourceSelect.disabled = running;
-    controls.append(start, stop, summary);
+    // Pause keeps the socket and keeps listening; Resume continues from the live state (direct/pause.rs).
+    const paused = isConnected && direct.bot_state === "paused";
+    const pauseButton = actionButton(paused ? "Resume" : "Pause", async () => {
+      try {
+        await api("/direct/pause", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: account.account_id, paused: !paused }) });
+        await refreshAccounts(); await refreshDashboard();
+      } catch (error) { connectionResult.textContent = error.message; }
+    }, !paused);
+    pauseButton.disabled = !isConnected;
+    pauseButton.title = "Pause: bots stop sending, the connection stays and keeps updating. A step in progress is dropped as failed.";
+    controls.append(start, stop, pauseButton, summary);
     assignment.append(attackLabel, attackSelect, recruitLabel, recruitSelect, recruitEstimate, stationLabel, stationSelect, stationNote, resourceLabel, resourceSelect, controls);
     if (!isReady && !running) assignment.append(element("p", "empty-copy", "Start the connection in step 1 to run automation."));
     if (!library.modes.length && !library.recruit_bots.length && !library.station_bots.length) assignment.append(element("p", "empty-copy", "Create an attack, recruit or support bot before starting automation."));
     if (!canAutomate) assignment.append(element("p", "empty-copy", `This account's licence (${direct.tier || "free"} tier) does not include automation.`));
     card.append(connection, assignment); return card;
   }));
-  renderedConnectionKey = `${direct.connected}:${direct.account_id || ""}:${direct.phase === "sands_ready"}:${allDirect.map((status) => `${status.account_id}=${status.connected}${status.phase === "sands_ready"}`).join(",")}`;
+  renderedConnectionKey = `${direct.connected}:${direct.account_id || ""}:${direct.phase === "sands_ready"}:${direct.bot_state === "paused"}:${direct.attached}:${allDirect.map((status) => `${status.account_id}=${status.connected}${status.phase === "sands_ready"}`).join(",")}`;
   updateControlScanIndicators(direct);
   updateSourceCoordinates();
   renderModes();
@@ -1540,7 +1550,7 @@ async function refresh() {
       if (licence.stage === "unactivated") return;
       showApplication(licence);
     }
-    const connectionKey = `${direct.connected}:${direct.account_id || ""}:${ready}:${allDirect.map((status) => `${status.account_id}=${status.connected}${status.phase === "sands_ready"}`).join(",")}`;
+    const connectionKey = `${direct.connected}:${direct.account_id || ""}:${ready}:${direct.bot_state === "paused"}:${direct.attached}:${allDirect.map((status) => `${status.account_id}=${status.connected}${status.phase === "sands_ready"}`).join(",")}`;
     if (connectionKey !== renderedConnectionKey) {
       // Connect and disconnect both rewrite the running flags, so the plan view
       // is reloaded before anything reads them.

@@ -111,9 +111,30 @@ function settingsDialog() {
   if (!c) return '';
   return `<div class="modal-backdrop"><form id="settings-form" class="modal"><div class="modal-heading"><span class="eyebrow">CONFIGURATION</span><h2>Monitor settings</h2><p>Changes apply after restarting the monitor.</p></div><label>Recording folder<input name="data_dir" value="${esc(c.data_dir)}"></label><div class="modal-grid"><label>Proxy host<input name="proxy_host" value="${esc(c.proxy_host)}"></label><label>Proxy port<input name="proxy_port" type="number" min="1" max="65535" value="${esc(c.proxy_port)}"></label></div><label>Global shortcut<input name="shortcut" value="${esc(c.shortcut)}"></label><label>mitmdump executable<input name="mitmdump" value="${esc(c.mitmdump)}"></label><div class="modal-actions"><button type="button" id="settings-cancel">Cancel</button><button type="submit" class="primary">Save settings</button></div></form></div>`;
 }
+// ---- Start injection bot: the OpenAuto daemon runs its bot over this proxy's game socket (backend/openauto_link.py) ----
+function storedAccount() { try { return localStorage.getItem('openauto-account') || ''; } catch { return ''; } }
+function injectionControls() {
+  const link = state.status?.openauto || { state: 'off' };
+  const on = link.state === 'linked' || link.state === 'connecting';
+  const label = on ? '■ Stop injection bot' : '▶ Start injection bot';
+  const note = link.state === 'linked' ? `linked as ${esc(link.account)} · ${link.injected} sent` : link.state === 'connecting' ? 'linking…' : link.state === 'failed' ? `failed: ${esc(link.error || '')}` : 'bot not linked';
+  return `<input id="openauto-account" class="openauto-account" placeholder="OpenAuto account" value="${esc(state.openautoAccount ?? storedAccount())}" ${on?'disabled':''} title="The account name as OpenAuto knows it (logged in once with Start bot)"><button type="button" id="injection-bot" class="${on?'recording':''}" title="Runs the OpenAuto bots over this browser's game socket. Choose and start them in OpenAuto's Control Panel as usual. Your own clicks in the game make the bots wait a minute.">${label}</button><small class="openauto-state">${note}</small>`;
+}
+async function toggleInjectionBot() {
+  const link = state.status?.openauto || { state: 'off' };
+  try {
+    if (link.state === 'linked' || link.state === 'connecting') { await api('/api/openauto/detach', 'POST', {}); notice('Injection bot stopped. The game keeps running.'); return; }
+    const account = (document.querySelector('#openauto-account')?.value || '').trim();
+    try { localStorage.setItem('openauto-account', account); } catch {}
+    state.openautoAccount = account;
+    await api('/api/openauto/attach', 'POST', { account });
+    notice(`Linking ${account} to OpenAuto. Then start the bots in OpenAuto's Control Panel.`);
+  } catch (e) { notice(e.message); }
+}
+
 function injectBar() {
   const live = !!state.status?.connected;
-  return `<form id="inject-form" class="inject-bar" ${state.tab==='sessions'?'':'hidden'}><label for="inject-text">Inject</label><textarea id="inject-text" rows="2" spellcheck="false" placeholder="%xt%EmpireEx_19%nch%1%  (one frame per line; Ctrl/Cmd+Enter sends)">${esc(state.injectText)}</textarea><select id="inject-direction" title="Direction"><option value="server" ${state.injectToClient?'':'selected'}>To server</option><option value="client" ${state.injectToClient?'selected':''}>To client</option></select><button class="primary" type="submit">Send</button><button type="button" id="refine-test" title="Sends crst twice through the live socket: 100 refined wood (CRID 1), then 100 refined stone (CRID 34). Castle view, 2 free queue places and 54,400 wood + 54,400 stone assumed.">Test refine</button><small class="${live?'ok':''}">${live?'Game WebSocket connected':'No game WebSocket'}</small></form>`;
+  return `<form id="inject-form" class="inject-bar" ${state.tab==='sessions'?'':'hidden'}><label for="inject-text">Inject</label><textarea id="inject-text" rows="2" spellcheck="false" placeholder="%xt%EmpireEx_19%nch%1%  (one frame per line; Ctrl/Cmd+Enter sends)">${esc(state.injectText)}</textarea><select id="inject-direction" title="Direction"><option value="server" ${state.injectToClient?'':'selected'}>To server</option><option value="client" ${state.injectToClient?'selected':''}>To client</option></select><button class="primary" type="submit">Send</button>${injectionControls()}<button type="button" id="refine-test" title="Sends crst twice through the live socket: 100 refined wood (CRID 1), then 100 refined stone (CRID 34). Castle view, 2 free queue places and 54,400 wood + 54,400 stone assumed.">Test refine</button><small class="${live?'ok':''}">${live?'Game WebSocket connected':'No game WebSocket'}</small></form>`;
 }
 function connectionHint(status) {
   if (!status?.proxy_running) return 'Start the proxy to listen for game traffic.';
@@ -169,7 +190,7 @@ async function refreshIncoming() {
 }
 function render() {
   const focused = document.activeElement?.id;
-  const selection = focused === 'search' || focused === 'inject-text' ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
+  const selection = focused === 'search' || focused === 'inject-text' || focused === 'openauto-account' ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
   app.innerHTML = `${header()}<nav class="tabs"><button data-tab="sessions" class="${state.tab==='sessions'?'active':''}">Recorded sessions</button><button data-tab="incoming" class="${state.tab==='incoming'?'active':''}">Incoming <span>${state.incoming?.active_count ?? 0}</span></button><button data-tab="support" class="${state.tab==='support'?'active':''}">Auto Support</button></nav>${injectBar()}<main ${state.tab==='sessions'?'':'hidden'}>${sessionPanel()}${eventsPanel()}${detailPanel()}</main>${incomingPanel()}${supportPanel()}${settingsDialog()}<div id="notice" hidden></div>`;
   bind();
   updateCountdowns();
@@ -264,6 +285,9 @@ function bind() {
     catch(e) { notice(e.message); }
   };
   document.querySelector('#refine-test').onclick=runRefineTest;
+  document.querySelector('#injection-bot').onclick=toggleInjectionBot;
+  const accountInput=document.querySelector('#openauto-account');
+  accountInput.oninput=() => { state.openautoAccount=accountInput.value; };
   const locationForm=document.querySelector('#location-form');
   locationForm.onsubmit=async event => { event.preventDefault(); const value=Object.fromEntries(new FormData(locationForm)); try { await api('/api/incoming/config','POST',value); await refreshIncoming(); notice('Incoming location updated. Previous location ledger cleared.'); } catch(e) { notice(e.message); } };
   const supportConfig = () => JSON.parse(JSON.stringify(state.autoSupport?.config || {enabled:false,castles:[],destinations:{},lid:0}));

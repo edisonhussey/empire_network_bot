@@ -21,6 +21,7 @@ from backend.login_capture import DEFAULT_HOSTS, LoginCapture
 from backend.handshake_capture import HandshakeCapture
 from backend.auto_support import AutoSupport, SupportNotSent, packet as support_packet
 from backend.injector import InjectChannel
+from backend.openauto_link import OpenAutoLink
 from mitmproxy import ctx
 
 DATA = Path(os.environ.get("PACKET_MONITOR_DATA", BASE / "data")).expanduser().resolve()
@@ -54,6 +55,9 @@ class PacketMonitor:
         self.pending_handshake = None      # the current game socket's record, for a recording started after it opened
         self.attached_handshakes = set()   # (session id, captured_at) already stored, so one is never stored twice
         self.injector = InjectChannel(DATA)
+        # Start injection bot: the OpenAuto daemon runs its bot over this socket (openauto_link.py).
+        self.link = OpenAutoLink(self._inject_to_server)
+        self.link_reported = None
         self.incoming_queue = SimpleQueue()
         self.incoming_worker = Thread(target=self._send_incoming, daemon=True)
         self.incoming_worker.start()
@@ -79,7 +83,8 @@ class PacketMonitor:
         body = {"recording": self.recorder.active, "session_id": self.recorder.session_id if self.recorder.active else None,
                 "connected": self.connected, "endpoint": self.endpoint,
                 "last_websocket_url": self.last_websocket_url, "capture": self.capture.stats(),
-                "handshake": self.handshake.stats(), "updated_at": time.time()}
+                "handshake": self.handshake.stats(), "openauto": self.link.status(), "updated_at": time.time()}
+        self.link_reported = json.dumps(self.link.status())
         self.capture_reported = (self.capture.saved, self.capture.ws_seq)
         temporary = STATUS.with_suffix(".tmp")
         temporary.write_text(json.dumps(body), encoding="utf-8")
@@ -95,6 +100,13 @@ class PacketMonitor:
         if not self.server_header:
             raise SupportNotSent("server XT header has not been observed")
         frame = support_packet(self.server_header, command, payload)
+        ctx.master.commands.call("inject.websocket", flow, False, frame.encode("utf-8"))
+
+    def _inject_to_server(self, frame):
+        """A frame from the OpenAuto injection bot, sent to the game server on the live socket."""
+        flow = self.active_flow
+        if not flow or not flow.websocket or flow.websocket.timestamp_end is not None:
+            raise RuntimeError("no active game WebSocket")
         ctx.master.commands.call("inject.websocket", flow, False, frame.encode("utf-8"))
 
     def _inject_frame(self, frame, to_client):
@@ -117,13 +129,17 @@ class PacketMonitor:
                             self.recorder.start()
                         elif body.get("action") == "stop":
                             self.recorder.stop()
+                        elif body.get("action") == "attach" and body.get("account"):
+                            self.link.start(str(body["account"]), str(body.get("daemon") or "http://127.0.0.1:47821"))
+                        elif body.get("action") == "detach":
+                            self.link.stop()
                         self._attach_handshake()
                         self._status()
             except (OSError, ValueError) as exc:
                 print(f"packet monitor control error: {exc!r}", flush=True)
             self.auto_support.tick(self._send_support, self.active_flow is not None)
             self.injector.tick(self._inject_frame)
-            if self.capture_reported != (self.capture.saved, self.capture.ws_seq):
+            if self.capture_reported != (self.capture.saved, self.capture.ws_seq) or self.link_reported != json.dumps(self.link.status()):
                 self._status()
             await asyncio.sleep(0.05)
 
@@ -191,6 +207,10 @@ class PacketMonitor:
         if decoded.startswith(("TEXT FRAME; base64:", "BINARY FRAME; base64:")):
             return
         self.recorder.capture(decoded, received_at, "sent" if message.from_client else "received")
+        # The injection bot sees what the server sends and what the person sends; not frames injected toward the
+        # server (its own, or the Inject box), which it must not mistake for the person acting.
+        if flow is self.active_flow and not (message.from_client and message.injected):
+            self.link.forward("c2s" if message.from_client else "s2c", decoded)
         if message.from_client and flow is self.active_flow:
             parsed = self._client_packet(decoded)
             if parsed and parsed.get("server_header"):
@@ -210,6 +230,7 @@ class PacketMonitor:
         self.decoder.forget(f"{id(flow)}:False")
         if matches_game_url(flow.request.url) and self.active_flow is flow:
             self.auto_support.connection_lost()
+            self.link.stop()  # the injection bot ran on this socket; the daemon ends its session too
             self.connected = False
             self.active_flow = None
             self.server_header = None

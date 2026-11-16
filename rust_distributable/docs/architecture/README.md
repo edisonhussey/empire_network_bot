@@ -20,6 +20,7 @@ about the system that uses them.
 | [`response-health.md`](response-health.md) | Missing and null responses, the rolling-hour tolerance and the safe pause |
 | [`development-tab.md`](development-tab.md) | The read-only Development tab: timing graph, kingdom map, movements |
 | [`pvp.md`](pvp.md) | The PVP tab: which `gam` movements are recorded, how they are classified, paged and drawn |
+| [`injection-mode.md`](injection-mode.md) | The injection bot: the same engine over the browser's socket through the packet monitor; Pause; the one-minute human hold |
 | [`resource-bot.md`](resource-bot.md) | The resource bot: refined wood and stone at the Green main castle's refinery, inventory check first, staggered crafts, a schedule that survives restarts |
 | [`station.md`](station.md) | Auto-station: moving an attacked castle's troops out and back, the five second window, and how it shares the connection |
 | [`attack-scheduling.md`](attack-scheduling.md) | How towers and commanders are chosen, cooldowns, why throughput is what it is |

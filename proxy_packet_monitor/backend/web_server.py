@@ -139,8 +139,8 @@ class Service:
         shutil.copyfile(destination, latest)
         return {"path": str(destination), "latest": str(latest), "count": count}
 
-    def control(self, action):
-        command = {"id": uuid.uuid4().hex, "action": action, "at": time.time()}
+    def control(self, action, **extra):
+        command = {"id": uuid.uuid4().hex, "action": action, "at": time.time(), **extra}
         temporary = self.data / "control.tmp"
         temporary.write_text(json.dumps(command), encoding="utf-8")
         temporary.replace(self.data / "control.json")
@@ -211,6 +211,7 @@ class Service:
                 "connected": bool(addon.get("connected")) if running else False,
                 "endpoint": addon.get("endpoint") if running else None,
                 "last_websocket_url": addon.get("last_websocket_url") if running else None,
+                "openauto": addon.get("openauto") if running else None,
                 "last_websocket_matches_game": matches_game_url(addon["last_websocket_url"]) if running and addon.get("last_websocket_url") else None,
                 "capture_enabled": self.capture_enabled(), "capture_images": self.capture_images(),
                 "capture": addon.get("capture") if running else None,
@@ -312,6 +313,12 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/recording/toggle": result = self.service.control("toggle")
             elif path == "/api/recording/start": result = self.service.control("start")
             elif path == "/api/recording/stop": result = self.service.control("stop")
+            elif path == "/api/openauto/attach":
+                account = str(body.get("account") or "").strip()
+                if not account: raise ValueError("Enter the OpenAuto account name.")
+                if not self.service.proxy_running(): raise ValueError("Start the proxy first.")
+                result = self.service.control("attach", account=account)
+            elif path == "/api/openauto/detach": result = self.service.control("detach")
             elif path == "/api/inject": result = self.service.inject(body.get("text"), body.get("to_client"))
             elif path == "/api/capture/config": result = self.service.set_capture(body.get("enabled"), body.get("images"))
             elif path == "/api/handshake/config": result = self.service.set_handshake(body.get("enabled"))

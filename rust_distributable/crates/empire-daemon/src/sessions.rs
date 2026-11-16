@@ -15,7 +15,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::direct::{DevSnapshot, DirectStatus, PaceControl};
+use crate::direct::{DevSnapshot, DirectStatus, PaceControl, PauseControl};
 
 /// The shared cells one session writes and the service reads.
 #[derive(Clone)]
@@ -25,6 +25,8 @@ pub struct SessionCells {
     pub dev: Arc<RwLock<DevSnapshot>>,
     /// Test pace of the attack scheduler's waits; 1 is the design.
     pub pace: PaceControl,
+    /// Pause button and the human hold of injection mode (`direct/pause.rs`).
+    pub pause: PauseControl,
 }
 
 impl SessionCells {
@@ -37,6 +39,7 @@ impl SessionCells {
             transport: Arc::new(RwLock::new(None)),
             dev: Arc::new(RwLock::new(DevSnapshot::default())),
             pace: PaceControl::default(),
+            pause: PauseControl::default(),
         }
     }
 }

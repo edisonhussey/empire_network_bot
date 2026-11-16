@@ -58,6 +58,17 @@ impl RecruitmentAutomation {
         !matches!(self.phase, RecruitPhase::Idle { .. })
     }
 
+    /// Abandon a step in flight (pause, or the human changed the view). The castle's queue estimate is
+    /// left as it was, so the next pass re-opens the castle and reads the real queue.
+    pub(super) fn interrupt(&mut self, now: i64, reason: &str) -> bool {
+        if !self.holds_transport() {
+            return false;
+        }
+        self.detail = format!("Recruitment interrupted: {reason}");
+        self.phase = RecruitPhase::Idle { due_ms: now + 2_000 };
+        true
+    }
+
     pub(super) async fn next_packet(
         &mut self,
         store: &Store,

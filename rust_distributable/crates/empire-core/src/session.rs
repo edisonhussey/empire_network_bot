@@ -235,6 +235,12 @@ impl SessionMachine {
         }
     }
 
+    /// Injection mode: the browser has already logged in, so the session starts ready and never sends login frames.
+    pub fn mark_attached(&mut self) {
+        self.phase = SessionPhase::SandsReady;
+        self.bootstrap_sent = true;
+    }
+
     pub fn phase(&self) -> SessionPhase {
         self.phase
     }

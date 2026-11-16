@@ -5,8 +5,10 @@ mod dev;
 mod fortress_discovery;
 mod health;
 mod inventory;
+mod link;
 mod observe;
 mod pace;
+mod pause;
 mod packets;
 mod portal_id;
 mod pvp;
@@ -31,6 +33,8 @@ use base_scan::*;
 use dev::CompletedView;
 pub use dev::{DevSnapshot, SpatialView};
 pub use pace::PaceControl;
+pub use link::{AttachSlot, AttachedLink};
+pub use pause::PauseControl;
 pub use station_view::JobView;
 use fortress_discovery::*;
 use health::*;
@@ -156,6 +160,7 @@ impl InitializeAccountRequest {
             },
             settings,
             reuse_existing_map: self.reuse_existing_map,
+            attach: None,
         })
     }
 }
@@ -168,12 +173,18 @@ pub struct DirectConnectRequest {
     #[serde(default)]
     pub settings: SessionSettings,
     #[serde(default)]
-    pub reuse_existing_map: bool,
+    pub reuse_existing_map: bool,    /// Injection mode: run over a browser's socket through the proxy instead of opening one
+    /// (`link.rs`). Set by `/v1/attach`, never by a client.
+    #[serde(skip)]
+    pub attach: Option<AttachSlot>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DirectStatus {
     pub connected: bool,
+    /// Injection mode: running over the browser's socket through the proxy.
+    #[serde(default)]
+    pub attached: bool,
     pub phase: SessionPhase,
     pub endpoint: Option<String>,
     pub account_id: Option<String>,
@@ -226,6 +237,7 @@ impl Default for DirectStatus {
             tier: None,
             features: Vec::new(),
             authenticated: false,
+            attached: false,
         }
     }
 }
@@ -271,6 +283,11 @@ impl std::fmt::Display for LoginRejected {
 }
 
 impl std::error::Error for LoginRejected {}
+
+/// The account identity of the last direct login, for injection mode (`app_state`).
+fn identity_key(account_id: &str) -> String {
+    format!("session.identity.{account_id}")
+}
 
 fn login_lock_key(account_id: &str) -> String {
     format!("login.locked_until_ms.{account_id}")
@@ -325,6 +342,7 @@ pub async fn run(
     licence: LicenceGate,
     dev: Arc<RwLock<DevSnapshot>>,
     pace: PaceControl,
+    pause: PauseControl,
 ) {
     let endpoint = request.endpoint.clone();
     let account_id = request.credentials.player_name.trim().to_ascii_lowercase();
@@ -347,8 +365,17 @@ pub async fn run(
             log_event(&store, &account_id, "connection.retry", &format!("retry {attempt}")).await;
         }
         status.write().await.authenticated = false;
-        let result = run_inner(attempt_request.clone(), &store, &active_transport, &status, &licence, &dev, &pace).await;
+        let result = run_inner(attempt_request.clone(), &store, &active_transport, &status, &licence, &dev, &pace, &pause).await;
         *active_transport.write().await = None;
+        // Injection mode: the browser owns the socket. When the proxy link ends there is nothing to reconnect.
+        if attempt_request.attach.is_some() {
+            let detail = match &result {
+                Ok(()) => "the proxy link closed".to_owned(),
+                Err(error) => format!("{error:#}"),
+            };
+            log_event(&store, &account_id, "connection.detached", &detail).await;
+            break result.err();
+        }
         // The session's own bookkeeping says how far this attempt got and how
         // long it lived; read it before it is overwritten below.
         let (reached_ready, lived, authenticated) = {
@@ -468,6 +495,7 @@ async fn run_inner(
     licence: &LicenceGate,
     dev: &Arc<RwLock<DevSnapshot>>,
     pace: &PaceControl,
+    pause: &PauseControl,
 ) -> anyhow::Result<()> {
     licence.require_bootstrap("game_network").await?;
     let account_id = request.credentials.player_name.trim().to_ascii_lowercase();
@@ -496,15 +524,30 @@ async fn run_inner(
         .await?;
     // The page's headers and the deflate offer, and the inflating wrapper (the server answers 400 to a socket that does not
     // offer compression): both live in `empire-socket`.
-    let (socket, _) = empire_socket::connect(empire_socket::game_request(&request.endpoint)?).await?;
-    log_event(store, &account_id, "connection.connected", &request.endpoint).await;
-    let (mut sink, mut stream) = socket.split();
+    let attached = request.attach.as_ref().and_then(AttachSlot::take);
+    let is_attached = attached.is_some();
+    let (mut sink, mut stream) = match attached {
+        Some(link_ends) => {
+            log_event(store, &account_id, "connection.attached", "running over the browser's socket through the proxy").await;
+            link::attached(link_ends)
+        }
+        None => {
+            let (socket, _) = empire_socket::connect(empire_socket::game_request(&request.endpoint)?).await?;
+            log_event(store, &account_id, "connection.connected", &request.endpoint).await;
+            link::direct(socket)
+        }
+    };
     let (injection_tx, mut injection_rx) = channel();
     *active_transport.write().await = Some(injection_tx);
 
     let mut machine = SessionMachine::new(request.credentials, request.settings.clone());
-    for frame in machine.on_connected() {
-        sink.send(Message::Text(frame.into())).await?;
+    if is_attached {
+        // The browser is already in the game: no login, the account is what the database holds.
+        machine.mark_attached();
+    } else {
+        for frame in machine.on_connected() {
+            sink.send(Message::Text(frame.into())).await?;
+        }
     }
     *status.write().await = DirectStatus {
         connected: true,
@@ -526,6 +569,7 @@ async fn run_inner(
         tier: None,
         features: Vec::new(),
         authenticated: false,
+        attached: is_attached,
     };
     info!(endpoint = %request.endpoint, "direct game session connected");
 
@@ -542,6 +586,9 @@ async fn run_inner(
     let mut recruitment = RecruitmentAutomation::new();
     // The resource bot's refinery job (direct/refinery.rs): its own visits to the Green main castle.
     let mut refinery = RefineryAutomation::new();
+    // Pause (button) and the human hold (injection mode): see pause.rs. Tracks the edge so a step in
+    // flight is abandoned once, when the pause begins.
+    let mut was_paused = false;
     // Auto-station: takes priority over everything else on the connection while
     // a job is in its window (see station.rs for the gate).
     let mut station = StationAutomation::new();
@@ -582,6 +629,23 @@ async fn run_inner(
     // The game account this session is licensed as (server, player); its licence is
     // looked up again at every check, so a replaced licence takes over.
     let mut session_licence: Option<(&'static str, i64)> = None;
+    if is_attached {
+        // No `gbd` passes in injection mode, so the identity the last direct login stored stands in for it.
+        let identity: empire_core::account::AccountIdentity = store
+            .app_state(&identity_key(&account_id))
+            .await?
+            .and_then(|value| serde_json::from_value(value).ok())
+            .context("this account has never logged in with Start bot here; log in once that way so its castles and licence are known")?;
+        let server_name = trusted_server_name(&request.endpoint, &request.settings.server_header)
+            .context("licence activation requires a known Goodgame world endpoint")?;
+        let claims = licence.bind_or_validate(server_name, &identity).await?;
+        session_licence = Some((server_name, identity.player_id));
+        let mut current = status.write().await;
+        current.tier = Some(claims.tier.clone());
+        current.features = claims.features.clone();
+        current.authenticated = true;
+        current.phase = SessionPhase::SandsReady;
+    }
     let mut active_scan_kingdom = None;
     let mut rbc_scan_origins =
         permanent_scan_origins(&account_id, store.owned_castles().await?.as_slice());
@@ -654,6 +718,10 @@ async fn run_inner(
                         }
                         status.write().await.authenticated = true;
                         log_event(store, &account_id, "connection.login_ok", "authenticated").await;
+                        // Kept for injection mode, which never sees a `gbd` of its own.
+                        let _ = store
+                            .set_app_state(&identity_key(&account_id), &serde_json::to_value(&identity)?, now_ms())
+                            .await;
                         let _ = store
                             .set_app_state(&login_lock_key(&account_id), &json!(0), now_ms())
                             .await;
@@ -771,7 +839,8 @@ async fn run_inner(
                     station.observe(store, &account_id, &text, now_ms()).await;
                     transfer.observe(store, &account_id, parsed_packet.as_ref(), now_ms()).await;
                     chat::observe(store, &account_id, parsed_packet.as_ref(), now_ms()).await;
-                    let frames = machine.on_server_text(&text)?;
+                    // In injection mode the browser answers the login itself; the machine must not.
+                    let frames: Vec<String> = if is_attached { Vec::new() } else { machine.on_server_text(&text)? };
                     if let Some(packet) = parsed_packet.as_ref()
                         && let Some(refused) =
                             version::refusal(packet, &request.settings.client_version)
@@ -894,8 +963,11 @@ async fn run_inner(
                 }
             }
             _ = heartbeat.tick() => {
-                let packet = heartbeat_packet(&request.settings.server_header);
-                sink.send(Message::Text(packet.into())).await?;
+                // The browser keeps its own socket alive in injection mode.
+                if !is_attached {
+                    let packet = heartbeat_packet(&request.settings.server_header);
+                    sink.send(Message::Text(packet.into())).await?;
+                }
             }
             _ = entitlement_check.tick() => {
                 if let Some((server, player_id)) = session_licence {
@@ -927,7 +999,7 @@ async fn run_inner(
                             base_scan_due_ms = now + 4_000;
                         }
                     }
-                } else if now >= base_scan_due_ms && station.gate(now) == Gate::Open {
+                } else if now >= base_scan_due_ms && station.gate(now) == Gate::Open && pause.reason(now).is_none() {
                     // Control frames introducing a kingdom may go immediately,
                     // but stop after one GAA until its response is observed.
                     while let Some(frame) = base_scan_queue.pop_front() {
@@ -971,6 +1043,7 @@ async fn run_inner(
             }
             _ = fortress_tick.tick() => {
                 if machine.phase() == SessionPhase::SandsReady
+                    && pause.reason(now_ms()).is_none()
                     && base_scan_queue.is_empty()
                     && active_base_scan.is_none()
                 {
@@ -1232,8 +1305,29 @@ async fn run_inner(
                     let station_gate = station.gate(now);
                     automation.station_holds = station.holds(now);
                     automation.set_pace(pace.get());
-                    let mut sent = false;
-                    if station_gate != Gate::Owned
+                    // The human acted in the browser (injection mode): bots step aside for a minute.
+                    let mut interrupt_reason = None;
+                    if let Some(command) = pause.take_human() {
+                        pause.hold_until(now + pause::HUMAN_HOLD_MS);
+                        interrupt_reason = Some(format!("you sent {command} in the game"));
+                    }
+                    let paused = pause.reason(now);
+                    if paused.is_some() && !was_paused && interrupt_reason.is_none() {
+                        interrupt_reason = Some("paused".to_owned());
+                    }
+                    was_paused = paused.is_some();
+                    if let Some(reason) = interrupt_reason {
+                        let mut abandoned = Vec::new();
+                        if automation.interrupt(store, &account_id, now, &reason).await { abandoned.push("attack"); }
+                        if recruitment.interrupt(now, &reason) { abandoned.push("recruitment"); }
+                        if refinery.interrupt(now, &reason) { abandoned.push("refinery"); }
+                        let what = if abandoned.is_empty() { "nothing was in flight".to_owned() } else { format!("abandoned as failed: {}", abandoned.join(", ")) };
+                        log_event(store, &account_id, "bot.paused", &format!("{reason}; {what}; still listening")).await;
+                    }
+                    // While paused nothing below sends; every frame is still read above.
+                    let mut sent = paused.is_some();
+                    if !sent
+                        && station_gate != Gate::Owned
                         && !refinery.holds_transport()
                         && (station_gate == Gate::Open || recruitment.holds_transport())
                         && (recruitment.holds_transport() || !automation.holds_transport())
@@ -1304,7 +1398,7 @@ async fn run_inner(
                         record_safe_outbound(store, &account_id, &packet).await;
                         sink.send(Message::Text(packet.into())).await?;
                     }
-                    let (bot_state, bot_detail) = if recruitment.holds_transport() { ("recruiting", recruitment.detail.clone()) } else if refinery.holds_transport() { ("refining", refinery.detail.clone()) } else { automation.status() };
+                    let (bot_state, bot_detail) = if let Some(reason) = paused.clone() { ("paused", reason) } else if recruitment.holds_transport() { ("recruiting", recruitment.detail.clone()) } else if refinery.holds_transport() { ("refining", refinery.detail.clone()) } else { automation.status() };
                     {
                         let mut current = status.write().await;
                         current.bot_state = bot_state.to_owned();

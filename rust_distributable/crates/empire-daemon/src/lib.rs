@@ -1,4 +1,5 @@
 mod account_licence;
+mod attach;
 mod chat;
 mod dev_shared;
 mod direct;
@@ -318,6 +319,8 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
         .route("/v1/transfers/check", post(transfer::check))
         .route("/v1/transfers/refresh", post(transfer::refresh))
         .route("/v1/transfers/{id}/cancel", post(transfer::cancel))
+        .route("/v1/attach", get(attach::attach))
+        .route("/v1/direct/pause", post(attach::pause))
         .route("/v1/relay", get(relay_socket))
         .layer(cors);
     // The built UI as the fallback, so a browser tab on this port is the control panel (web_ui.rs).
@@ -403,6 +406,7 @@ async fn direct_connect(
                 licence,
                 cells.dev,
                 cells.pace,
+                cells.pause,
             ))
         })
         .await;

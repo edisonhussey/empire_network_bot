@@ -286,6 +286,15 @@ impl Store {
         Ok(())
     }
 
+    /// `(player_name, endpoint, server_header)` of a stored account: what injection mode needs to attach to it.
+    pub async fn account_connection(&self, account_id: &str) -> Result<Option<(String, String, String)>, sqlx::Error> {
+        let row = sqlx::query("SELECT player_name, endpoint, server_header FROM account_profile WHERE account_id = ?")
+            .bind(canonical_account_id(account_id))
+            .fetch_optional(self.reader())
+            .await?;
+        Ok(row.map(|row| (row.get("player_name"), row.get("endpoint"), row.get("server_header"))))
+    }
+
     pub async fn replace_account_bootstrap(
         &self,
         account_id: &str,
