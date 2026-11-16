@@ -156,7 +156,13 @@ class Recorder:
                     conn.commit()
                     conn.close()
                     conn = None
-                    (self.root / f"{item[1]}.partial.sqlite3").replace(self.root / f"{item[1]}.sqlite3")
+                    partial = self.root / f"{item[1]}.partial.sqlite3"
+                    if count == 0:
+                        # A start/stop with nothing captured (the space shortcut pressed while typing) is not kept:
+                        # 22,700 of these once made the session list take 98 s, so the page showed none.
+                        partial.unlink(missing_ok=True)
+                    else:
+                        partial.replace(self.root / f"{item[1]}.sqlite3")
             except Exception as exc:
                 # The queue worker must survive a malformed packet or disk error.
                 print(f"recorder error: {exc!r}", flush=True)
@@ -184,15 +190,30 @@ def recover_sessions(root: Path) -> int:
     return recovered
 
 
+# path -> (mtime_ns, size, metadata). The page polls this list; a finished session's file never changes, so it is
+# opened once, not on every poll.
+_LIST_CACHE: dict[Path, tuple[int, int, dict]] = {}
+
+
 def list_sessions(root: Path) -> list[dict]:
     result = []
+    seen = set()
     for path in root.glob("*.sqlite3"):
+        seen.add(path)
         try:
+            stat = path.stat()
+            cached = _LIST_CACHE.get(path)
+            if cached and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
+                result.append(cached[2])
+                continue
             with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
                 entry = metadata(conn)
-                result.append(entry)
-        except (sqlite3.Error, ValueError):
+            _LIST_CACHE[path] = (stat.st_mtime_ns, stat.st_size, entry)
+            result.append(entry)
+        except (sqlite3.Error, ValueError, OSError):
             continue
+    for gone in set(_LIST_CACHE) - seen:
+        del _LIST_CACHE[gone]
     return sorted(result, key=lambda item: item["started_at"], reverse=True)
 
 
