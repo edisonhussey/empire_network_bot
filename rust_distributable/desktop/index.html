@@ -67,6 +67,13 @@
               <button data-view="support-bots">Create support</button>
             </div>
           </div>
+          <div class="nav-group" data-group="resources">
+            <button class="nav-parent" type="button" aria-expanded="false" aria-controls="nav-resources"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-modes"/></svg></span>Resources<span class="nav-caret" aria-hidden="true"></span></button>
+            <div class="nav-sub" id="nav-resources" hidden>
+              <button data-view="refine-presets">Create refined resource</button>
+              <button data-view="resource-bots">Create resource bot</button>
+            </div>
+          </div>
           <button data-view="accounts"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-accounts"/></svg></span>Control Panel</button>
           <button data-view="initialize"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-initialize"/></svg></span>Initialize</button>
           <button data-view="presets"><span class="nav-icon"><svg aria-hidden="true"><use href="#i-modes"/></svg></span>Manage presets</button>
@@ -226,6 +233,26 @@
             <div class="form-actions"><output id="support-bot-result"></output><button class="primary-action" type="submit">Save support bot</button></div>
           </form>
           <section class="card library-card"><div id="support-bot-library" class="library-list"></div></section>
+        </section>
+
+        <section id="view-refine-presets" class="view" hidden>
+          <section class="welcome-card compact-welcome"><div class="welcome-copy"><p class="eyebrow">Resources · Refinery</p><h2>Create refined resource</h2><p>Only your Green main castle has the refinery. The bot opens that castle, checks its wood and stone before it starts anything, then fills the refinery's two places (one crafting, one waiting) and goes back to the map. Tick both to alternate wood and stone; tick one to make two lots of it. It comes back once the refinery is empty, never sooner than two hours.</p></div></section>
+          <form id="refine-preset-form" class="card mode-builder">
+            <div class="builder-name"><label for="refine-preset-name">Preset name</label><input id="refine-preset-name" placeholder="e.g. Wood and stone" required /></div>
+            <div><p class="list-label">Refinery</p><div id="refine-recipes" class="support-kingdoms"></div><p class="field-hint">The toolsmith has its own queue and resources and will come later.</p></div>
+            <div class="form-actions"><output id="refine-preset-result"></output><button class="primary-action" type="submit">Save preset</button></div>
+          </form>
+          <section class="card library-card"><div id="refine-preset-library" class="library-list"></div></section>
+        </section>
+
+        <section id="view-resource-bots" class="view" hidden>
+          <section class="welcome-card compact-welcome"><div class="welcome-copy"><p class="eyebrow">Resources</p><h2>Create resource bot</h2><p>A resource bot carries the resource jobs for an account. For now that is one refined-resource preset; moving and transferring resources will be added to it later. Pick the bot in the Control Panel, step 2.</p></div></section>
+          <form id="resource-bot-form" class="card mode-builder">
+            <div class="builder-name"><label for="resource-bot-name">Resource bot name</label><input id="resource-bot-name" placeholder="e.g. Refinery" required /></div>
+            <div><label for="resource-bot-preset">Create resource</label><select id="resource-bot-preset"></select></div>
+            <div class="form-actions"><output id="resource-bot-result"></output><button class="primary-action" type="submit">Save resource bot</button></div>
+          </form>
+          <section class="card library-card"><div id="resource-bot-library" class="library-list"></div></section>
         </section>
 
         <section id="view-initialize" class="view" hidden>

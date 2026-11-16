@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 28;
+pub const SCHEMA_VERSION: i64 = 29;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -880,13 +880,59 @@ pub const V28: Migration = &[
         ON attack_ledger (account_id, kingdom_id, x, y)",
 ];
 
+/// The resource bot (`store/resource.rs`, `docs/architecture/resource-bot.md`).
+///
+/// * `create_resource_preset`: a building (`refinery`) and the recipes to cycle there (CRIDs, comma separated).
+/// * `resource_bot`: a named bundle of resource jobs; today at most one create-resource preset.
+/// * `account_resource_bot`: the control panel's choice per account, with `running`.
+/// * `refinery_state`: one row per account, the next visit and where the recipe cycle continues, so the
+///   schedule survives a restart. A few hundred bytes per account, never pruned.
+pub const V29: Migration = &[
+    "CREATE TABLE IF NOT EXISTS create_resource_preset (
+        preset_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        building TEXT NOT NULL,
+        recipes TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS resource_bot (
+        resource_bot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        create_preset_id INTEGER,
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        FOREIGN KEY (create_preset_id) REFERENCES create_resource_preset(preset_id)
+    )",
+    "CREATE TABLE IF NOT EXISTS account_resource_bot (
+        account_id TEXT PRIMARY KEY,
+        resource_bot_id INTEGER NOT NULL,
+        running INTEGER NOT NULL DEFAULT 0,
+        updated_at_ms INTEGER NOT NULL,
+        FOREIGN KEY (resource_bot_id) REFERENCES resource_bot(resource_bot_id) ON DELETE CASCADE
+    )",
+    "CREATE TABLE IF NOT EXISTS refinery_state (
+        account_id TEXT PRIMARY KEY,
+        castle_id INTEGER NOT NULL,
+        next_due_ms INTEGER NOT NULL,
+        cycle_index INTEGER NOT NULL DEFAULT 0,
+        last_visit_ms INTEGER NOT NULL DEFAULT 0,
+        last_detail TEXT NOT NULL DEFAULT '',
+        updated_at_ms INTEGER NOT NULL
+    )",
+];
+
 pub const MIGRATIONS: &[Migration] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29,
 ];
 
 /// Every table that holds user data, for the storage report and full wipe.
 /// Order matters for deletion: children before parents.
 pub const DATA_TABLES: &[&str] = &[
+    "refinery_state",
+    "account_resource_bot",
+    "resource_bot",
+    "create_resource_preset",
     "alliance_chat",
     "kingdom_transfer",
     "automation_mode_reserve",

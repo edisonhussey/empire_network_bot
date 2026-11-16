@@ -13,6 +13,7 @@ import { attackDetails, modeDetails, recruitBotDetails, recruitmentDetails, rend
 import { commanderRanges, modeSupport } from "./views/commander-ranges.js";
 import { createModeBuilder } from "./views/mode-builder.js";
 import { createSupportBots } from "./views/support-bots.js";
+import { createResources } from "./views/resources.js";
 import { createTroops } from "./views/troops.js";
 import { createChat } from "./views/chat.js";
 import { createLicence } from "./views/licence.js";
@@ -183,6 +184,8 @@ const viewTitles = {
   troops: ["Commanders", "Troop overview"],
   chat: ["Alliance", "Chat"],
   "support-bots": ["Station", "Create support"],
+  "refine-presets": ["Resources", "Create refined resource"],
+  "resource-bots": ["Resources", "Create resource bot"],
   pvp: ["Intelligence", "PVP"],
   development: ["Diagnostics", "Development"],
   licence: ["Account", "Licence"],
@@ -198,6 +201,8 @@ const chat = createChat();
 const licenceTab = createLicence({ onReplaced: () => refreshLicence() });
 // A support bot is stored only; which one an account runs is chosen in the Control Panel.
 const supportBots = createSupportBots({ getLibrary: () => library, reload: () => loadLibrary() });
+// Resources tab: refinery presets and resource bots (stored only; the Control Panel picks one).
+const resources = createResources({ getLibrary: () => library, reload: () => loadLibrary() });
 
 function switchView(name) {
   document.querySelectorAll(".view").forEach((view) => { view.hidden = view.id !== `view-${name}`; });
@@ -831,7 +836,12 @@ async function loadLibrary() {
   library.station_bots ||= [];
   library.account_station_bots ||= [];
   library.kingdoms ||= fallbackKingdoms;
+  // A daemon older than the Resources tab has no /resources: the tab then shows empty lists.
+  library.resources = await api("/resources").catch(() => ({}));
+  library.resources.resource_bots ||= [];
+  library.resources.account_resource_bots ||= [];
   supportBots.render();
+  resources.render();
   renderKingdoms();
   renderWave();
   renderPicker();
@@ -908,6 +918,8 @@ async function refreshAccounts(knownDirect = null) {
   const pendingRecruit = new Map();
   const pendingStation = new Map();
   document.querySelectorAll("[data-account-station]").forEach(sel => pendingStation.set(sel.dataset.accountStation, sel.value));
+  const pendingResource = new Map();
+  document.querySelectorAll("[data-account-resource]").forEach(sel => pendingResource.set(sel.dataset.accountResource, sel.value));
   document.querySelectorAll("[data-account-attack]").forEach(sel => pendingAttack.set(sel.dataset.accountAttack, sel.value));
   document.querySelectorAll("[data-account-recruit]").forEach(sel => pendingRecruit.set(sel.dataset.accountRecruit, sel.value));
 if (!connectedAccounts.length) { emptyAccounts(); renderModes(); return; }
@@ -951,7 +963,9 @@ if (!connectedAccounts.length) { emptyAccounts(); renderModes(); return; }
     const assignment = element("div", "account-mode-control");
     const current = library.account_modes.find((value) => value.account_id.toLowerCase() === account.account_id.toLowerCase());
     const currentRecruit = library.account_recruit_bots.find((value) => value.account_id.toLowerCase() === account.account_id.toLowerCase());
-    const running = Boolean(current?.running && isConnected);
+    // A resource bot can run on its own, so it counts as running too.
+    const resourceRunning = library.resources.account_resource_bots.some((value) => value.account_id.toLowerCase() === account.account_id.toLowerCase() && value.running);
+    const running = Boolean((current?.running || resourceRunning) && isConnected);
     assignment.append(element("p", "list-label", "Step 2 · Automation"));
     const attackLabel = document.createElement("label"); attackLabel.textContent = "Attack bot";
     const attackSelect = document.createElement("select");
@@ -1025,32 +1039,43 @@ if (!connectedAccounts.length) { emptyAccounts(); renderModes(); return; }
     };
     recruitSelect.addEventListener("change", describeRecruit);
     describeRecruit();
-    const summary = element("span", running ? "bot-state running" : "bot-state", running ? `● Running${currentRecruit?.running ? " with recruitment" : ""}${currentStation?.running ? " + auto-station" : ""}` : "● Stopped");
+    // Resource bot: none, or one (today it crafts at the refinery of the Green main castle).
+    const resourceLibrary = library.resources;
+    const currentResource = resourceLibrary.account_resource_bots.find((value) => value.account_id.toLowerCase() === account.account_id.toLowerCase());
+    const resourceLabel = document.createElement("label"); resourceLabel.textContent = "Resource bot (optional)";
+    const resourceSelect = document.createElement("select");
+    const noResource = element("option", "", "None — no resource bot"); noResource.value = ""; resourceSelect.append(noResource);
+    resourceSelect.append(...resourceLibrary.resource_bots.map((bot) => { const option = element("option", "", bot.name); option.value = bot.resource_bot_id; return option; }));
+    resourceSelect.dataset.accountResource = account.account_id;
+    if (pendingResource.has(account.account_id)) resourceSelect.value = pendingResource.get(account.account_id);
+    else if (currentResource) resourceSelect.value = currentResource.resource_bot_id;
+    const resourceChoice = () => (resourceSelect.value ? Number(resourceSelect.value) : null);
+    const summary = element("span", running ? "bot-state running" : "bot-state", running ? `● Running${currentRecruit?.running ? " with recruitment" : ""}${currentStation?.running ? " + auto-station" : ""}${currentResource?.running ? " + resource bot" : ""}` : "● Stopped");
     const controls = element("div", "bot-start-actions");
     const start = actionButton(running ? "Bot running" : "Start bot", async () => {
       try {
-        await api("/plans/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: account.account_id, mode_id: attackSelect.value ? Number(attackSelect.value) : null, recruit_bot_id: recruitSelect.value ? Number(recruitSelect.value) : null, station_bot_id: stationChoice() ? Number(stationChoice()) : null, running: true }) });
+        await api("/plans/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: account.account_id, mode_id: attackSelect.value ? Number(attackSelect.value) : null, recruit_bot_id: recruitSelect.value ? Number(recruitSelect.value) : null, station_bot_id: stationChoice() ? Number(stationChoice()) : null, resource_bot_id: resourceChoice(), running: true }) });
         await loadLibrary(); await refreshAccounts(); await refreshDashboard();
       } catch (error) { connectionResult.textContent = error.message; }
     });
     // Each account has its own licence, so its own tier: a free one can sign in and be
     // watched but not run automation. The service refuses it too; this says why.
     const canAutomate = !isConnected || (direct.features || []).some((feature) => feature === "*" || feature === "automation");
-    const nothingChosen = () => !attackSelect.value && !recruitSelect.value && !stationChoice();
+    const nothingChosen = () => !attackSelect.value && !recruitSelect.value && !stationChoice() && !resourceSelect.value;
     start.disabled = !isReady || running || !canAutomate;
     const refreshStart = () => { start.disabled = !isReady || running || !canAutomate || nothingChosen(); };
-    for (const select of [attackSelect, recruitSelect, stationSelect]) select.addEventListener("change", refreshStart);
+    for (const select of [attackSelect, recruitSelect, stationSelect, resourceSelect]) select.addEventListener("change", refreshStart);
     refreshStart();
     const stop = actionButton("End bot", async () => {
       try {
-        await api("/plans/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: account.account_id, mode_id: attackSelect.value ? Number(attackSelect.value) : null, recruit_bot_id: recruitSelect.value ? Number(recruitSelect.value) : null, station_bot_id: stationChoice() ? Number(stationChoice()) : null, running: false }) });
+        await api("/plans/start", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: account.account_id, mode_id: attackSelect.value ? Number(attackSelect.value) : null, recruit_bot_id: recruitSelect.value ? Number(recruitSelect.value) : null, station_bot_id: stationChoice() ? Number(stationChoice()) : null, resource_bot_id: resourceChoice(), running: false }) });
         await loadLibrary(); await refreshAccounts(); await refreshDashboard();
       } catch (error) { connectionResult.textContent = error.message; }
     }, true);
     stop.disabled = !running;
-    attackSelect.disabled = running; recruitSelect.disabled = running; stationSelect.disabled = running;
+    attackSelect.disabled = running; recruitSelect.disabled = running; stationSelect.disabled = running; resourceSelect.disabled = running;
     controls.append(start, stop, summary);
-    assignment.append(attackLabel, attackSelect, recruitLabel, recruitSelect, recruitEstimate, stationLabel, stationSelect, stationNote, controls);
+    assignment.append(attackLabel, attackSelect, recruitLabel, recruitSelect, recruitEstimate, stationLabel, stationSelect, stationNote, resourceLabel, resourceSelect, controls);
     if (!isReady && !running) assignment.append(element("p", "empty-copy", "Start the connection in step 1 to run automation."));
     if (!library.modes.length && !library.recruit_bots.length && !library.station_bots.length) assignment.append(element("p", "empty-copy", "Create an attack, recruit or support bot before starting automation."));
     if (!canAutomate) assignment.append(element("p", "empty-copy", `This account's licence (${direct.tier || "free"} tier) does not include automation.`));

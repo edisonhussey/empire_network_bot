@@ -23,6 +23,7 @@ pub mod planning;
 pub mod protocol;
 #[cfg(feature = "application")]
 pub mod pvp;
+pub mod refinery;
 #[cfg(feature = "application")]
 pub mod scheduler;
 pub mod session;

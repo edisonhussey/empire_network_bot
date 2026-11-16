@@ -103,6 +103,9 @@ pub struct StartBotsRequest {
     /// attack and recruit bots and started and stopped with them.
     #[serde(default)]
     station_bot_id: Option<i64>,
+    /// The resource bot (refinery today), or `None`. Started and stopped with the others.
+    #[serde(default)]
+    resource_bot_id: Option<i64>,
     running: bool,
 }
 
@@ -276,9 +279,10 @@ pub async fn start_bots(
         && request.mode_id.is_none()
         && request.recruit_bot_id.is_none()
         && request.station_bot_id.is_none()
+        && request.resource_bot_id.is_none()
     {
         return Err(ApiError::bad_request(
-            "choose an attack bot, a recruit bot or an auto-station bot to run",
+            "choose an attack bot, a recruit bot, an auto-station bot or a resource bot to run",
         ));
     }
     match request.mode_id {
@@ -311,6 +315,16 @@ pub async fn start_bots(
             request.account_id.trim(),
             request.station_bot_id,
             request.running && request.station_bot_id.is_some(),
+            now_ms(),
+        )
+        .await
+        .map_err(ApiError::bad_request)?;
+    state
+        .store
+        .subscribe_account_resource_bot(
+            request.account_id.trim(),
+            request.resource_bot_id,
+            request.running && request.resource_bot_id.is_some(),
             now_ms(),
         )
         .await
@@ -669,7 +683,7 @@ async fn require_ready_account(
     Ok(())
 }
 
-async fn require_plans(state: &AppState) -> Result<(), ApiError> {
+pub(crate) async fn require_plans(state: &AppState) -> Result<(), ApiError> {
     state
         .licence
         .require("automation")

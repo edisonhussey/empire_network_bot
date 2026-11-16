@@ -7,7 +7,7 @@ One concern, one owner. If a rule exists in two places, one of them is a bug.
 | `crates/empire-game` | Static game data (the complete unit and rule tables generated from `data/tables/`, plus the older troop/tool/kingdom tables), attack encoding | Do I/O, touch SQLite, or know about the network |
 | `crates/empire-socket` | The one place that opens the game WebSocket: TLS, the page's upgrade headers and the `permessage-deflate` offer, and inflating the server's compressed frames (`deflate.rs` pure framing, `stream.rs` the wrapper, `lib.rs` `game_request` / `connect`). Used by the daemon (sessions and relay), `empire-login` and `empire-hunt` | Contain game rules or decode packets; the header values live in `empire-core/src/ws_handshake.rs` |
 | `crates/empire-core` | Domain rules, pacing, planning, licence, SQLite `store` (**single source of truth**) | Open sockets or know about HTTP |
-| `crates/empire-daemon` | Axum API (`lib.rs`, `plans.rs`, `station.rs`, `dev_shared.rs`, `account_licence.rs` for the Licence tab over the rules in `licence.rs`, `web_ui.rs` serving the built UI as the fallback), one game session per account (`sessions.rs`, `direct/`), `relay.rs` | Invent rules; it applies the ones in `empire-core` |
+| `crates/empire-daemon` | Axum API (`lib.rs`, `plans.rs`, `station.rs`, `dev_shared.rs`, `account_licence.rs` for the Licence tab over the rules in `licence.rs`, `web_ui.rs` serving the built UI as the fallback, `resource.rs` for the Resources tab), one game session per account (`sessions.rs`, `direct/`), `relay.rs` | Invent rules; it applies the ones in `empire-core` |
 | `desktop/src-tauri` | Window and service lifecycle only | Contain business logic |
 | `desktop/src` | Presentation: a projection of the API plus forms that submit intent | Compute cooldowns, pick targets, or keep its own state machine |
 
@@ -18,6 +18,7 @@ One concern, one owner. If a rule exists in two places, one of them is a bug.
 | `mod.rs` | Request/status types, `run` (reconnect supervisor) / `run_inner` (one socket session), shared constants |
 | `automation.rs` | Attack automation state machine: handshake phases, tower/commander selection, waiting |
 | `recruitment.rs` | Recruitment automation state machine |
+| `refinery.rs` | The resource bot's refinery visit: `jca`, `crin`, `dcl`, staggered `crst`, `gaa` (rules in `empire-core/src/refinery.rs`, schedule in `store/resource.rs`) |
 | `fortress_discovery.rs` | Fortress boundary discovery walk and its pacing |
 | `base_scan.rs` | Outward map-scan pacing and pending-scan record |
 | `packets.rs` | Pure builders for outbound `gaa` / heartbeat frames |
@@ -48,5 +49,6 @@ One concern, one owner. If a rule exists in two places, one of them is a bug.
 | `views/pvp-model.js` | PVP rules and the movement colour scheme (pure) |
 | `views/chat.js`, `views/chat-model.js` | The Chat tab: alliance messages with sender and time (read-only) |
 | `views/licence.js`, `views/licence-model.js` | The Licence tab (the account in view's licence and the drop box that replaces it) and the sidebar plan line |
+| `views/resources.js`, `views/resources-model.js` | The Resources tab: refined-resource presets and resource bots (stored only) and their pure helpers |
 | `views/transfer.js`, `views/transfer-model.js` | The Castle Overview's send-troops widget (projection and form) and its pure helpers |
 | `main.js` | Remaining shared state and views, still to be split view by view |

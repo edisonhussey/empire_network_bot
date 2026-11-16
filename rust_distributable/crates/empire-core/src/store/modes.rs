@@ -543,6 +543,10 @@ impl Store {
             .bind(&account_id)
             .execute(&mut *tx)
             .await?;
+        sqlx::query("UPDATE account_resource_bot SET running = 0 WHERE lower(account_id) = lower(?)")
+            .bind(&account_id)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await
     }
 

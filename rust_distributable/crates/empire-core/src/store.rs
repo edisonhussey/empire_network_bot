@@ -20,6 +20,7 @@ mod modes;
 mod pools;
 mod pvp;
 mod recruitment;
+mod resource;
 mod schema;
 mod state;
 mod station;
@@ -46,6 +47,9 @@ pub use pvp::{PvpCount, PvpPage, PvpQuery, PvpRow, PvpState};
 pub use recruitment::{
     AccountRecruitBot, ActiveRecruitment, OwnedCastleRecord, RecruitBot, RecruitBotCastle,
     RecruitmentTemplate,
+};
+pub use resource::{
+    AccountResourceBot, ActiveRefinery, CreateResourcePreset, REFINERY, RefineryState, ResourceBot,
 };
 pub use schema::SCHEMA_VERSION;
 pub use station::{

@@ -6,6 +6,7 @@ mod licence;
 mod plans;
 mod pvp;
 mod relay;
+mod resource;
 mod sessions;
 mod station;
 mod transfer;
@@ -304,6 +305,11 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
         .route("/v1/pvp", get(pvp::pvp))
         .route("/v1/plans/station-bots", post(station::create_station_bot))
         .route("/v1/plans/station-bots/{id}", delete(station::delete_station_bot))
+        .route("/v1/resources", get(resource::library))
+        .route("/v1/resources/create-presets", post(resource::create_preset))
+        .route("/v1/resources/create-presets/{id}", delete(resource::delete_preset))
+        .route("/v1/resources/bots", post(resource::create_bot))
+        .route("/v1/resources/bots/{id}", delete(resource::delete_bot))
         .route("/v1/overview", get(station::overview))
         .route("/v1/troops", get(troops::troops))
         .route("/v1/overview/refresh", post(station::refresh_overview))
@@ -452,6 +458,7 @@ async fn direct_disconnect(
     let _ = state.store.stop_account_mode(&account_id, now_ms()).await;
     let _ = state.store.stop_account_recruit_bot(&account_id, now_ms()).await;
     let _ = state.store.stop_account_station_bot(&account_id, now_ms()).await;
+    let _ = state.store.stop_account_resource_bot(&account_id, now_ms()).await;
     state.sessions.remove(&account_id).await;
     Ok(StatusCode::NO_CONTENT)
 }

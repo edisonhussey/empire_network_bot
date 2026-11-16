@@ -4,7 +4,7 @@
 | --- | --- |
 | Direction | both: client request, server reply |
 | Evidence | captured (2026-11-16, us1) |
-| Code | none in rust_distributable yet. proxy_packet_monitor's **Test refine** reads it (`refineTargetFromCrin`) |
+| Code | `empire-core/src/refinery.rs` (`parse_refinery`), sent by `empire-daemon/src/direct/refinery.rs` |
 
 ## Purpose
 

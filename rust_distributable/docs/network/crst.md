@@ -4,7 +4,7 @@
 | --- | --- |
 | Direction | client to server, answered by a `crst` reply |
 | Evidence | captured (2026-11-16, us1, one account, two crafts) |
-| Code | none in rust_distributable yet. A quick test is the **Test refine** button in proxy_packet_monitor (`web/app.js`, `runRefineTest`) |
+| Code | `empire-daemon/src/direct/refinery.rs` (sends it), `empire-core/src/refinery.rs` (recipes, reply parsing). Manual test: **Test refine** in proxy_packet_monitor |
 
 ## Purpose
 

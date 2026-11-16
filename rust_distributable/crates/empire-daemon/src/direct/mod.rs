@@ -11,6 +11,7 @@ mod packets;
 mod portal_id;
 mod pvp;
 mod recruitment;
+mod refinery;
 mod scheduler;
 mod station;
 mod station_view;
@@ -37,6 +38,7 @@ use inventory::InventoryPoll;
 use observe::*;
 use packets::*;
 use recruitment::*;
+use refinery::RefineryAutomation;
 use scheduler::*;
 use station::{Gate, StationAutomation};
 use transfer::TransferAutomation;
@@ -538,6 +540,8 @@ async fn run_inner(
     automation.configure(store).await;
     let mut last_dev_snapshot_ms = 0_i64;
     let mut recruitment = RecruitmentAutomation::new();
+    // The resource bot's refinery job (direct/refinery.rs): its own visits to the Green main castle.
+    let mut refinery = RefineryAutomation::new();
     // Auto-station: takes priority over everything else on the connection while
     // a job is in its window (see station.rs for the gate).
     let mut station = StationAutomation::new();
@@ -763,6 +767,7 @@ async fn run_inner(
                     record_text(store, &account_id, Direction::ServerToClient, &text).await;
                     automation.observe(store, &account_id, &text).await;
                     recruitment.observe(store, &account_id, &text).await;
+                    refinery.observe(store, &account_id, &text).await;
                     station.observe(store, &account_id, &text, now_ms()).await;
                     transfer.observe(store, &account_id, parsed_packet.as_ref(), now_ms()).await;
                     chat::observe(store, &account_id, parsed_packet.as_ref(), now_ms()).await;
@@ -1229,6 +1234,7 @@ async fn run_inner(
                     automation.set_pace(pace.get());
                     let mut sent = false;
                     if station_gate != Gate::Owned
+                        && !refinery.holds_transport()
                         && (station_gate == Gate::Open || recruitment.holds_transport())
                         && (recruitment.holds_transport() || !automation.holds_transport())
                         && let Some(packet) = recruitment.next_packet(store, &account_id, &request.settings.server_header).await?
@@ -1237,9 +1243,22 @@ async fn run_inner(
                         sink.send(Message::Text(packet.into())).await?;
                         sent = true;
                     }
+                    // The refinery, like recruitment, starts only when nothing else holds the view, and
+                    // once started keeps it until it is back on the map.
                     if !sent
                         && station_gate != Gate::Owned
                         && !recruitment.holds_transport()
+                        && (refinery.holds_transport() || (station_gate == Gate::Open && !automation.holds_transport()))
+                        && let Some(packet) = refinery.next_packet(store, &account_id, &request.settings.server_header).await?
+                    {
+                        record_safe_outbound(store, &account_id, &packet).await;
+                        sink.send(Message::Text(packet.into())).await?;
+                        sent = true;
+                    }
+                    if !sent
+                        && station_gate != Gate::Owned
+                        && !recruitment.holds_transport()
+                        && !refinery.holds_transport()
                         && (station_gate == Gate::Open || automation.holds_transport())
                         && let Some(packet) = automation
                             .next_packet(store, &account_id, &request.settings.server_header)
@@ -1251,7 +1270,8 @@ async fn run_inner(
                     }
                     let connection_free = station_gate == Gate::Open
                         && !automation.holds_transport()
-                        && !recruitment.holds_transport();
+                        && !recruitment.holds_transport()
+                        && !refinery.holds_transport();
                     if !sent
                         && let Some(packet) = transfer
                             .next_packet(
@@ -1276,14 +1296,15 @@ async fn run_inner(
                                 now,
                                 station_gate == Gate::Open
                                     && !automation.holds_transport()
-                                    && !recruitment.holds_transport(),
+                                    && !recruitment.holds_transport()
+                                    && !refinery.holds_transport(),
                             )
                             .await?
                     {
                         record_safe_outbound(store, &account_id, &packet).await;
                         sink.send(Message::Text(packet.into())).await?;
                     }
-                    let (bot_state, bot_detail) = if recruitment.holds_transport() { ("recruiting", recruitment.detail.clone()) } else { automation.status() };
+                    let (bot_state, bot_detail) = if recruitment.holds_transport() { ("recruiting", recruitment.detail.clone()) } else if refinery.holds_transport() { ("refining", refinery.detail.clone()) } else { automation.status() };
                     {
                         let mut current = status.write().await;
                         current.bot_state = bot_state.to_owned();
