@@ -11,6 +11,7 @@ about the system that uses them.
 | [`troop-overview.md`](troop-overview.md) | The Troop overview, commander ranges in attack bots, and when a session reconnects |
 | [`accounts.md`](accounts.md) | Several accounts at once: sessions, per-account licences and tiers, the account switcher and colour-coded maps |
 | [`runtime-flow.md`](runtime-flow.md) | How the window, daemon and game server fit together |
+| [`web-mode.md`](web-mode.md) | The UI in a browser tab: the daemon's own page, `platform.js`, the `oa web` dev loop, process_monitor |
 | [`target-selection.md`](target-selection.md) | Which tower is attacked next: the spotlight algorithm, momentum, tuning and measured trade-offs |
 | [`kingdom-grouping.md`](kingdom-grouping.md) | Which kingdom is attacked in next: staying put instead of alternating, the short wait, the streak cap and its settings |
 | [`kingdom-transfer.md`](kingdom-transfer.md) | Moving troops between kingdoms from the Castle Overview: the checks before sending, the skips, the state funnels and the pacing |

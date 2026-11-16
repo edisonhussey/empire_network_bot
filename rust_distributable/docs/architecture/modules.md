@@ -7,7 +7,7 @@ One concern, one owner. If a rule exists in two places, one of them is a bug.
 | `crates/empire-game` | Static game data (the complete unit and rule tables generated from `data/tables/`, plus the older troop/tool/kingdom tables), attack encoding | Do I/O, touch SQLite, or know about the network |
 | `crates/empire-socket` | The one place that opens the game WebSocket: TLS, the page's upgrade headers and the `permessage-deflate` offer, and inflating the server's compressed frames (`deflate.rs` pure framing, `stream.rs` the wrapper, `lib.rs` `game_request` / `connect`). Used by the daemon (sessions and relay), `empire-login` and `empire-hunt` | Contain game rules or decode packets; the header values live in `empire-core/src/ws_handshake.rs` |
 | `crates/empire-core` | Domain rules, pacing, planning, licence, SQLite `store` (**single source of truth**) | Open sockets or know about HTTP |
-| `crates/empire-daemon` | Axum API (`lib.rs`, `plans.rs`, `station.rs`, `dev_shared.rs`, `account_licence.rs` for the Licence tab over the rules in `licence.rs`), one game session per account (`sessions.rs`, `direct/`), `relay.rs` | Invent rules; it applies the ones in `empire-core` |
+| `crates/empire-daemon` | Axum API (`lib.rs`, `plans.rs`, `station.rs`, `dev_shared.rs`, `account_licence.rs` for the Licence tab over the rules in `licence.rs`, `web_ui.rs` serving the built UI as the fallback), one game session per account (`sessions.rs`, `direct/`), `relay.rs` | Invent rules; it applies the ones in `empire-core` |
 | `desktop/src-tauri` | Window and service lifecycle only | Contain business logic |
 | `desktop/src` | Presentation: a projection of the API plus forms that submit intent | Compute cooldowns, pick targets, or keep its own state machine |
 
@@ -39,6 +39,7 @@ One concern, one owner. If a rule exists in two places, one of them is a bug.
 | File | Responsibility |
 | --- | --- |
 | `api.js` | The only HTTP client for the daemon |
+| `platform.js` | The only code that knows the host (Tauri window, Vite, the daemon's own page): API base, clipboard, notices ([`web-mode.md`](web-mode.md)) |
 | `account-context.js` | Which account is in view, every account's status and colour, who shares a world |
 | `dom.js` | `$` and `element` helpers |
 | `format.js` | Pure string formatting (no DOM, no state) |

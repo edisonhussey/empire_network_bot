@@ -8,6 +8,7 @@ Everyday commands for building, cleaning and resetting the project, and the scri
 | Free the debug build cache | `oa clean` | [`clear_cache.md`](clear_cache.md) |
 | Reset to a first-run install | `utils/scripts/fresh-start.sh --dry-run`, then without the flag | [`wipe_storage.md`](wipe_storage.md) |
 | Run the tests / a fast check | `oa test` / `oa check` | |
+| Develop in the browser (daemon under cargo-watch + live-reload UI) | `oa web` | [`../docs/architecture/web-mode.md`](../docs/architecture/web-mode.md) |
 | Change the version | `oa bump` / `oa bump 0.2.0` | [`build.md`](build.md) |
 | Sort a new game-data capture | `python3 utils/scripts/organize_game_data.py` | [`../docs/game_data/README.md`](../docs/game_data/README.md) |
 | Rebuild the lookup tables (and the Rust that mirrors them) from the raw game files | `python3 utils/scripts/build_tables.py` | [`../docs/game_data/tables.md`](../docs/game_data/tables.md) |
@@ -18,7 +19,8 @@ Everyday commands for building, cleaning and resetting the project, and the scri
 
 | File | Does | Touches the running app? |
 | --- | --- | --- |
-| `oa` | The entry point: build, bump, version, test, check, clean | only `oa build` |
+| `oa` | The entry point: build, bump, version, test, check, web, clean | only `oa build` |
+| `web-dev.sh` | `oa web`: daemon under cargo-watch + Vite on :1420 | refuses to start if a daemon already holds :47821 |
 | `release.sh` | Clean build, DMG into `releases/`, install | **yes: quits and replaces it** |
 | `sync-version.sh` | Copies `VERSION` into `desktop/package.json`, `package-lock.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` | no |
 | `fresh-start.sh` | Backs up and removes the database | **yes: stops it** |

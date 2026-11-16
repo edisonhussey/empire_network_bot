@@ -8,6 +8,7 @@
 #   oa version            print the current version
 #   oa test               cargo test + frontend build
 #   oa check              fast cargo check
+#   oa web                daemon under cargo-watch + Vite UI on :1420 (oa web ui / oa web daemon for one half)
 #   oa clean              delete the debug build cache (rebuilds on demand; code and release builds untouched)
 #
 # Works through a symlink, so it can live on your PATH.
@@ -51,11 +52,15 @@ case "${1:-help}" in
     check)
         (cd "$ROOT" && cargo check --workspace --tests)
         ;;
+    web)
+        shift
+        exec "$ROOT/utils/scripts/web-dev.sh" "$@"
+        ;;
     clean)
         (cd "$ROOT" && cargo clean --profile dev)
         (cd "$ROOT" && cargo clean --profile dev --manifest-path desktop/src-tauri/Cargo.toml)
         ;;
     *)
-        sed -n '2,14p' "$SELF" | sed 's/^# \{0,1\}//'
+        sed -n '2,15p' "$SELF" | sed 's/^# \{0,1\}//'
         ;;
 esac

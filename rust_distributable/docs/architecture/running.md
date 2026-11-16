@@ -30,6 +30,12 @@ On start the window compares the running service's `api_version` (`GET /v1/healt
 app's own `--service` process or a stand-alone `empire-daemon` ([problem 19](../problems/19.md)). A stale stand-alone daemon (for example one started by a process monitor from
 an old `target/release` build) otherwise answers every newer route with `404` and fails on the migrated database. Rebuild it after any change: `cargo build --release -p empire-daemon`.
 
+## The web UI and dev loop
+
+`oa web` runs the daemon under cargo-watch and the UI on `http://localhost:1420` (reload for UI changes, Rust changes restart
+only the daemon). The stand-alone daemon also serves the built UI (`desktop/dist`) at `http://127.0.0.1:47821/`. Closing the
+tab stops nothing. See [`web-mode.md`](web-mode.md).
+
 ## The stand-alone daemon (network tests without the window)
 
 ```sh
