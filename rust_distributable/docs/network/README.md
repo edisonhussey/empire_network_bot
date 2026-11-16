@@ -68,6 +68,10 @@ annotations; tests include some of them (`include_str!`), so renaming one means 
 * [`sce`](sce.md): item stock
 * [`rue`](rue.md): a castle's unit count after recruiting
 
+### Crafting (castle view)
+* [`crin`](crin.md): the castle's crafting buildings and their queues
+* [`crst`](crst.md): start a craft (100 refined wood or stone)
+
 ### Alliance
 * [`acm`](acm.md) (and `acl`): alliance chat
 

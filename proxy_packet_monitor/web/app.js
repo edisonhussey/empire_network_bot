@@ -113,7 +113,7 @@ function settingsDialog() {
 }
 function injectBar() {
   const live = !!state.status?.connected;
-  return `<form id="inject-form" class="inject-bar" ${state.tab==='sessions'?'':'hidden'}><label for="inject-text">Inject</label><textarea id="inject-text" rows="2" spellcheck="false" placeholder="%xt%EmpireEx_19%nch%1%  (one frame per line; Ctrl/Cmd+Enter sends)">${esc(state.injectText)}</textarea><select id="inject-direction" title="Direction"><option value="server" ${state.injectToClient?'':'selected'}>To server</option><option value="client" ${state.injectToClient?'selected':''}>To client</option></select><button class="primary" type="submit">Send</button><small class="${live?'ok':''}">${live?'Game WebSocket connected':'No game WebSocket'}</small></form>`;
+  return `<form id="inject-form" class="inject-bar" ${state.tab==='sessions'?'':'hidden'}><label for="inject-text">Inject</label><textarea id="inject-text" rows="2" spellcheck="false" placeholder="%xt%EmpireEx_19%nch%1%  (one frame per line; Ctrl/Cmd+Enter sends)">${esc(state.injectText)}</textarea><select id="inject-direction" title="Direction"><option value="server" ${state.injectToClient?'':'selected'}>To server</option><option value="client" ${state.injectToClient?'selected':''}>To client</option></select><button class="primary" type="submit">Send</button><button type="button" id="refine-test" title="Sends crst twice through the live socket: 100 refined wood (CRID 1), then 100 refined stone (CRID 34). Castle view, 2 free queue places and 54,400 wood + 54,400 stone assumed.">Test refine</button><small class="${live?'ok':''}">${live?'Game WebSocket connected':'No game WebSocket'}</small></form>`;
 }
 function connectionHint(status) {
   if (!status?.proxy_running) return 'Start the proxy to listen for game traffic.';
@@ -191,6 +191,45 @@ async function saveSupport(config) {
   render();
 }
 async function refreshSessions() { try { const previous = JSON.stringify(state.sessions); state.sessions=await api('/api/sessions'); if (!state.selected && state.sessions.length) { state.selected=state.sessions[0].id; await loadEvents(); } else if (previous!==JSON.stringify(state.sessions)) render(); } catch(e) { notice(e.message); } }
+// ---- Test refine: 100 refined wood then 100 refined stone, one crst each (rust_distributable/docs/network/crst.md) ----
+// The castle (KID, AID), the refinery (OID, the CQID 1 queue) and the zone name are read from the newest recorded `crin`
+// reply and a sent frame of the same session, so nothing account-specific is hard-coded.
+export const REFINE_RECIPES = [{ crid: 1, name: '100 refined wood' }, { crid: 34, name: '100 refined stone' }];
+export function refineFrames({ zone, kid, aid, oid }) {
+  return REFINE_RECIPES.map(({ crid }) => `%xt%${zone}%crst%1%${JSON.stringify({ KID: kid, AID: aid, OID: oid, PWR: 0, CRID: crid })}%`);
+}
+export function refineTargetFromCrin(raw) {
+  const body = JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1));
+  const building = (body.CAI || []).flatMap(castle => castle.CBI || []).find(b => b.CQID === 1);
+  return building ? { kid: building.KID, aid: building.AID, oid: building.OID } : null;
+}
+async function findRefineTarget() {
+  for (const session of state.sessions.slice(0, 15)) {
+    const id = session.id;
+    const crin = await api(`/api/sessions/${id}/events?${new URLSearchParams({ limit: '50', offset: '0', q: '', type: 'CRIN' })}`);
+    const replies = crin.events.filter(e => e.direction === 'received').reverse();
+    for (const reply of replies) {
+      const target = refineTargetFromCrin((await api(`/api/sessions/${id}/events/${reply.seq}`)).raw);
+      if (!target) continue;
+      const sent = crin.events.find(e => e.direction === 'sent');
+      const first = sent ? (await api(`/api/sessions/${id}/events/${sent.seq}`)).raw : '';
+      const zone = first.split('%')[2];
+      if (zone && zone.startsWith('EmpireEx')) return { ...target, zone };
+    }
+  }
+  return null;
+}
+async function runRefineTest() {
+  try {
+    const target = await findRefineTarget();
+    if (!target) { notice('No recorded crin reply found. Record a session while opening castle view once, then try again.'); return; }
+    const frames = refineFrames(target);
+    if (!confirm(`Send to the server now?\n\n${frames.join('\n')}`)) return;
+    const result = await api('/api/inject', 'POST', { text: frames.join('\n'), to_client: false });
+    notice(`Sent ${result.sent} crst frames (castle ${target.aid}, refinery ${target.oid}). Watch for the crst replies in a recording.`);
+  } catch (e) { notice(e.message); }
+}
+
 async function loadEvents(append=false) {
   if (!state.selected) return;
   const offset=append?state.rows.length:0;
@@ -224,6 +263,7 @@ function bind() {
     try { const result=await api('/api/inject','POST',{text:state.injectText,to_client:state.injectToClient}); notice(`Sent ${result.sent} frame${result.sent===1?'':'s'} ${result.to_client?'to the client':'to the server'}.`); }
     catch(e) { notice(e.message); }
   };
+  document.querySelector('#refine-test').onclick=runRefineTest;
   const locationForm=document.querySelector('#location-form');
   locationForm.onsubmit=async event => { event.preventDefault(); const value=Object.fromEntries(new FormData(locationForm)); try { await api('/api/incoming/config','POST',value); await refreshIncoming(); notice('Incoming location updated. Previous location ledger cleared.'); } catch(e) { notice(e.message); } };
   const supportConfig = () => JSON.parse(JSON.stringify(state.autoSupport?.config || {enabled:false,castles:[],destinations:{},lid:0}));
