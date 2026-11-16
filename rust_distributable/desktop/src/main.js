@@ -1074,17 +1074,20 @@ if (!connectedAccounts.length) { emptyAccounts(); renderModes(); return; }
     }, true);
     stop.disabled = !running;
     attackSelect.disabled = running; recruitSelect.disabled = running; stationSelect.disabled = running; resourceSelect.disabled = running;
+    controls.append(start, stop);
     // Pause keeps the socket and keeps listening; Resume continues from the live state (direct/pause.rs).
-    const paused = isConnected && direct.bot_state === "paused";
-    const pauseButton = actionButton(paused ? "Resume" : "Pause", async () => {
-      try {
-        await api("/direct/pause", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: account.account_id, paused: !paused }) });
-        await refreshAccounts(); await refreshDashboard();
-      } catch (error) { connectionResult.textContent = error.message; }
-    }, !paused);
-    pauseButton.disabled = !isConnected;
-    pauseButton.title = "Pause: bots stop sending, the connection stays and keeps updating. A step in progress is dropped as failed.";
-    controls.append(start, stop, pauseButton, summary);
+    if (isConnected && direct.attached) {
+      const paused = isConnected && direct.bot_state === "paused";
+      const pauseButton = actionButton(paused ? "Resume" : "Pause", async () => {
+        try {
+          await api("/direct/pause", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ account_id: account.account_id, paused: !paused }) });
+          await refreshAccounts(); await refreshDashboard();
+        } catch (error) { connectionResult.textContent = error.message; }
+      }, !paused);
+      pauseButton.title = "Pause: bots stop sending, the connection stays and keeps updating. A step in progress is dropped as failed.";
+      controls.append(pauseButton);
+    }
+    controls.append(summary);
     assignment.append(attackLabel, attackSelect, recruitLabel, recruitSelect, recruitEstimate, stationLabel, stationSelect, stationNote, resourceLabel, resourceSelect, controls);
     if (!isReady && !running) assignment.append(element("p", "empty-copy", "Start the connection in step 1 to run automation."));
     if (!library.modes.length && !library.recruit_bots.length && !library.station_bots.length) assignment.append(element("p", "empty-copy", "Create an attack, recruit or support bot before starting automation."));

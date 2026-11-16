@@ -1305,12 +1305,7 @@ async fn run_inner(
                     let station_gate = station.gate(now);
                     automation.station_holds = station.holds(now);
                     automation.set_pace(pace.get());
-                    // The human acted in the browser (injection mode): bots step aside for a minute.
                     let mut interrupt_reason = None;
-                    if let Some(command) = pause.take_human() {
-                        pause.hold_until(now + pause::HUMAN_HOLD_MS);
-                        interrupt_reason = Some(format!("you sent {command} in the game"));
-                    }
                     let paused = pause.reason(now);
                     if paused.is_some() && !was_paused && interrupt_reason.is_none() {
                         interrupt_reason = Some("paused".to_owned());

@@ -37,8 +37,7 @@ browser ⇄ mitmproxy (proxy_packet_monitor addon) ⇄ game server
 ```
 
 * The addon opens the WebSocket when the game socket opens and pushes `{"dir":"s2c"|"c2s","text":…}` for each frame.
-* Server frames feed the engine's stream as if they came from its own socket. Client frames are observed too, so the
-  engine sees the human's navigation (`jca`, `gaa`) and does not fight it.
+* Server frames feed the engine's stream as if they came from its own socket.
 * The daemon's sink writes `{"inject":…}` back; the addon sends it with `inject.websocket` (what the Inject box and
   **Test refine** already do).
 
@@ -48,12 +47,10 @@ browser ⇄ mitmproxy (proxy_packet_monitor addon) ⇄ game server
    identity (`app_state` `session.identity.<account>`), castles and commanders. Attaching reads them, binds the licence and
    starts at `SandsReady`. Everything the browser's traffic carries (navigation, stock, commanders, marches) keeps updating
    the same tables as in direct mode.
-2. **The person and the bot share the socket.** A view command the person sends (`jca`, `gaa`, `cra`, `adi`, `bup`, `crst`,
-   `kut`; `direct/pause.rs`) makes every bot step aside for **one minute**: a step in flight is abandoned as a failure (an
-   attack target not yet attacked goes back to the pool, an attack already sent keeps its lease), the session keeps
-   listening, and the bots resume from the live state when the minute is up.
-3. **Pause button** (both modes, Control Panel): the same, without the minute: bots stop sending until **Resume**, the socket
-   stays and every frame is still read. Nothing is cleared or rewritten.
+2. Pause/Resume (injection mode only): the person pauses before acting in the browser; there is no automatic backoff.
+   Bots stop sending until **Resume**, the socket stays and every frame is still read. A step in flight is abandoned as a
+   failure (an attack target not yet attacked goes back to the pool, an attack already sent keeps its lease). Nothing is
+   cleared or rewritten; bots resume from the live state.
 
 ## How to run it
 
@@ -67,7 +64,7 @@ browser ⇄ mitmproxy (proxy_packet_monitor addon) ⇄ game server
 | Concern | File |
 | --- | --- |
 | The two transports behind one sink/stream | `crates/empire-daemon/src/direct/link.rs` |
-| Pause and the one-minute human hold | `crates/empire-daemon/src/direct/pause.rs`; `interrupt` on `Automation`, `RecruitmentAutomation`, `RefineryAutomation` |
+| Pause/Resume (injection mode only) | `crates/empire-daemon/src/direct/pause.rs`; `interrupt` on `Automation`, `RecruitmentAutomation`, `RefineryAutomation` |
 | The `/v1/attach` link and `POST /v1/direct/pause` | `crates/empire-daemon/src/attach.rs` |
 | Login skipped, heartbeat skipped, no reconnect, identity read | `crates/empire-daemon/src/direct/mod.rs` (`is_attached`) and `run` |
 | The proxy side (wsproto client, forward, inject) | `proxy_packet_monitor/backend/openauto_link.py`, `incoming_addon.py` |

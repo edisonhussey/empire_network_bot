@@ -8,8 +8,9 @@
 //!   (not the bot's own injections);
 //! * daemon → proxy: `{"inject":…}`, a frame to send to the server.
 //!
-//! The session is the same engine as **Start bot** (`direct/mod.rs`, `direct/link.rs`); the browser's own view
-//! commands make the bots step aside for a minute (`direct/pause.rs`). `docs/architecture/injection-mode.md`.
+//! The session is the same engine as **Start bot** (`direct/mod.rs`, `direct/link.rs`). Pause/Resume is
+//! injection mode only: the person pauses before acting in the browser; there is no automatic backoff.
+//! See `docs/architecture/injection-mode.md`.
 
 use axum::{
     Json,
@@ -18,7 +19,6 @@ use axum::{
     response::Response,
 };
 use empire_core::{
-    protocol::parse_xt_packet,
     session::{LoginCredentials, SessionSettings},
     store::canonical_account_id,
 };
@@ -68,13 +68,12 @@ async fn run(socket: WebSocket, state: AppState, account_id: String, player_name
     };
     let store = state.store.clone();
     let licence = state.licence.clone();
-    let cells = state
+    state
         .sessions
         .replace(&account_id, |cells| {
             tokio::spawn(direct::run(request, store, cells.transport, cells.status, licence, cells.dev, cells.pace, cells.pause))
         })
         .await;
-    let pause = cells.pause.clone();
     info!(%account_id, "proxy link attached");
     let (mut proxy_sink, mut proxy_stream) = socket.split();
     loop {
@@ -87,11 +86,6 @@ async fn run(socket: WebSocket, state: AppState, account_id: String, player_name
                     Some("s2c") => {
                         if to_session.send(raw.to_owned()).await.is_err() {
                             break;
-                        }
-                    }
-                    Some("c2s") => {
-                        if let Ok(packet) = parse_xt_packet(raw) {
-                            pause.note_human(&packet.command);
                         }
                     }
                     _ => {}
@@ -119,6 +113,10 @@ pub struct PauseRequest {
 /// the live state; a step that was in flight is abandoned as failed.
 pub async fn pause(State(state): State<AppState>, Json(request): Json<PauseRequest>) -> Result<StatusCode, ApiError> {
     let account_id = canonical_account_id(&request.account_id);
+    let attached = state.sessions.status(&account_id).await.is_some_and(|s| s.attached);
+    if !attached {
+        return Err(ApiError::bad_request("Pause is only for injection-bot sessions (attached through the proxy)"));
+    }
     let cells = state.sessions.cells(&account_id).await.ok_or_else(|| ApiError::bad_request("that account has no session"))?;
     cells.pause.set_manual(request.paused);
     let _ = state
