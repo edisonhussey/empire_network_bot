@@ -1,6 +1,8 @@
 /// The only place the window talks to the service. Everything it shows is a
 /// projection of what this API returns; nothing here decides business rules.
-export const API = "http://127.0.0.1:47821/v1";
+import { apiBase } from "./platform.js";
+
+export const API = apiBase();
 
 async function responseJson(response) {
   const body = await response.json().catch(() => ({}));

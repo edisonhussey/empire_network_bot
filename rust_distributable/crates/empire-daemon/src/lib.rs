@@ -10,6 +10,7 @@ mod sessions;
 mod station;
 mod transfer;
 mod troops;
+mod web_ui;
 
 use std::{
     env,
@@ -246,6 +247,7 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
 
     let allowed_origins = [
         "http://localhost:1420".parse::<HeaderValue>().unwrap(),
+        "http://127.0.0.1:1420".parse::<HeaderValue>().unwrap(),
         "tauri://localhost".parse::<HeaderValue>().unwrap(),
         "https://tauri.localhost".parse::<HeaderValue>().unwrap(),
     ];
@@ -311,11 +313,13 @@ pub async fn serve(config: DaemonConfig) -> anyhow::Result<()> {
         .route("/v1/transfers/refresh", post(transfer::refresh))
         .route("/v1/transfers/{id}/cancel", post(transfer::cancel))
         .route("/v1/relay", get(relay_socket))
-        .layer(cors)
-        .with_state(state);
+        .layer(cors);
+    // The built UI as the fallback, so a browser tab on this port is the control panel (web_ui.rs).
+    let web_dir = web_ui::web_dir();
+    let app = web_ui::attach(app, web_dir.clone()).with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    info!(%bind, database = %database_url, "OpenAuto service ready");
+    info!(%bind, database = %database_url, web_ui = ?web_dir, "OpenAuto service ready");
     axum::serve(listener, app).await?;
     Ok(())
 }

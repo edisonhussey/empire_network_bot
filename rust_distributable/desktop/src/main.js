@@ -1,4 +1,5 @@
 import { api } from "./api.js";
+import { copyText, notify } from "./platform.js";
 import { accountContext, botsRunning } from "./account-context.js";
 import { $, element } from "./dom.js";
 import { compactNumber, expiryLabel, humanWait, humanize, relativeTime, sessionDuration, tempoLabel } from "./format.js";
@@ -424,7 +425,7 @@ function renderWave() {
          for (let i = 1; i < 4; i++) {
              attackWaves[i] = JSON.parse(JSON.stringify(attackWaves[0]));
          }
-         alert("Copied Wave 1 to all subsequent waves.");
+         notify("Copied Wave 1 to all subsequent waves.");
          renderWave();
      });
      actions.append(copyAllBtn);
@@ -576,7 +577,7 @@ function bundleForMode(name, allocations) {
 }
 
 async function copyJson(value, output) {
-  await navigator.clipboard.writeText(JSON.stringify(value, null, 2));
+  await copyText(JSON.stringify(value, null, 2));
   if (output) output.textContent = "Copied to clipboard.";
 }
 
@@ -1620,7 +1621,7 @@ $("#import-preset").addEventListener("click", async () => {
   } catch (error) { $("#preset-result").textContent = error.message; }
 });
 $("#refresh-logs").addEventListener("click", refreshLogs);
-$("#copy-logs").addEventListener("click", async () => { if (!accountLogText) await refreshLogs(); await navigator.clipboard.writeText(accountLogText); $("#log-result").textContent = "Sanitized logs copied."; });
+$("#copy-logs").addEventListener("click", async () => { if (!accountLogText) await refreshLogs(); await copyText(accountLogText); $("#log-result").textContent = "Sanitized logs copied."; });
 
 const accountSwitcher = createAccountSwitcher({
   read: () => ({ library, worldLabel: serverLabel }),
