@@ -220,6 +220,48 @@ pub fn scan_refresh_after_ms(kingdom_id: i64, ax1: i64, ay1: i64) -> i64 {
     SCAN_REFRESH_BASE_MS + jitter
 }
 
+/// The towers a pick may choose from (`reserve_rbc_target_with`), run on every attack pick.
+///
+/// The account is compared as stored, never through `lower(column)`: every write stores
+/// `canonical_account_id` (V7, V28), and a function over the column made SQLite scan the whole ledger
+/// once per tower. With 98,000 ledger rows that took 10.5 s on the writer connection and stalled the
+/// session loop until map requests timed out (problem 28; the same fault as problem 22).
+pub(crate) const RESERVE_RBC_CANDIDATES_SQL: &str = "SELECT x, y, level, last_attacked_ms
+                 FROM rbc_target
+                 WHERE account_id = ? AND kingdom_id = ?
+                   AND reserved_until_ms <= ?
+                   AND server_free_at_ms <= ?
+                   AND NOT EXISTS (
+                       SELECT 1 FROM attack_ledger a
+                       WHERE a.account_id = rbc_target.account_id
+                         AND a.kingdom_id = rbc_target.kingdom_id
+                         AND a.x = rbc_target.x AND a.y = rbc_target.y
+                         AND rbc_target.kingdom_id != 10
+                         AND (CASE WHEN a.landed_at_ms IS NOT NULL
+                                   THEN MIN(a.landed_at_ms + 10800000, a.sent_at_ms + 14400000)
+                                   ELSE a.sent_at_ms + 14400000 END) + 300000 > ?
+                   )
+                   AND (? IS NULL OR level >= ?)
+                   AND (? IS NULL OR level <= ?)";
+
+/// When the next tower of a kingdom comes free (kingdom grouping's short wait). Same rule as above.
+pub(crate) const RBC_NEXT_READY_SQL: &str = "SELECT MIN(ready) FROM (
+                 SELECT MAX(reserved_until_ms, server_free_at_ms, COALESCE((
+                     SELECT MAX(CASE WHEN a.landed_at_ms IS NOT NULL
+                                     THEN MIN(a.landed_at_ms + 10800000, a.sent_at_ms + 14400000)
+                                     ELSE a.sent_at_ms + 14400000 END) + 300000
+                     FROM attack_ledger a
+                     WHERE a.account_id = rbc_target.account_id
+                       AND a.kingdom_id = rbc_target.kingdom_id
+                       AND a.x = rbc_target.x AND a.y = rbc_target.y
+                       AND rbc_target.kingdom_id != 10
+                 ), 0)) AS ready
+                 FROM rbc_target
+                 WHERE account_id = ? AND kingdom_id = ?
+                   AND (? IS NULL OR level >= ?)
+                   AND (? IS NULL OR level <= ?)
+             )";
+
 impl Store {
     pub async fn open(url: &str) -> Result<Self, sqlx::Error> {
         let path = database_path(url);
@@ -491,22 +533,7 @@ impl Store {
     ) -> Result<Option<i64>, sqlx::Error> {
         let account_id = canonical_account_id(account_id);
         sqlx::query_scalar(
-            "SELECT MIN(ready) FROM (
-                 SELECT MAX(reserved_until_ms, server_free_at_ms, COALESCE((
-                     SELECT MAX(CASE WHEN a.landed_at_ms IS NOT NULL
-                                     THEN MIN(a.landed_at_ms + 10800000, a.sent_at_ms + 14400000)
-                                     ELSE a.sent_at_ms + 14400000 END) + 300000
-                     FROM attack_ledger a
-                     WHERE lower(a.account_id) = lower(rbc_target.account_id)
-                       AND a.kingdom_id = rbc_target.kingdom_id
-                       AND a.x = rbc_target.x AND a.y = rbc_target.y
-                       AND rbc_target.kingdom_id != 10
-                 ), 0)) AS ready
-                 FROM rbc_target
-                 WHERE lower(account_id) = lower(?) AND kingdom_id = ?
-                   AND (? IS NULL OR level >= ?)
-                   AND (? IS NULL OR level <= ?)
-             )",
+            RBC_NEXT_READY_SQL,
         )
         .bind(&account_id)
         .bind(kingdom_id)
@@ -851,23 +878,7 @@ impl Store {
         let mut scan = selector.scan(algorithm, kingdom_id, source);
         {
             let mut rows = sqlx::query(
-                "SELECT x, y, level, last_attacked_ms
-                 FROM rbc_target
-                 WHERE lower(account_id) = lower(?) AND kingdom_id = ?
-                   AND reserved_until_ms <= ?
-                   AND server_free_at_ms <= ?
-                   AND NOT EXISTS (
-                       SELECT 1 FROM attack_ledger a
-                       WHERE lower(a.account_id) = lower(rbc_target.account_id)
-                         AND a.kingdom_id = rbc_target.kingdom_id
-                         AND a.x = rbc_target.x AND a.y = rbc_target.y
-                         AND rbc_target.kingdom_id != 10
-                         AND (CASE WHEN a.landed_at_ms IS NOT NULL
-                                   THEN MIN(a.landed_at_ms + 10800000, a.sent_at_ms + 14400000)
-                                   ELSE a.sent_at_ms + 14400000 END) + 300000 > ?
-                   )
-                   AND (? IS NULL OR level >= ?)
-                   AND (? IS NULL OR level <= ?)",
+                RESERVE_RBC_CANDIDATES_SQL,
             )
             .bind(&account_id)
             .bind(kingdom_id)

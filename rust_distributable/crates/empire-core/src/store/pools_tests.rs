@@ -275,3 +275,31 @@ async fn sessions_and_views_run_together_without_errors() {
     }
     assert_eq!(store.app_state("pingpoko.cursor").await.unwrap(), Some(serde_json::json!(299)));
 }
+
+/// Problem 28: the two queries every attack pick runs must find marches by index, like the map query.
+#[tokio::test]
+async fn the_pick_queries_find_marches_by_index_not_by_scanning_the_ledger() {
+    let scratch = Scratch::new("pick-plan");
+    let store = open(&scratch).await;
+    for sql in [super::RESERVE_RBC_CANDIDATES_SQL, super::RBC_NEXT_READY_SQL] {
+        let explain = format!("EXPLAIN QUERY PLAN {sql}");
+        let mut query = sqlx::query(&explain).bind("ventrilo").bind(1_i64);
+        if sql.contains("reserved_until_ms <= ?") {
+            query = query.bind(0_i64).bind(0_i64).bind(0_i64);
+        }
+        let plan = query
+            .bind(None::<i64>)
+            .bind(None::<i64>)
+            .bind(None::<i64>)
+            .bind(None::<i64>)
+            .fetch_all(store.reader())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(plan.contains("USING INDEX attack_ledger_target_idx") || plan.contains("USING COVERING INDEX attack_ledger_target_idx"), "plan was:\n{plan}");
+        assert!(!plan.contains("SCAN a"), "the ledger must never be scanned once per tower; plan was:\n{plan}");
+    }
+}
