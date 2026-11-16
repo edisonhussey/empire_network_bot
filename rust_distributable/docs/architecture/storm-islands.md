@@ -14,14 +14,21 @@ storm task with a free commander
   │     yes → reserve it → open the storm map if needed → adi (still free?) → cra → this account's cooldown on it
   │            └ adi shows it taken, or no answer, or cra refused  → forget it, pick another (no incident)
   │
-  └─ none → read ONE map window around the storm castle (if the 5.5-12.5 s scan wait is over
+  └─ none → read ONE 100 x 100 map window around the storm castle (if the 5.5-12.5 s scan wait is over
             and no task in the client's current kingdom has a free commander)
             → forts in the window are recorded, forts gone from it are dropped → next step
 ```
 
-* **Scan on demand.** Nothing is scanned while the task has a fresh fort, while its commanders are all out, or while the
-  bot is busy in another kingdom. A pass walks the 13 x 13 windows within 96 tiles of the castle, nearest ring first,
-  shuffled inside each ring, then starts again.
+* **Scan on demand, in big windows.** Nothing is scanned while the task has a fresh fort, while its commanders are all out,
+  or while the bot is busy in another kingdom. Each read is a **100 x 100** window (the server answers up to about 107
+  across, as the fortress sweep measured), so the castle's own window (castle in its centre) plus one ring, 9 reads, covers
+  300 x 300 tiles.
+* **What was read recently.** The bot remembers when each window was last read and always reads the one read longest ago
+  (never-read first, nearer ring on a tie). A window read in the last minute is not read again while another is older; when
+  all nine are that fresh it waits, since forts are trusted for two minutes anyway.
+* **If the server refuses the size** (a reply with no `AI`, the same tell the fortress sweep saw at 138): nothing is learned
+  or deleted from that reply, a `storm.scan_refused` event is logged, and later reads use 50 x 50, then 13 x 13, over the
+  same 300 x 300 ground.
 * **New, vanished, in range.** `storm_target` holds one row per fort position. Every storm `gaa` (the bot's or the
   browser's) adds or refreshes forts; the bot's own scan window also deletes the forts no longer in it. Only forts with a
   level in the task's range, both cooldown fields 0 and a sighting within 2 minutes are picked; rows unseen for 4 hours are

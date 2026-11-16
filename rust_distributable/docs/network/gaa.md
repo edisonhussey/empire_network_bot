@@ -61,8 +61,10 @@ Elements of the tower row beyond the ones listed.
 
 ## Storm Islands (`KID` 4)
 
-Captured 2026-11-16 (us1, the browser opening the storm map, then attacking a level-60 fort). Windows are the usual
-13 x 13; the client read the castle's window first (`546:520`, castle at `557:531`) and the ring around it.
+Captured 2026-11-16 (us1, the browser opening the storm map, then attacking a level-60 fort). The client reads 13 x 13
+windows (the castle's window first, `546:520`, castle at `557:531`). The bot reads 100 x 100 windows instead (the size
+limit measured for fortresses: 101 honoured, 138 refused); not yet confirmed live for kingdom 4, so a refusal falls back to
+50 and then 13.
 
 Rows seen: type 12 (player castles, the account's own storm castle among them), 24 (storm objects owned by `-403`), 25
 (storm forts, owner `-1`) and 31 (`[31, x, y]`, decoration). A storm fort:

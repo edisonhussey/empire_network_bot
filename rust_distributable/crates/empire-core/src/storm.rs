@@ -23,10 +23,15 @@ pub const SYSTEM_OWNERS: [i64; 2] = [-1, -403];
 pub const FRESH_MS: i64 = 120_000;
 /// Forts not seen for this long are forgotten.
 pub const FORGET_MS: i64 = 4 * 3_600_000;
-/// Map windows are 13 x 13 tiles.
-pub const WINDOW: i64 = 13;
-/// How far from the storm castle the scan reaches, in tiles.
-pub const SCAN_RADIUS: i64 = 96;
+/// Side of one storm scan window, in tiles. The server answers windows up to about 107 tiles across (the
+/// fortress sweep measured 101 honoured and 138 refused, `fortress.rs`), so one read covers 100 x 100.
+pub const WINDOW: i64 = 100;
+/// The fallback sides, in order, if the server ever refuses a window (an empty payload).
+pub const FALLBACK_WINDOWS: [i64; 2] = [50, 13];
+/// Rings of windows around the castle's own window: 1 ring = 3 x 3 windows = 300 x 300 tiles.
+pub const SCAN_RINGS: i64 = 1;
+/// A window read this recently is not read again while another one is older.
+pub const RESCAN_AFTER_MS: i64 = 60_000;
 /// Random wait after a scan window before the next step, in seconds.
 pub const SCAN_WAIT_S: (f64, f64) = (5.5, 12.5);
 /// Default level range of a Storm Islands task.
@@ -79,25 +84,39 @@ pub fn fort_from_entry(entry: &Value) -> Option<StormFort> {
     })
 }
 
-/// The 13 x 13 windows within [`SCAN_RADIUS`] of the storm castle, nearest ring first and shuffled inside a
-/// ring, so a pass reads close ground first without always reading it in the same order.
-pub fn scan_windows(castle: (i64, i64), rng: &mut Rng) -> Vec<(i64, i64)> {
-    let origin = |value: i64| value.div_euclid(WINDOW) * WINDOW;
-    let (cx, cy) = (origin(castle.0), origin(castle.1));
-    let reach = SCAN_RADIUS / WINDOW;
+/// The `size` x `size` windows (top-left corners) around the storm castle: the castle's own window, centred on
+/// it, then [`SCAN_RINGS`] rings around it, nearest ring first and shuffled inside a ring. With a smaller
+/// fallback size the rings grow so the same ground is covered.
+pub fn scan_windows(castle: (i64, i64), size: i64, rng: &mut Rng) -> Vec<(i64, i64)> {
+    let (cx, cy) = (castle.0 - size / 2, castle.1 - size / 2);
+    // Reach the same ground as the full-size rings: half a window past them on each side.
+    let span = SCAN_RINGS * WINDOW + WINDOW / 2 - size / 2;
+    let reach = (span + size - 1) / size;
     let mut windows = Vec::new();
     for dx in -reach..=reach {
         for dy in -reach..=reach {
-            let ring = dx.abs().max(dy.abs());
-            let (x, y) = (cx + dx * WINDOW, cy + dy * WINDOW);
-            if x < 0 || y < 0 || (dx * dx + dy * dy) * WINDOW * WINDOW > (SCAN_RADIUS + WINDOW / 2).pow(2) {
+            let (x, y) = (cx + dx * size, cy + dy * size);
+            if x + size <= 0 || y + size <= 0 {
                 continue;
             }
-            windows.push((ring, rng.next_u64(), (x, y)));
+            windows.push((dx.abs().max(dy.abs()), rng.next_u64(), (x.max(0), y.max(0))));
         }
     }
     windows.sort();
+    windows.dedup_by_key(|(_, _, window)| *window);
     windows.into_iter().map(|(_, _, window)| window).collect()
+}
+
+/// The window to read next: the one read longest ago (never read first), the nearer ring on a tie. `None`
+/// when every window was read within [`RESCAN_AFTER_MS`] (nothing new to learn yet).
+pub fn next_window(windows: &[(i64, i64)], last_read: impl Fn((i64, i64)) -> Option<i64>, now_ms: i64) -> Option<(i64, i64)> {
+    windows
+        .iter()
+        .enumerate()
+        .map(|(order, window)| (last_read(*window).unwrap_or(i64::MIN), order, *window))
+        .filter(|(read, _, _)| *read == i64::MIN || now_ms - *read >= RESCAN_AFTER_MS)
+        .min()
+        .map(|(_, _, window)| window)
 }
 
 /// Seconds to wait after a scan window.
@@ -139,13 +158,26 @@ mod tests {
     }
 
     #[test]
-    fn scans_start_at_the_castle_and_stay_in_reach() {
+    fn a_pass_is_nine_100_tile_windows_with_the_castle_centred_in_the_first() {
         let mut rng = Rng::seeded(3);
-        let windows = scan_windows((557, 531), &mut rng);
-        assert_eq!(windows[0], (546, 520), "the castle's own window first");
-        assert!(windows.iter().all(|(x, y)| (x - 546).abs() <= SCAN_RADIUS + WINDOW && (y - 520).abs() <= SCAN_RADIUS + WINDOW));
-        assert!(windows.len() > 100 && windows.len() < 250, "{}", windows.len());
+        let windows = scan_windows((557, 531), WINDOW, &mut rng);
+        assert_eq!(windows.len(), 9);
+        assert_eq!(windows[0], (507, 481), "the castle's own window first, castle in its centre");
+        assert!(windows.contains(&(407, 381)) && windows.contains(&(607, 581)));
+        // A smaller fallback covers the same 300 x 300 ground.
+        let small = scan_windows((557, 531), 50, &mut rng);
+        assert_eq!(small.len(), 49);
         let wait = scan_wait_ms(&mut rng);
         assert!((5_500..12_500).contains(&wait));
+    }
+
+    #[test]
+    fn the_window_read_longest_ago_is_next_and_recent_ones_wait() {
+        let windows = [(0, 0), (100, 0), (200, 0)];
+        let read = |window: (i64, i64)| match window { (0, 0) => Some(1_000), (100, 0) => Some(500), _ => None };
+        assert_eq!(next_window(&windows, read, 2_000), Some((200, 0)), "never read first");
+        let read = |window: (i64, i64)| match window { (0, 0) => Some(1_000), _ => Some(500) };
+        assert_eq!(next_window(&windows, read, 70_000), Some((100, 0)), "then the oldest");
+        assert_eq!(next_window(&windows, read, 1_100), None, "all read within a minute: nothing to learn yet");
     }
 }

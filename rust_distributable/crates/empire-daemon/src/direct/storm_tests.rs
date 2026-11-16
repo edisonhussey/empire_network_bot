@@ -38,7 +38,7 @@ async fn with_no_fresh_fort_the_bot_reads_the_map_around_its_storm_castle_then_a
     assert_eq!(tasks[0].target_kind, "storm");
     let mut automation = Automation::new();
     let scan = automation.next_packet(&store, "ventrilo", "EmpireEx_21").await.unwrap().expect("a scan");
-    assert_eq!(scan, r#"%xt%EmpireEx_21%gaa%1%{"AX1":546,"AX2":558,"AY1":520,"AY2":532,"KID":4}%"#);
+    assert_eq!(scan, r#"%xt%EmpireEx_21%gaa%1%{"AX1":507,"AX2":606,"AY1":481,"AY2":580,"KID":4}%"#, "a 100 x 100 window centred on the storm castle");
     assert!(matches!(automation.phase, AutomationPhase::AwaitStormScan { .. }));
     // The captured level-60 fort, one on cooldown and one too low.
     automation
@@ -87,4 +87,36 @@ async fn a_refused_storm_attack_is_tolerated_but_a_short_army_still_stops_the_bo
     automation.phase = AutomationPhase::AwaitCra { task, target, lord_id: 3, deadline_ms: now_ms() + 40_000 };
     automation.observe(&store, "ventrilo", "%xt%cra%1%313%{}%").await;
     assert!(automation.stop_reason.is_some(), "the castle could not supply the army: stop as for any attack");
+}
+
+#[tokio::test]
+async fn a_refused_big_window_falls_back_to_a_smaller_one_and_deletes_nothing() {
+    let store = storm_store().await;
+    store
+        .record_storm_forts("ventrilo", None, &[empire_core::storm::StormFort { x: 551, y: 542, level: Some(60), free: false }], now_ms())
+        .await
+        .unwrap();
+    let mut automation = Automation::new();
+    automation.next_packet(&store, "ventrilo", "EmpireEx_21").await.unwrap().expect("a scan");
+    automation.observe(&store, "ventrilo", "%xt%gaa%1%0%{}%").await;
+    assert_eq!(automation.storm_scan.size(), 50);
+    automation.phase = AutomationPhase::Idle { due_ms: 0 };
+    automation.storm_scan.due_ms = 0;
+    let scan = automation.next_packet(&store, "ventrilo", "EmpireEx_21").await.unwrap().expect("a smaller scan");
+    assert!(scan.contains(r#""AX1":532"#) && scan.contains(r#""AX2":581"#), "{scan}");
+    // The refused read deleted nothing: the known fort is still there for a later scan to confirm.
+    automation.observe(&store, "ventrilo", &gaa_reply("[25,551,542,4,-1,12,0,8,0]")).await;
+    assert!(store.reserve_storm_target("ventrilo", Some(60), Some(80), STORM_CASTLE, now_ms(), now_ms() + 60_000).await.unwrap().is_some());
+}
+
+#[test]
+fn a_recently_read_window_is_not_read_again_before_the_others() {
+    let mut scan = StormScan::default();
+    let mut rng = Rng::seeded(1);
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..9 {
+        assert!(seen.insert(scan.next_window(STORM_CASTLE, 1_000, &mut rng).unwrap()));
+    }
+    assert!(scan.next_window(STORM_CASTLE, 30_000, &mut rng).is_none(), "all nine read within the minute");
+    assert!(scan.next_window(STORM_CASTLE, 62_000, &mut rng).is_some());
 }

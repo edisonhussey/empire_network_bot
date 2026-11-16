@@ -123,22 +123,43 @@ pub(super) struct Focus {
 pub(super) struct StormScan {
     pub(super) source: Option<(i64, i64)>,
     pub(super) windows: Vec<(i64, i64)>,
-    pub(super) cursor: usize,
+    /// When each window (top-left corner) was last read, so a recently read one is not read again first.
+    pub(super) last_read: HashMap<(i64, i64), i64>,
+    /// Index into `storm::FALLBACK_WINDOWS` + 1 after the server refused a window size; 0 = full size.
+    pub(super) fallback: usize,
     pub(super) due_ms: i64,
 }
 
 impl StormScan {
-    /// The next window to read around `source`, starting a new pass when one is done or the castle changed.
-    pub(super) fn next_window(&mut self, source: (i64, i64), rng: &mut Rng) -> (i64, i64, i64, i64) {
-        if self.source != Some(source) || self.cursor >= self.windows.len() {
-            self.source = Some(source);
-            self.windows = empire_core::storm::scan_windows(source, rng);
-            self.cursor = 0;
+    pub(super) fn size(&self) -> i64 {
+        match self.fallback {
+            0 => empire_core::storm::WINDOW,
+            index => empire_core::storm::FALLBACK_WINDOWS[(index - 1).min(empire_core::storm::FALLBACK_WINDOWS.len() - 1)],
         }
-        let (x, y) = self.windows[self.cursor];
-        self.cursor += 1;
-        let size = empire_core::storm::WINDOW - 1;
-        (x, y, x + size, y + size)
+    }
+
+    /// The next window around `source` to read, `(ax1, ay1, ax2, ay2)`: the one read longest ago. `None`
+    /// when all were read within the last minute.
+    pub(super) fn next_window(&mut self, source: (i64, i64), now: i64, rng: &mut Rng) -> Option<(i64, i64, i64, i64)> {
+        if self.source != Some(source) || self.windows.is_empty() {
+            self.source = Some(source);
+            self.windows = empire_core::storm::scan_windows(source, self.size(), rng);
+            self.last_read.clear();
+        }
+        let (x, y) = empire_core::storm::next_window(&self.windows, |window| self.last_read.get(&window).copied(), now)?;
+        self.last_read.insert((x, y), now);
+        let size = self.size() - 1;
+        Some((x, y, x + size, y + size))
+    }
+
+    /// The server refused the window size: use the next smaller one from now on.
+    pub(super) fn shrink(&mut self) -> bool {
+        if self.fallback >= empire_core::storm::FALLBACK_WINDOWS.len() {
+            return false;
+        }
+        self.fallback += 1;
+        self.windows.clear();
+        true
     }
 }
 
@@ -988,7 +1009,7 @@ impl Automation {
             && !other_kingdom_busy
         {
             let task = &tasks[index];
-            let (ax1, ay1, ax2, ay2) = self.storm_scan.next_window((task.source_x, task.source_y), &mut self.rng);
+            if let Some((ax1, ay1, ax2, ay2)) = self.storm_scan.next_window((task.source_x, task.source_y), now, &mut self.rng) {
             let packet = encode_client_xt(
                 server_header,
                 "gaa",
@@ -1005,6 +1026,9 @@ impl Automation {
                 deadline_ms: now + REQUEST_TIMEOUT_MS,
             };
             return Ok(Some(packet));
+            }
+            // Every window was read within the last minute: wait for the oldest to age.
+            self.storm_scan.due_ms = now + 5_000;
         }
 
         // Ordinary targets run only after every currently actionable fortress
@@ -1295,6 +1319,22 @@ impl Automation {
             "gaa" => {
                 // Storm Islands: every storm window updates what is known; the bot's own scan window also
                 // drops forts that are no longer in it.
+                // Our own storm window came back empty-handed (no `AI` at all): the server refused its size.
+                // Nothing is learned (and nothing deleted); later windows use the next smaller size.
+                if let AutomationPhase::AwaitStormScan { window, .. } = &self.phase
+                    && packet.payload.get("AI").is_none()
+                    && packet.payload.get("KID").and_then(Value::as_i64).is_none_or(|kid| kid == empire_core::storm::STORM_KINGDOM)
+                {
+                    let (ax1, ay1, ax2, ay2) = *window;
+                    let shrunk = self.storm_scan.shrink();
+                    log_event(store, account_id, "storm.scan_refused", &format!(
+                        "window {ax1}:{ay1}-{ax2}:{ay2} came back empty; {}",
+                        if shrunk { format!("now reading {} x {}", self.storm_scan.size(), self.storm_scan.size()) } else { "already at the smallest size".to_owned() }
+                    )).await;
+                    self.storm_scan.due_ms = now + empire_core::storm::scan_wait_ms(&mut self.rng);
+                    self.phase = AutomationPhase::Idle { due_ms: now + 250 };
+                    return;
+                }
                 if let Some(forts) = empire_core::storm::forts_in_gaa(&packet.payload) {
                     let window = match &self.phase {
                         AutomationPhase::AwaitStormScan { window, .. } => Some(*window),
