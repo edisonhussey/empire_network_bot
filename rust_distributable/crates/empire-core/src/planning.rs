@@ -126,6 +126,18 @@ pub enum Destination {
 }
 
 impl Destination {
+    /// The Storm Islands have no towers, so a level range there always means storm forts. A window or
+    /// import that still sends "rbc_level_range" for kingdom 4 (an older page, a saved bundle) gets the
+    /// storm task it meant instead of a tower task that can never find a target (problem 29).
+    pub fn normalized(self) -> Self {
+        match self {
+            Self::RbcLevelRange { kingdom_id, minimum, maximum } if kingdom_id == crate::storm::STORM_KINGDOM => {
+                Self::StormLevelRange { kingdom_id, minimum, maximum }
+            }
+            other => other,
+        }
+    }
+
     /// Whether this destination selects fortresses rather than ordinary
     /// rebels.
     pub const fn is_fortress(&self) -> bool {
@@ -572,6 +584,14 @@ pub fn ventrilo_sands_bundle() -> ModeBundle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_level_range_in_the_storm_islands_is_a_storm_task() {
+        let rbc = Destination::RbcLevelRange { kingdom_id: 4, minimum: 60, maximum: 80 };
+        assert_eq!(rbc.normalized(), Destination::StormLevelRange { kingdom_id: 4, minimum: 60, maximum: 80 });
+        let sands = Destination::RbcLevelRange { kingdom_id: 1, minimum: 60, maximum: 80 };
+        assert_eq!(sands.clone().normalized(), sands);
+    }
 
     #[test]
     fn commander_ranges_follow_each_other_unless_a_task_is_placed() {

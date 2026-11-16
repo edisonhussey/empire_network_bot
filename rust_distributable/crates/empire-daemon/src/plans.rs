@@ -418,7 +418,7 @@ pub async fn create_task(
         empire_core::planning::TargetAlgorithm::Closest => "closest",
         empire_core::planning::TargetAlgorithm::Random => "random",
     };
-    let (kingdom_id, level_min, level_max, target, target_kind, filter) = match draft.destination {
+    let (kingdom_id, level_min, level_max, target, target_kind, filter) = match draft.destination.clone().normalized() {
         Destination::Coordinate(value) => (
             value.kingdom_id,
             None,

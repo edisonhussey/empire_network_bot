@@ -108,7 +108,7 @@ impl Store {
                 attack_profile_id: "bundled".to_owned(),
                 source: task.source,
                 source_kind: task.source_kind,
-                destination: task.destination.clone(),
+                destination: task.destination.clone().normalized(),
                 algorithm: task.algorithm,
                 travel: task.travel,
                 priority: task.priority,
@@ -147,7 +147,7 @@ impl Store {
             .await?;
 
             let algorithm = algorithm_name(task.algorithm);
-            let (kingdom_id, minimum, maximum, target, target_kind, filter) = match task.destination
+            let (kingdom_id, minimum, maximum, target, target_kind, filter) = match task.destination.clone().normalized()
             {
                 Destination::Coordinate(value) => (
                     value.kingdom_id,

@@ -11,7 +11,7 @@
 use sqlx::{Row, SqlitePool};
 
 /// Highest migration index. Must equal `MIGRATIONS.len()`.
-pub const SCHEMA_VERSION: i64 = 30;
+pub const SCHEMA_VERSION: i64 = 31;
 
 /// One migration: the statements to run, in order.
 pub type Migration = &'static [&'static str];
@@ -940,8 +940,16 @@ pub const V30: Migration = &[
     )",
 ];
 
+/// Tasks saved as towers in the Storm Islands (an older page sent `rbc_level_range` for kingdom 4) become the storm
+/// tasks they were meant to be: there are no towers there, so as `rbc` they waited forever (problem 29).
+pub const V31: Migration = &[
+    "UPDATE task_subscription SET target_kind = 'storm'
+       WHERE target_kind = 'rbc'
+         AND task_id IN (SELECT task_id FROM task_definition WHERE kingdom_id = 4)",
+];
+
 pub const MIGRATIONS: &[Migration] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31,
 ];
 
 /// Every table that holds user data, for the storage report and full wipe.
